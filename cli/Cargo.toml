@@ -1,0 +1,15 @@
+[package]
+name = "tastytrade-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.71"
+clap = { version = "4.3.5", features = ["derive"] }
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+rust_decimal = "1.29.1"
+tastytrade-rs = { path = ".." }
+tokio = "1.28.2"
+tui = "0.19.0"
+futures = "0.3.28"
+futures-util = "0.3.28"

@@ -1,0 +1,29 @@
+[package]
+name = "tastytrade-rs"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Library for trading through tastytrade's API"
+repository = "https://github.com/joaquinbejar/tastytrade-rs"
+
+
+[dependencies]
+derive_builder = "0.20.2"
+reqwest = { version = "0.12.12", features = ["json"] }
+rust_decimal = { version = "1.29.1", features = [
+	"serde-with-arbitrary-precision",
+	"serde-with-float",
+] }
+serde = { version = "1.0.163", features = ["derive"] }
+serde_json = "1.0.96"
+thiserror = "2.0.12"
+flume = "0.11.1"
+widestring = "1.0.2"
+url = "2.3.1"
+tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
+tokio = { version = "1.28.1", features = ["full"] }
+futures-util = "0.3.28"
+erased-serde = "0.4.6"
+dxfeed = "0.2.1"
+chrono = { version = "0.4.31", features = ["serde"] }
+serde_with = "3.4.0"
