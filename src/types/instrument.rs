@@ -1,11 +1,10 @@
 use serde::Deserialize;
-
+use crate::api::quote_streaming::DxFeedSymbol;
 use crate::Result;
 use crate::TastyTrade;
 
 use super::order::AsSymbol;
 use super::order::Symbol;
-use super::quote_streaming::DxFeedSymbol;
 
 impl TastyTrade {
     pub async fn get_equity_info(&self, symbol: impl AsSymbol) -> Result<EquityInstrumentInfo> {

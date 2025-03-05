@@ -8,6 +8,7 @@ pub struct LoginCredentials<'a> {
     pub remember_me: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoginResponseUser {
@@ -16,6 +17,7 @@ pub struct LoginResponseUser {
     pub external_id: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoginResponse {

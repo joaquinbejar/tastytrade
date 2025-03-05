@@ -1,9 +1,9 @@
-use std::fmt::Display;
-
-use serde::de::DeserializeOwned;
+use crate::streaming::quote_streamer::DxFeedError;
 use serde::Deserialize;
-use serde_with::serde_as;
+use serde::de::DeserializeOwned;
 use serde_with::VecSkipError;
+use serde_with::serde_as;
+use std::fmt::Display;
 
 #[derive(thiserror::Error, Debug, Deserialize)]
 #[serde(untagged)]
@@ -74,7 +74,7 @@ pub enum TastyError {
     #[error("JSON Error")]
     Json(#[from] serde_json::Error),
     #[error("DxFeed Error")]
-    DxFeed(#[from] crate::quote_streamer::DxFeedError),
+    DxFeed(#[from] DxFeedError),
     #[error("Websocket Error")]
     Websocket(#[from] tokio_tungstenite::tungstenite::Error),
 }

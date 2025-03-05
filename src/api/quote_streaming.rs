@@ -1,12 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::Result;
 use crate::TastyTrade;
-
-use super::order::AsSymbol;
-use super::order::InstrumentType;
-use super::order::Symbol;
+use crate::{AsSymbol, InstrumentType, Result, Symbol};
 
 impl TastyTrade {
     pub async fn quote_streamer_tokens(&self) -> Result<QuoteStreamerTokens> {

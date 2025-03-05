@@ -1,39 +1,13 @@
 use std::fmt;
-
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-
 use crate::api::base::Result;
-use crate::client::TastyTrade;
-
+use crate::{FullPosition, LiveOrderRecord, TastyTrade};
+use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, PriceEffect};
 use super::base::{Items, Paginated};
-use super::order::{DryRunResult, LiveOrderRecord, Order, OrderId, OrderPlacedResult, PriceEffect};
-use super::position::FullPosition;
 
-impl TastyTrade {
-    pub async fn accounts(&self) -> Result<Vec<Account>> {
-        let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
-        Ok(resp
-            .items
-            .into_iter()
-            .map(|inner| Account { inner, tasty: self })
-            .collect())
-    }
 
-    pub async fn account(
-        &self,
-        account_number: impl Into<AccountNumber>,
-    ) -> Result<Option<Account>> {
-        let account_number = account_number.into();
-        let accounts = self.accounts().await?;
-        for account in accounts {
-            if account.inner.account.account_number == account_number {
-                return Ok(Some(account));
-            }
-        }
-        Ok(None)
-    }
-}
+
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
 #[serde(transparent)]
@@ -71,10 +45,10 @@ pub struct AccountInner {
 
 pub struct Account<'t> {
     pub(crate) inner: AccountInner,
-    tasty: &'t TastyTrade,
+    pub(crate) tasty: &'t TastyTrade,
 }
 
-impl<'t> Account<'t> {
+impl Account<'_> {
     pub fn number(&self) -> AccountNumber {
         self.inner.account.account_number.clone()
     }

@@ -1,12 +1,9 @@
+use crate::TastyTrade;
+use crate::{AsSymbol, Result};
+use dxfeed::Event;
 use std::collections::HashMap;
 use std::{ffi::CString, fmt::Display};
-
-use dxfeed::Event;
 use widestring::WideCString;
-
-use crate::api::order::AsSymbol;
-use crate::Result;
-use crate::TastyTrade;
 
 const SUCCESS: i32 = dxfeed::DXF_SUCCESS as i32;
 
@@ -199,6 +196,14 @@ impl QuoteStreamer {
     pub fn close_sub(&mut self, id: SubscriptionId) {
         self.subscriptions.remove(&id);
     }
+    
+    pub fn subscribe(&self, _symbol: &[&str])  {
+        unimplemented!()
+    }
+    
+    pub fn get_event(&self) -> std::result::Result<Event, flume::RecvError> {
+        unimplemented!()
+    }
 }
 
 impl Drop for QuoteStreamer {
@@ -211,9 +216,3 @@ impl Drop for QuoteStreamer {
     }
 }
 
-impl TastyTrade {
-    /// Creates a connection to DxFeed for market data.
-    pub async fn create_quote_streamer(&self) -> Result<QuoteStreamer> {
-        QuoteStreamer::connect(self).await
-    }
-}

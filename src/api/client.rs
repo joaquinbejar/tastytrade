@@ -2,23 +2,16 @@ use reqwest::header;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::ClientBuilder;
-
 use serde::de::DeserializeOwned;
-
 use serde::Serialize;
-
+use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
-
 use crate::api::base::Response;
 use crate::api::base::Result;
 use crate::api::base::TastyApiResponse;
-
-//use crate::api::base::TastyError;
-use crate::api::login::LoginCredentials;
-use crate::api::login::LoginResponse;
-
-//use reqwest_inspect_json::InspectJson;
+use crate::streaming::quote_streamer::QuoteStreamer;
+use crate::types::login::{LoginCredentials, LoginResponse};
 
 pub const BASE_URL: &str = "https://api.tastyworks.com";
 pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
@@ -206,5 +199,33 @@ impl TastyTrade {
             TastyApiResponse::Success(s) => Ok(s.data),
             TastyApiResponse::Error { error } => Err(error.into()),
         }
+    }
+
+    pub async fn accounts(&self) -> Result<Vec<Account>> {
+        let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
+        Ok(resp
+            .items
+            .into_iter()
+            .map(|inner| Account { inner, tasty: self })
+            .collect())
+    }
+
+    pub async fn account(
+        &self,
+        account_number: impl Into<AccountNumber>,
+    ) -> Result<Option<Account>> {
+        let account_number = account_number.into();
+        let accounts = self.accounts().await?;
+        for account in accounts {
+            if account.inner.account.account_number == account_number {
+                return Ok(Some(account));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Creates a connection to DxFeed for market data.
+    pub async fn create_quote_streamer(&self) -> Result<QuoteStreamer> {
+        QuoteStreamer::connect(self).await
     }
 }

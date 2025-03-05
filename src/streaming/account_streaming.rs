@@ -4,12 +4,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{
-    accounts::{Account, Balance},
-    Result, TastyTrade,
-};
+use crate::{accounts::{Account, Balance}, BriefPosition, LiveOrderRecord, Result, TastyTrade};
 
-use super::{order::LiveOrderRecord, position::BriefPosition};
 
 static WEBSOCKET_DEMO_URL: &str = "wss://streamer.cert.tastyworks.com";
 static WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
@@ -90,9 +86,9 @@ impl AccountStreamer {
         ) = flume::unbounded();
 
         let url = if tasty.demo {
-            url::Url::parse(WEBSOCKET_DEMO_URL).unwrap()
+            WEBSOCKET_DEMO_URL
         } else {
-            url::Url::parse(WEBSOCKET_URL).unwrap()
+            WEBSOCKET_URL
         };
 
         let (ws_stream, _response) = connect_async(url).await?;
@@ -130,7 +126,7 @@ impl AccountStreamer {
 
                 //println!("{message:?}");
 
-                let message = Message::Text(message);
+                let message = Message::Text(message.into());
 
                 if write.send(message).await.is_err() {
                     // TODO: send message informing user of disconnection

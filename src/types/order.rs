@@ -53,13 +53,18 @@ pub enum OrderType {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum TimeInForce {
+    #[serde(rename = "Day")]
     Day,
-    GTC,
-    GTD,
+    #[serde(rename = "GTC")]
+    Gtc,
+    #[serde(rename = "GTD")]
+    Gtd,
+    #[serde(rename = "Ext")]
     Ext,
     #[serde(rename = "GTC Ext")]
     GTCExt,
-    IOC,
+    #[serde(rename = "IOC")]
+    Ioc,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -137,6 +142,7 @@ pub struct LiveOrderRecord {
     pub edited: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LiveOrderLeg {
