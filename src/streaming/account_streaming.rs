@@ -9,8 +9,7 @@ use crate::{
     accounts::{Account, Balance},
 };
 
-static WEBSOCKET_DEMO_URL: &str = "wss://streamer.cert.tastyworks.com";
-static WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
+
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -87,11 +86,7 @@ impl AccountStreamer {
             flume::Receiver<HandlerAction>,
         ) = flume::unbounded();
 
-        let url = if tasty.demo {
-            WEBSOCKET_DEMO_URL
-        } else {
-            WEBSOCKET_URL
-        };
+        let url = tasty.config.websocket_url.clone();
 
         let (ws_stream, _response) = connect_async(url).await?;
         // let hello = ws_stream.try_next().await?;

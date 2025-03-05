@@ -21,8 +21,7 @@ pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 pub struct TastyTrade{
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
-    base_url: String,
-    pub(crate) demo: bool,
+    pub(crate) config: Config,
 }
 
 pub trait FromTastyResponse<T: DeserializeOwned> {
@@ -53,8 +52,7 @@ impl TastyTrade {
         Ok(Self {
             client,
             session_token: creds.session_token,
-            base_url: config.base_url.to_string(),
-            demo: config.use_demo,
+            config: config.clone(),
         })
     }
 
@@ -118,7 +116,7 @@ impl TastyTrade {
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
-        let url = format!("{}{}", self.base_url, url.as_ref());
+        let url = format!("{}{}", self.config.base_url, url.as_ref());
 
         let result = self
             .client
@@ -149,7 +147,7 @@ impl TastyTrade {
         P: Serialize,
         U: AsRef<str>,
     {
-        let url = format!("{}{}", self.base_url, url.as_ref());
+        let url = format!("{}{}", self.config.base_url, url.as_ref());
         let result = self
             .client
             .post(url)
@@ -173,7 +171,7 @@ impl TastyTrade {
         R: DeserializeOwned,
         U: AsRef<str>,
     {
-        let url = format!("{}{}", self.base_url, url.as_ref());
+        let url = format!("{}{}", self.config.base_url, url.as_ref());
         let result = self
             .client
             .delete(url)

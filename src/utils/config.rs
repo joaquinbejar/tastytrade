@@ -8,6 +8,10 @@ use std::path::Path;
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
 
+const WEBSOCKET_DEMO_URL: &str = "wss://streamer.cert.tastyworks.com";
+
+const WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
+
 /// Configuration structure for the application
 /// Handles environment variables and logger setup
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +34,8 @@ pub struct Config {
 
     /// Base URL for API requests
     pub base_url: String,
+    
+    pub websocket_url: String,
 }
 
 impl Default for Config {
@@ -41,6 +47,7 @@ impl Default for Config {
             log_level: "INFO".to_string(),
             remember_me: false,
             base_url: BASE_URL.to_string(),
+            websocket_url: WEBSOCKET_URL.to_string(),
         }
     }
 }
@@ -73,6 +80,11 @@ impl Config {
                 BASE_DEMO_URL.to_string()
             } else {
                 BASE_URL.to_string()
+            },
+            websocket_url: if use_demo {
+                WEBSOCKET_DEMO_URL.to_string()
+            } else {
+                WEBSOCKET_URL.to_string()
             },
         }
     }
@@ -174,6 +186,7 @@ mod tests {
             log_level: "DEBUG".to_string(),
             remember_me: true,
             base_url: BASE_DEMO_URL.to_string(),
+            websocket_url: WEBSOCKET_DEMO_URL.to_string(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
