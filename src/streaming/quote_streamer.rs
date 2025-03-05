@@ -196,11 +196,11 @@ impl QuoteStreamer {
     pub fn close_sub(&mut self, id: SubscriptionId) {
         self.subscriptions.remove(&id);
     }
-    
-    pub fn subscribe(&self, _symbol: &[&str])  {
+
+    pub fn subscribe(&self, _symbol: &[&str]) {
         unimplemented!()
     }
-    
+
     pub fn get_event(&self) -> std::result::Result<Event, flume::RecvError> {
         unimplemented!()
     }
@@ -215,4 +215,3 @@ impl Drop for QuoteStreamer {
         }
     }
 }
-

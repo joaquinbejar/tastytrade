@@ -1,7 +1,7 @@
-use serde::Deserialize;
-use crate::api::quote_streaming::DxFeedSymbol;
 use crate::Result;
 use crate::TastyTrade;
+use crate::api::quote_streaming::DxFeedSymbol;
+use serde::Deserialize;
 
 use super::order::AsSymbol;
 use super::order::Symbol;

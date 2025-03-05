@@ -1,13 +1,10 @@
-use std::fmt;
+use super::base::{Items, Paginated};
+use crate::api::base::Result;
+use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, PriceEffect};
+use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use crate::api::base::Result;
-use crate::{FullPosition, LiveOrderRecord, TastyTrade};
-use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, PriceEffect};
-use super::base::{Items, Paginated};
-
-
-
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
 #[serde(transparent)]

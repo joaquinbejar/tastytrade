@@ -4,8 +4,10 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{accounts::{Account, Balance}, BriefPosition, LiveOrderRecord, Result, TastyTrade};
-
+use crate::{
+    BriefPosition, LiveOrderRecord, Result, TastyTrade,
+    accounts::{Account, Balance},
+};
 
 static WEBSOCKET_DEMO_URL: &str = "wss://streamer.cert.tastyworks.com";
 static WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";

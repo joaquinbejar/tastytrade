@@ -1,9 +1,3 @@
-use reqwest::header;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
-use reqwest::ClientBuilder;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
@@ -12,6 +6,12 @@ use crate::api::base::Result;
 use crate::api::base::TastyApiResponse;
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::login::{LoginCredentials, LoginResponse};
+use reqwest::ClientBuilder;
+use reqwest::header;
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 pub const BASE_URL: &str = "https://api.tastyworks.com";
 pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";

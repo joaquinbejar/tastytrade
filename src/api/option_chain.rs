@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use super::{base::Items, quote_streaming::DxFeedSymbol};
 use crate::api::base::Result;
+use crate::{AsSymbol, Symbol, TastyTrade};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::Value;
-use crate::{AsSymbol, Symbol, TastyTrade};
-use super::{base::Items, quote_streaming::DxFeedSymbol};
+use std::collections::HashMap;
 
 impl TastyTrade {
     pub async fn nested_option_chain_for(
