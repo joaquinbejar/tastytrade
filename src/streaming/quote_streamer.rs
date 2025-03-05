@@ -1,22 +1,13 @@
 use crate::TastyTrade;
-use crate::{AsSymbol, Result};
+use crate::{AsSymbol, TastyResult};
 use dxfeed::Event;
 use std::collections::HashMap;
-use std::{ffi::CString, fmt::Display};
+use std::ffi::CString;
 use widestring::WideCString;
 
 const SUCCESS: i32 = dxfeed::DXF_SUCCESS as i32;
 
-#[derive(Debug, thiserror::Error)]
-pub enum DxFeedError {
-    CreateConnectionError,
-}
 
-impl Display for DxFeedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DxFeed error: {:?}", self)
-    }
-}
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
@@ -107,7 +98,7 @@ unsafe impl Send for QuoteStreamer {}
 // unsafe impl Sync for QuoteStreamer {}
 
 impl QuoteStreamer {
-    pub async fn connect(tasty: &TastyTrade) -> Result<QuoteStreamer> {
+    pub async fn connect(tasty: &TastyTrade) -> TastyResult<QuoteStreamer> {
         let tokens = tasty.quote_streamer_tokens().await?;
 
         let mut this = Self {
@@ -201,7 +192,7 @@ impl QuoteStreamer {
         unimplemented!()
     }
 
-    pub fn get_event(&self) -> std::result::Result<Event, flume::RecvError> {
+    pub async fn get_event(&self) -> std::result::Result<Event, flume::RecvError> {
         unimplemented!()
     }
 }

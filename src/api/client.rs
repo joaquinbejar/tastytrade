@@ -2,7 +2,7 @@ use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
 use crate::api::base::Response;
-use crate::api::base::Result;
+use crate::api::base::TastyResult;
 use crate::api::base::TastyApiResponse;
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::login::{LoginCredentials, LoginResponse};
@@ -12,15 +12,16 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use crate::utils::config::Config;
 
 pub const BASE_URL: &str = "https://api.tastyworks.com";
 pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 
 #[derive(Debug, Clone)]
-pub struct TastyTrade {
+pub struct TastyTrade{
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
-    base_url: &'static str,
+    base_url: String,
     pub(crate) demo: bool,
 }
 
@@ -44,27 +45,16 @@ impl<T: DeserializeOwned> FromTastyResponse<Items<T>> for Paginated<T> {
 }
 
 impl TastyTrade {
-    pub async fn login(login: &str, password: &str, remember_me: bool) -> Result<Self> {
-        let creds = Self::do_login_request(login, password, remember_me, BASE_URL).await?;
+    pub async fn login(config: &Config) -> TastyResult<Self> {
+        
+        let creds = Self::do_login_request(&config.username, &config.password, config.remember_me, &config.base_url).await?;
         let client = Self::create_client(&creds);
 
         Ok(Self {
             client,
             session_token: creds.session_token,
-            base_url: "https://api.tastyworks.com",
-            demo: false,
-        })
-    }
-
-    pub async fn login_demo(login: &str, password: &str, remember_me: bool) -> Result<Self> {
-        let creds = Self::do_login_request(login, password, remember_me, BASE_DEMO_URL).await?;
-        let client = Self::create_client(&creds);
-
-        Ok(Self {
-            client,
-            session_token: creds.session_token,
-            base_url: "https://api.cert.tastyworks.com",
-            demo: true,
+            base_url: config.base_url.to_string(),
+            demo: config.use_demo,
         })
     }
 
@@ -95,7 +85,7 @@ impl TastyTrade {
         password: &str,
         remember_me: bool,
         base_url: &str,
-    ) -> Result<LoginResponse> {
+    ) -> TastyResult<LoginResponse> {
         let client = reqwest::Client::default();
 
         let resp = client
@@ -122,7 +112,7 @@ impl TastyTrade {
         Ok(response)
     }
 
-    pub async fn get_with_query<T, R, U>(&self, url: U, query: &[(&str, &str)]) -> Result<R>
+    pub async fn get_with_query<T, R, U>(&self, url: U, query: &[(&str, &str)]) -> TastyResult<R>
     where
         T: DeserializeOwned,
         R: FromTastyResponse<T>,
@@ -149,11 +139,11 @@ impl TastyTrade {
         }
     }
 
-    pub async fn get<T: DeserializeOwned, U: AsRef<str>>(&self, url: U) -> Result<T> {
+    pub async fn get<T: DeserializeOwned, U: AsRef<str>>(&self, url: U) -> TastyResult<T> {
         self.get_with_query(url, &[]).await
     }
 
-    pub async fn post<R, P, U>(&self, url: U, payload: P) -> Result<R>
+    pub async fn post<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
     where
         R: DeserializeOwned,
         P: Serialize,
@@ -178,7 +168,7 @@ impl TastyTrade {
         }
     }
 
-    pub async fn delete<R, U>(&self, url: U) -> Result<R>
+    pub async fn delete<R, U>(&self, url: U) -> TastyResult<R>
     where
         R: DeserializeOwned,
         U: AsRef<str>,
@@ -201,7 +191,7 @@ impl TastyTrade {
         }
     }
 
-    pub async fn accounts(&self) -> Result<Vec<Account>> {
+    pub async fn accounts(&self) -> TastyResult<Vec<Account>> {
         let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
         Ok(resp
             .items
@@ -213,7 +203,7 @@ impl TastyTrade {
     pub async fn account(
         &self,
         account_number: impl Into<AccountNumber>,
-    ) -> Result<Option<Account>> {
+    ) -> TastyResult<Option<Account>> {
         let account_number = account_number.into();
         let accounts = self.accounts().await?;
         for account in accounts {
@@ -225,7 +215,7 @@ impl TastyTrade {
     }
 
     /// Creates a connection to DxFeed for market data.
-    pub async fn create_quote_streamer(&self) -> Result<QuoteStreamer> {
+    pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         QuoteStreamer::connect(self).await
     }
 }

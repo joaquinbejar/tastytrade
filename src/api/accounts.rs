@@ -1,5 +1,5 @@
 use super::base::{Items, Paginated};
-use crate::api::base::Result;
+use crate::api::base::TastyResult;
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, PriceEffect};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use rust_decimal::Decimal;
@@ -42,7 +42,7 @@ pub struct AccountInner {
 
 pub struct Account<'t> {
     pub(crate) inner: AccountInner,
-    pub(crate) tasty: &'t TastyTrade,
+    pub(crate) tasty: &'t TastyTrade<>,
 }
 
 impl Account<'_> {
@@ -50,7 +50,7 @@ impl Account<'_> {
         self.inner.account.account_number.clone()
     }
 
-    pub async fn balance(&self) -> Result<Balance> {
+    pub async fn balance(&self) -> TastyResult<Balance> {
         let resp = self
             .tasty
             .get(&format!(
@@ -67,7 +67,7 @@ impl Account<'_> {
         end_date: chrono::NaiveDate,
         tod: SnapshotTimeOfDay,
         page_offset: usize,
-    ) -> Result<Paginated<BalanceSnapshot>> {
+    ) -> TastyResult<Paginated<BalanceSnapshot>> {
         let resp: Paginated<BalanceSnapshot> = self
             .tasty
             .get_with_query(
@@ -86,7 +86,7 @@ impl Account<'_> {
         Ok(resp)
     }
 
-    pub async fn positions(&self) -> Result<Vec<FullPosition>> {
+    pub async fn positions(&self) -> TastyResult<Vec<FullPosition>> {
         let resp: Items<FullPosition> = self
             .tasty
             .get(&format!(
@@ -97,7 +97,7 @@ impl Account<'_> {
         Ok(resp.items)
     }
 
-    pub async fn live_orders(&self) -> Result<Vec<LiveOrderRecord>> {
+    pub async fn live_orders(&self) -> TastyResult<Vec<LiveOrderRecord>> {
         let resp: Items<LiveOrderRecord> = self
             .tasty
             .get(&format!(
@@ -108,7 +108,7 @@ impl Account<'_> {
         Ok(resp.items)
     }
 
-    pub async fn dry_run(&self, order: &Order) -> Result<DryRunResult> {
+    pub async fn dry_run(&self, order: &Order) -> TastyResult<DryRunResult> {
         let resp: DryRunResult = self
             .tasty
             .post(
@@ -122,7 +122,7 @@ impl Account<'_> {
         Ok(resp)
     }
 
-    pub async fn place_order(&self, order: &Order) -> Result<OrderPlacedResult> {
+    pub async fn place_order(&self, order: &Order) -> TastyResult<OrderPlacedResult> {
         let resp: OrderPlacedResult = self
             .tasty
             .post(
@@ -133,7 +133,7 @@ impl Account<'_> {
         Ok(resp)
     }
 
-    pub async fn cancel_order(&self, id: OrderId) -> Result<LiveOrderRecord> {
+    pub async fn cancel_order(&self, id: OrderId) -> TastyResult<LiveOrderRecord> {
         self.tasty
             .delete(&format!(
                 "/accounts/{}/orders/{}",

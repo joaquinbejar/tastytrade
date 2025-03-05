@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
-    BriefPosition, LiveOrderRecord, Result, TastyTrade,
+    BriefPosition, LiveOrderRecord, TastyResult, TastyTrade,
     accounts::{Account, Balance},
 };
 
@@ -79,7 +79,7 @@ pub struct AccountStreamer {
 }
 
 impl AccountStreamer {
-    pub async fn connect(tasty: &TastyTrade) -> Result<AccountStreamer> {
+    pub async fn connect(tasty: &TastyTrade) -> TastyResult<AccountStreamer> {
         let token = &tasty.session_token;
         let (event_sender, event_receiver) = flume::unbounded();
         let (action_sender, action_receiver): (
@@ -191,7 +191,7 @@ impl AccountStreamer {
 }
 
 impl TastyTrade {
-    pub async fn create_account_streamer(&self) -> Result<AccountStreamer> {
+    pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
     }
 }

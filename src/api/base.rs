@@ -1,9 +1,8 @@
-use crate::streaming::quote_streamer::DxFeedError;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_with::VecSkipError;
 use serde_with::serde_as;
-use std::fmt::Display;
+use crate::{ApiError, TastyTradeError};
 
 #[derive(thiserror::Error, Debug, Deserialize)]
 #[serde(untagged)]
@@ -46,37 +45,4 @@ pub struct Paginated<T> {
     pub pagination: Pagination,
 }
 
-#[derive(thiserror::Error, Debug, Deserialize)]
-pub struct ApiError {
-    pub code: Option<String>,
-    pub message: String,
-    pub errors: Option<Vec<InnerApiError>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InnerApiError {
-    pub code: Option<String>,
-    pub message: String,
-}
-
-impl Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Error {:?}: {}", self.code, self.message)
-    }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum TastyError {
-    #[error("Tastyworks API error")]
-    Api(#[from] ApiError),
-    #[error("HTTP Error")]
-    Reqwest(#[from] reqwest::Error),
-    #[error("JSON Error")]
-    Json(#[from] serde_json::Error),
-    #[error("DxFeed Error")]
-    DxFeed(#[from] DxFeedError),
-    #[error("Websocket Error")]
-    Websocket(#[from] tokio_tungstenite::tungstenite::Error),
-}
-
-pub type Result<T> = std::result::Result<T, TastyError>;
+pub type TastyResult<T> = Result<T, TastyTradeError>;

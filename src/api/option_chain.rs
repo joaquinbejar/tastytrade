@@ -1,5 +1,5 @@
 use super::{base::Items, quote_streaming::DxFeedSymbol};
-use crate::api::base::Result;
+use crate::api::base::TastyResult;
 use crate::{AsSymbol, Symbol, TastyTrade};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -10,21 +10,21 @@ impl TastyTrade {
     pub async fn nested_option_chain_for(
         &self,
         symbol: impl Into<Symbol>,
-    ) -> Result<NestedOptionChain> {
+    ) -> TastyResult<NestedOptionChain> {
         let mut resp: Items<NestedOptionChain> = self
             .get(format!("/option-chains/{}/nested", symbol.into().0))
             .await?;
         Ok(resp.items.remove(0))
     }
 
-    pub async fn option_chain_for(&self, symbol: impl Into<Symbol>) -> Result<Vec<OptionChain>> {
+    pub async fn option_chain_for(&self, symbol: impl Into<Symbol>) -> TastyResult<Vec<OptionChain>> {
         let resp: Items<OptionChain> = self
             .get(format!("/option-chains/{}", symbol.into().0))
             .await?;
         Ok(resp.items)
     }
 
-    pub async fn get_option_info(&self, symbol: impl AsSymbol) -> Result<OptionInfo> {
+    pub async fn get_option_info(&self, symbol: impl AsSymbol) -> TastyResult<OptionInfo> {
         self.get(format!(
             "/instruments/equity-options/{}",
             symbol.as_symbol().0

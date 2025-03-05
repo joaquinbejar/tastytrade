@@ -2,10 +2,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::TastyTrade;
-use crate::{AsSymbol, InstrumentType, Result, Symbol};
+use crate::{AsSymbol, InstrumentType, TastyResult, Symbol};
 
 impl TastyTrade {
-    pub async fn quote_streamer_tokens(&self) -> Result<QuoteStreamerTokens> {
+    pub async fn quote_streamer_tokens(&self) -> TastyResult<QuoteStreamerTokens> {
         self.get("/quote-streamer-tokens").await
     }
 }
@@ -40,7 +40,7 @@ impl TastyTrade {
         &self,
         instrument_type: &InstrumentType,
         symbol: &Symbol,
-    ) -> Result<DxFeedSymbol> {
+    ) -> TastyResult<DxFeedSymbol> {
         use InstrumentType::*;
         let sym = match instrument_type {
             Equity => self.get_equity_info(symbol).await?.streamer_symbol,

@@ -176,9 +176,12 @@ mod error;
 pub mod streaming;
 mod types;
 
+pub mod utils;
+
 pub use api::accounts;
-pub use api::base::Result;
+pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
 pub use dxfeed;
 pub use types::order::{AsSymbol, InstrumentType, LiveOrderRecord, Symbol};
 pub use types::position::{BriefPosition, FullPosition, QuantityDirection};
+pub use error::{ApiError, DxFeedError, TastyTradeError};

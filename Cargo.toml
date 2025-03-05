@@ -6,6 +6,20 @@ license = "MIT"
 description = "Library for trading through tastytrade's API"
 repository = "https://github.com/joaquinbejar/tastytrade-rs"
 
+include = [
+	"benches/**/*",
+	"src/**/*",
+	"Cargo.toml",
+	"README.md",
+	"LICENSE",
+	"examples/**/*.rs",
+	"tests/**/*.rs",
+	"Makefile",
+	"rust-toolchain.toml",
+	"Draws/**/*.png",
+	"Docker/**/*.Dockerfile",
+	"Docker/**/*.yml",
+]
 
 [dependencies]
 derive_builder = "0.20.2"
@@ -26,3 +40,20 @@ erased-serde = "0.4.6"
 dxfeed = "0.2.1"
 chrono = { version = "0.4.31", features = ["serde"] }
 serde_with = "3.4.0"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+
+
+[[test]]
+name = "tests"
+path = "tests/integration/mod.rs"
+
+[workspace]
+members = [
+	"examples/accounts-status",
+	"examples/quote-streaming",
+	"cli"
+]
+
+[workspace.dependencies]
+tastytrade-rs = { path = "." }
