@@ -23,26 +23,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    unsafe {
-        // Force demo mode
-        env::set_var("TASTYTRADE_USE_DEMO", "true");
-    }
-
-
     // Load configuration from environment variables
     let config = Config::from_env();
     info!("Configuration loaded, connecting to demo environment...");
 
+
     // Login to the TastyTrade API
     let tasty = TastyTrade::login(&config).await?;
-    info!("Successfully logged in to demo environment!");
+    if config.use_demo{
+        info!("Successfully logged in to demo environment!");
+    } else { 
+        info!("Successfully logged in to production environment!"); 
+    }
 
     // Get account information
     let accounts = tasty.accounts().await?;
-    info!("\nFound {} accounts:", accounts.len());
+    info!("Found {} accounts:", accounts.len());
 
     for account in &accounts {
-        info!("\nAccount: {}", account.number().0);
+        info!("Account: {}", account.number().0);
 
         // Get account balance
         let balance = account.balance().await?;
@@ -52,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Get account positions
         let positions = account.positions().await?;
-        info!("\nPositions: {}", positions.len());
+        info!("Positions: {}", positions.len());
 
         for (i, position) in positions.iter().enumerate().take(5) {
             info!("  Position {}: {} - {} {} @ {}",
@@ -70,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Get live orders
         let orders = account.live_orders().await?;
-        info!("\nLive orders: {}", orders.len());
+        info!("Live orders: {}", orders.len());
 
         for (i, order) in orders.iter().enumerate().take(3) {
             info!("  Order {}: {} - {} {} @ {}",
@@ -87,6 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    info!("\nDemo login example completed successfully!");
+    info!("Demo login example completed successfully!");
     Ok(())
 }

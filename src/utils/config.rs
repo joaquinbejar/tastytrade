@@ -1,7 +1,7 @@
 use crate::utils::logger::setup_logger_with_level;
 use crate::{TastyTrade, TastyTradeError};
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, fmt};
 use std::fs;
 use std::path::Path;
 
@@ -36,6 +36,21 @@ pub struct Config {
     pub base_url: String,
     
     pub websocket_url: String,
+}
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Config {{ username: {}, password: [REDACTED], use_demo: {}, log_level: {}, remember_me: {}, base_url: {}, websocket_url: {} }}",
+            self.username,
+            self.use_demo,
+            self.log_level,
+            self.remember_me,
+            self.base_url,
+            self.websocket_url
+        )
+    }
 }
 
 impl Default for Config {
@@ -154,6 +169,8 @@ mod tests {
         assert!(config.use_demo);
         assert_eq!(config.log_level, "DEBUG");
         assert!(config.remember_me);
+        assert_eq!(config.base_url, BASE_DEMO_URL.to_string());
+        assert_eq!(config.websocket_url, WEBSOCKET_DEMO_URL.to_string());
 
         unsafe {
             // Clean up environment
@@ -205,5 +222,34 @@ mod tests {
         assert_eq!(config.use_demo, deserialized.use_demo);
         assert_eq!(config.log_level, deserialized.log_level);
         assert_eq!(config.remember_me, deserialized.remember_me);
+    }
+
+    #[test]
+    fn test_config_from_env_demo_false() {
+        // Set environment variables for testing
+        unsafe {
+            env::set_var("TASTYTRADE_USERNAME", "test_user");
+            env::set_var("TASTYTRADE_PASSWORD", "test_pass");
+            env::set_var("TASTYTRADE_USE_DEMO", "false");
+            env::set_var("LOGLEVEL", "DEBUG");
+            env::set_var("TASTYTRADE_REMEMBER_ME", "false");
+        }
+        let config = Config::from_env();
+        assert_eq!(config.username, "test_user");
+        assert_eq!(config.password, "test_pass");
+        assert!(!config.use_demo);
+        assert_eq!(config.log_level, "DEBUG");
+        assert!(!config.remember_me);
+        assert_eq!(config.base_url, BASE_URL.to_string());
+        assert_eq!(config.websocket_url, WEBSOCKET_URL.to_string());
+
+        unsafe {
+            // Clean up environment
+            env::remove_var("TASTYTRADE_USERNAME");
+            env::remove_var("TASTYTRADE_PASSWORD");
+            env::remove_var("TASTYTRADE_USE_DEMO");
+            env::remove_var("LOGLEVEL");
+            env::remove_var("TASTYTRADE_REMEMBER_ME");
+        }
     }
 }
