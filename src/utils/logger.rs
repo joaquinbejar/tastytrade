@@ -97,8 +97,9 @@ pub fn setup_logger_with_level(log_level: &str) {
     });
 }
 
+#[cfg(test)]
 mod tests_setup_logger {
-    use super::setup_logger;
+    use super::*;
     use std::env;
     use tracing::subscriber::set_global_default;
     use tracing_subscriber::FmtSubscriber;
@@ -158,6 +159,7 @@ mod tests_setup_logger {
     }
 }
 
+#[cfg(test)]
 mod tests_setup_logger_bis {
     use super::*;
     use std::sync::Mutex;

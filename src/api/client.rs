@@ -47,6 +47,8 @@ impl TastyTrade {
     pub async fn login(config: &Config) -> TastyResult<Self> {
         
         let creds = Self::do_login_request(&config.username, &config.password, config.remember_me, &config.base_url).await?;
+        
+        println!("{creds:?}");
         let client = Self::create_client(&creds);
 
         Ok(Self {

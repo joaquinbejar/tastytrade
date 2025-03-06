@@ -1,3 +1,4 @@
+use std::fmt;
 use derive_builder::Builder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,28 @@ pub enum OrderStatus {
     Removed,
     #[serde(rename = "Partially Removed")]
     PartiallyRemoved,
+}
+
+
+
+impl fmt::Display for OrderStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OrderStatus::Received => write!(f, "Received"),
+            OrderStatus::Routed => write!(f, "Routed"),
+            OrderStatus::InFlight => write!(f, "In Flight"),
+            OrderStatus::Live => write!(f, "Live"),
+            OrderStatus::CancelRequested => write!(f, "Cancel Requested"),
+            OrderStatus::ReplaceRequested => write!(f, "Replace Requested"),
+            OrderStatus::Contingent => write!(f, "Contingent"),
+            OrderStatus::Filled => write!(f, "Filled"),
+            OrderStatus::Cancelled => write!(f, "Cancelled"),
+            OrderStatus::Expired => write!(f, "Expired"),
+            OrderStatus::Rejected => write!(f, "Rejected"),
+            OrderStatus::Removed => write!(f, "Removed"),
+            OrderStatus::PartiallyRemoved => write!(f, "Partially Removed"),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

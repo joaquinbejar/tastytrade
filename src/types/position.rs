@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,16 @@ pub enum QuantityDirection {
     Long,
     Short,
     Zero,
+}
+
+impl Display for QuantityDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { 
+            QuantityDirection::Long => write!(f, "Long"),
+            QuantityDirection::Short => write!(f, "Short"),
+            QuantityDirection::Zero => write!(f, "Zero"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

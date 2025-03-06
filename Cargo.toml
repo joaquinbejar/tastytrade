@@ -52,7 +52,8 @@ path = "tests/integration/mod.rs"
 members = [
 	"examples/accounts-status",
 	"examples/quote-streaming",
-	"cli"
+	"cli",
+	"examples/miscellaneous",
 ]
 
 [workspace.dependencies]
