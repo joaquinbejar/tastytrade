@@ -1,7 +1,7 @@
-use std::fmt;
 use derive_builder::Builder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::accounts::AccountNumber;
 
@@ -88,8 +88,6 @@ pub enum OrderStatus {
     #[serde(rename = "Partially Removed")]
     PartiallyRemoved,
 }
-
-
 
 impl fmt::Display for OrderStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

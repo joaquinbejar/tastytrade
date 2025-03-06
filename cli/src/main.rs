@@ -1,41 +1,36 @@
 /******************************************************************************
-    Author: Joaquín Béjar García
-    Email: jb@taunais.com 
-    Date: 5/3/25
- ******************************************************************************/
-
-#![feature(async_closure)]
+   Author: Joaquín Béjar García
+   Email: jb@taunais.com
+   Date: 5/3/25
+******************************************************************************/
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
     event::{self, EventStream, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
 use std::collections::BTreeMap;
 use tui::{
+    Frame, Terminal,
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
-    Frame, Terminal,
 };
 
 use rust_decimal::{
-    prelude::{FromPrimitive, Zero},
     Decimal,
+    prelude::{FromPrimitive, Zero},
 };
+use tastytrade_rs::api::quote_streaming::DxFeedSymbol;
+use tastytrade_rs::streaming::account_streaming::{AccountEvent, AccountMessage};
+use tastytrade_rs::utils::config::Config;
 use tastytrade_rs::{
-    api::{
-        account_streaming::{AccountEvent, AccountMessage},
-        order::Symbol,
-        position::QuantityDirection,
-        quote_streaming::DxFeedSymbol,
-    },
+    QuantityDirection, Symbol, TastyTrade,
     dxfeed::{self, Event, EventData},
-    TastyTrade,
 };
 
 #[derive(Parser, Debug)]
@@ -166,8 +161,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("Logging in...");
-
-    let tasty = TastyTrade::login(&args.login, &args.password, false)
+    let config = Config::from_env();
+    let tasty = TastyTrade::login(&config)
         .await
         .context("Logging into tastytrade")?;
 
@@ -305,8 +300,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         "DELTA",
         "NET LIQ",
     ]
-        .iter()
-        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Red)));
+    .iter()
+    .map(|h| Cell::from(*h).style(Style::default().fg(Color::Red)));
     let header = Row::new(header_cells).style(normal_style).height(1);
 
     let mut total = app.groups.iter().fold(Decimal::zero(), |acc, (_, group)| {
@@ -315,11 +310,11 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 * rec.amount
                 * rec.multiplier
                 * if let QuantityDirection::Short = rec.direction {
-                Decimal::from(-1)
-            } else {
-                Decimal::from(1)
-            })
-                .round_dp(2)
+                    Decimal::from(-1)
+                } else {
+                    Decimal::from(1)
+                })
+            .round_dp(2)
         })
     });
 
@@ -336,11 +331,11 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                         * rec.amount
                         * rec.multiplier
                         * if let QuantityDirection::Short = rec.direction {
-                        Decimal::from(-1)
-                    } else {
-                        Decimal::from(1)
-                    })
-                        .round_dp(2)
+                            Decimal::from(-1)
+                        } else {
+                            Decimal::from(1)
+                        })
+                    .round_dp(2)
                 };
                 let profit = to_net(rec.current - rec.open);
                 profit_sum += profit;
@@ -368,12 +363,12 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                     rec.current.round_dp(2).to_string(),
                     (rec.amount
                         * if let QuantityDirection::Short = rec.direction {
-                        Decimal::from(-1)
-                    } else {
-                        Decimal::from(1)
-                    })
-                        .round_dp(5)
-                        .to_string(),
+                            Decimal::from(-1)
+                        } else {
+                            Decimal::from(1)
+                        })
+                    .round_dp(5)
+                    .to_string(),
                     rec.open.to_string(),
                     profit.to_string(),
                     theta.to_string(),

@@ -1,8 +1,8 @@
+use crate::{ApiError, TastyTradeError};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_with::VecSkipError;
 use serde_with::serde_as;
-use crate::{ApiError, TastyTradeError};
 
 #[derive(thiserror::Error, Debug, Deserialize)]
 #[serde(untagged)]

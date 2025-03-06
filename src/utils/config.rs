@@ -1,9 +1,9 @@
 use crate::utils::logger::setup_logger_with_level;
 use crate::{TastyTrade, TastyTradeError};
 use serde::{Deserialize, Serialize};
-use std::{env, fmt};
 use std::fs;
 use std::path::Path;
+use std::{env, fmt};
 
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
@@ -34,7 +34,7 @@ pub struct Config {
 
     /// Base URL for API requests
     pub base_url: String,
-    
+
     pub websocket_url: String,
 }
 
@@ -130,10 +130,11 @@ impl Config {
     /// Creates a TastyTrade client from the configuration
     pub async fn create_client(&self) -> Result<TastyTrade, TastyTradeError> {
         if !self.has_valid_credentials() {
-            TastyTradeError::ConfigError("Missing TastyTrade credentials. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables or load from config file.".parse().unwrap());
+            "Missing TastyTrade credentials. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD \
+            environment variables or load from config file.".to_string();
         }
 
-        let client = TastyTrade::login(&self).await?;
+        let client = TastyTrade::login(self).await?;
         Ok(client)
     }
 }
@@ -141,6 +142,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
 
     #[test]
@@ -154,6 +156,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env() {
         // Set environment variables for testing
         unsafe {
@@ -225,6 +228,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_config_from_env_demo_false() {
         // Set environment variables for testing
         unsafe {

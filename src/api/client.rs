@@ -2,23 +2,23 @@ use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
 use crate::api::base::Response;
-use crate::api::base::TastyResult;
 use crate::api::base::TastyApiResponse;
+use crate::api::base::TastyResult;
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::login::{LoginCredentials, LoginResponse};
+use crate::utils::config::Config;
 use reqwest::ClientBuilder;
 use reqwest::header;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use crate::utils::config::Config;
 
 pub const BASE_URL: &str = "https://api.tastyworks.com";
 pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 
 #[derive(Debug, Clone)]
-pub struct TastyTrade{
+pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
     pub(crate) config: Config,
@@ -45,9 +45,14 @@ impl<T: DeserializeOwned> FromTastyResponse<Items<T>> for Paginated<T> {
 
 impl TastyTrade {
     pub async fn login(config: &Config) -> TastyResult<Self> {
-        
-        let creds = Self::do_login_request(&config.username, &config.password, config.remember_me, &config.base_url).await?;
-        
+        let creds = Self::do_login_request(
+            &config.username,
+            &config.password,
+            config.remember_me,
+            &config.base_url,
+        )
+        .await?;
+
         println!("{creds:?}");
         let client = Self::create_client(&creds);
 

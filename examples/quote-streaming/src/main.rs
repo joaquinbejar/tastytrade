@@ -1,16 +1,12 @@
-use tastytrade_rs::dxfeed;
-use tastytrade_rs::TastyTrade;
 use dxfeed::EventData::Quote;
+use tastytrade_rs::TastyTrade;
+use tastytrade_rs::dxfeed;
+use tastytrade_rs::utils::config::Config;
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args().skip(1);
-    let username = args.next().unwrap();
-    let password = args.next().unwrap();
-
-    let tasty = TastyTrade::login(&username, &password, false)
-        .await
-        .unwrap();
+    let config = Config::from_env();
+    let tasty = TastyTrade::login(&config).await.unwrap();
 
     let streamer = tasty.create_quote_streamer().await.unwrap();
     streamer.subscribe(&["SPX"]);

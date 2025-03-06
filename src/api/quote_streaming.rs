@@ -2,7 +2,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::TastyTrade;
-use crate::{AsSymbol, InstrumentType, TastyResult, Symbol};
+use crate::{AsSymbol, InstrumentType, Symbol, TastyResult};
 
 impl TastyTrade {
     pub async fn quote_streamer_tokens(&self) -> TastyResult<QuoteStreamerTokens> {

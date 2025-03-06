@@ -17,7 +17,10 @@ impl TastyTrade {
         Ok(resp.items.remove(0))
     }
 
-    pub async fn option_chain_for(&self, symbol: impl Into<Symbol>) -> TastyResult<Vec<OptionChain>> {
+    pub async fn option_chain_for(
+        &self,
+        symbol: impl Into<Symbol>,
+    ) -> TastyResult<Vec<OptionChain>> {
         let resp: Items<OptionChain> = self
             .get(format!("/option-chains/{}", symbol.into().0))
             .await?;

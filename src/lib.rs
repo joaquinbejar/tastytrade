@@ -15,11 +15,14 @@
 //!
 //! ```rust,no_run
 //! use tastytrade_rs::TastyTrade;
+//! use tastytrade_rs::utils::config::Config;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Login to Tastytrade
-//!     let tasty = TastyTrade::login("your_username", "your_password", false).await?;
+//!     
+//!     let config = Config::from_env();
+//!     let tasty = TastyTrade::login(&config).await?;
 //!     
 //!     // Get account information
 //!     let accounts = tasty.accounts().await?;
@@ -43,13 +46,12 @@
 //! // Create a quote streamer
 //! use dxfeed::{Event, EventData};
 //! use tastytrade_rs::{Symbol, TastyTrade};
+//! use tastytrade_rs::utils::config::Config;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let mut args = std::env::args().skip(1);
-//!     let username = args.next().unwrap();
-//!     let password = args.next().unwrap();
-//!     let tasty = TastyTrade::login(&username, &password, false)
+//!     let config = Config::from_env();
+//!     let tasty = TastyTrade::login(&config)
 //!            .await
 //!            .unwrap();
 //!     let mut quote_streamer = tasty.create_quote_streamer().await?;
@@ -182,6 +184,6 @@ pub use api::accounts;
 pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
 pub use dxfeed;
+pub use error::{ApiError, DxFeedError, TastyTradeError};
 pub use types::order::{AsSymbol, InstrumentType, LiveOrderRecord, Symbol};
 pub use types::position::{BriefPosition, FullPosition, QuantityDirection};
-pub use error::{ApiError, DxFeedError, TastyTradeError};

@@ -7,7 +7,10 @@ use super::order::AsSymbol;
 use super::order::Symbol;
 
 impl TastyTrade {
-    pub async fn get_equity_info(&self, symbol: impl AsSymbol) -> TastyResult<EquityInstrumentInfo> {
+    pub async fn get_equity_info(
+        &self,
+        symbol: impl AsSymbol,
+    ) -> TastyResult<EquityInstrumentInfo> {
         self.get(format!("/instruments/equities/{}", symbol.as_symbol().0))
             .await
     }

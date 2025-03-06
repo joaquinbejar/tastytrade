@@ -42,7 +42,7 @@ pub struct AccountInner {
 
 pub struct Account<'t> {
     pub(crate) inner: AccountInner,
-    pub(crate) tasty: &'t TastyTrade<>,
+    pub(crate) tasty: &'t TastyTrade,
 }
 
 impl Account<'_> {

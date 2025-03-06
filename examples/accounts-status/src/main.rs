@@ -1,14 +1,10 @@
 use tastytrade_rs::TastyTrade;
+use tastytrade_rs::utils::config::Config;
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args().skip(1);
-    let username = args.next().unwrap();
-    let password = args.next().unwrap();
-
-    let tasty = TastyTrade::login(&username, &password, false)
-        .await
-        .unwrap();
+    let config = Config::from_env();
+    let tasty = TastyTrade::login(&config).await.unwrap();
 
     let accounts = tasty.accounts().await.unwrap();
     for account in accounts {

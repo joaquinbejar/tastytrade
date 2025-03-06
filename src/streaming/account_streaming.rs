@@ -9,8 +9,6 @@ use crate::{
     accounts::{Account, Balance},
 };
 
-
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubRequestAction {

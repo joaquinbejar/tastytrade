@@ -1,6 +1,6 @@
-use std::fmt::Display;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 use crate::accounts::AccountNumber;
 
@@ -15,7 +15,7 @@ pub enum QuantityDirection {
 
 impl Display for QuantityDirection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { 
+        match self {
             QuantityDirection::Long => write!(f, "Long"),
             QuantityDirection::Short => write!(f, "Short"),
             QuantityDirection::Zero => write!(f, "Zero"),

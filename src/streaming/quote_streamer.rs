@@ -7,8 +7,6 @@ use widestring::WideCString;
 
 const SUCCESS: i32 = dxfeed::DXF_SUCCESS as i32;
 
-
-
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
 

@@ -1,10 +1,10 @@
 // examples/demo_login.rs
 
 use std::env;
-use tracing::info;
-use tastytrade_rs::utils::config::Config;
 use tastytrade_rs::TastyTrade;
+use tastytrade_rs::utils::config::Config;
 use tastytrade_rs::utils::logger::setup_logger;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,13 +27,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
     info!("Configuration loaded, connecting to demo environment...");
 
-
     // Login to the TastyTrade API
     let tasty = TastyTrade::login(&config).await?;
-    if config.use_demo{
+    if config.use_demo {
         info!("Successfully logged in to demo environment!");
-    } else { 
-        info!("Successfully logged in to production environment!"); 
+    } else {
+        info!("Successfully logged in to production environment!");
     }
 
     // Get account information
@@ -47,19 +46,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let balance = account.balance().await?;
         info!("Cash balance: {}", balance.cash_balance);
         info!("Net liquidating value: {}", balance.net_liquidating_value);
-        info!("Maintenance requirement: {}", balance.maintenance_requirement);
+        info!(
+            "Maintenance requirement: {}",
+            balance.maintenance_requirement
+        );
 
         // Get account positions
         let positions = account.positions().await?;
         info!("Positions: {}", positions.len());
 
         for (i, position) in positions.iter().enumerate().take(5) {
-            info!("  Position {}: {} - {} {} @ {}",
-                     i + 1,
-                     position.symbol.0,
-                     position.quantity_direction,
-                     position.quantity,
-                     position.average_open_price
+            info!(
+                "  Position {}: {} - {} {} @ {}",
+                i + 1,
+                position.symbol.0,
+                position.quantity_direction,
+                position.quantity,
+                position.average_open_price
             );
         }
 
@@ -72,12 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Live orders: {}", orders.len());
 
         for (i, order) in orders.iter().enumerate().take(3) {
-            info!("  Order {}: {} - {} {} @ {}",
-                     i + 1,
-                     order.underlying_symbol.0,
-                     order.status,
-                     order.size,
-                     order.price
+            info!(
+                "  Order {}: {} - {} {} @ {}",
+                i + 1,
+                order.underlying_symbol.0,
+                order.status,
+                order.size,
+                order.price
             );
         }
 

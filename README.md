@@ -17,11 +17,14 @@ trading functionality, market data, and account information.
 
 ```rust
 use tastytrade_rs::TastyTrade;
+use tastytrade_rs::utils::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Login to Tastytrade
-    let tasty = TastyTrade::login("your_username", "your_password", false).await?;
+
+    let config = Config::from_env();
+    let tasty = TastyTrade::login(&config).await?;
 
     // Get account information
     let accounts = tasty.accounts().await?;
@@ -45,13 +48,12 @@ The library supports real-time data streaming for both market data and account u
 // Create a quote streamer
 use dxfeed::{Event, EventData};
 use tastytrade_rs::{Symbol, TastyTrade};
+use tastytrade_rs::utils::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let username = args.next().unwrap();
-    let password = args.next().unwrap();
-    let tasty = TastyTrade::login(&username, &password, false)
+    let config = Config::from_env();
+    let tasty = TastyTrade::login(&config)
            .await
            .unwrap();
     let mut quote_streamer = tasty.create_quote_streamer().await?;
