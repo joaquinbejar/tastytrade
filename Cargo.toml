@@ -1,10 +1,10 @@
 [package]
-name = "tastytrade-rs"
+name = "tastytrade"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Library for trading through tastytrade's API"
-repository = "https://github.com/joaquinbejar/tastytrade-rs"
+repository = "https://github.com/joaquinbejar/tastytrade"
 
 include = [
 	"benches/**/*",
@@ -37,7 +37,7 @@ tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
 tokio = { version = "1.28.1", features = ["full"] }
 futures-util = "0.3.28"
 erased-serde = "0.4.6"
-dxfeed = "0.2.1"
+dxfeed = "0.2.3"
 chrono = { version = "0.4.31", features = ["serde"] }
 serde_with = "3.4.0"
 tracing = "0.1.41"
@@ -60,4 +60,4 @@ members = [
 ]
 
 [workspace.dependencies]
-tastytrade-rs = { path = "." }
+tastytrade = { path = "." }

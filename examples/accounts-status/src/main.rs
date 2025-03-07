@@ -1,5 +1,5 @@
-use tastytrade_rs::TastyTrade;
-use tastytrade_rs::utils::config::Config;
+use tastytrade::TastyTrade;
+use tastytrade::utils::config::Config;
 
 #[tokio::main]
 async fn main() {

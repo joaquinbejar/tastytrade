@@ -5,5 +5,5 @@ edition = "2024"
 
 
 [dependencies]
-tastytrade-rs = { path = "../.." }
+tastytrade = { path = "../.." }
 tokio = { version = "1.28.1", features = ["full"] }

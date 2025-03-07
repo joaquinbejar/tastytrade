@@ -13,7 +13,7 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct TastyTrade {
@@ -74,7 +74,7 @@ impl TastyTrade {
         );
         headers.insert(
             header::USER_AGENT,
-            HeaderValue::from_str("tastytrade-rs").unwrap(),
+            HeaderValue::from_str("tastytrade").unwrap(),
         );
 
         ClientBuilder::new()
@@ -94,7 +94,7 @@ impl TastyTrade {
         let resp = client
             .post(format!("{base_url}/sessions"))
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::USER_AGENT, "tastytrade-rs")
+            .header(header::USER_AGENT, "tastytrade")
             .json(&LoginCredentials {
                 login,
                 password,
@@ -219,6 +219,7 @@ impl TastyTrade {
 
     /// Creates a connection to DxFeed for market data.
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
+        debug!("Session token: {}", self.session_token);
         QuoteStreamer::connect(self).await
     }
 }

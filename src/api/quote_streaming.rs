@@ -1,12 +1,44 @@
+use crate::TastyTrade;
+use crate::api::base::TastyApiResponse;
+use crate::{AsSymbol, InstrumentType, Symbol, TastyResult};
 use serde::Deserialize;
 use serde::Serialize;
-
-use crate::TastyTrade;
-use crate::{AsSymbol, InstrumentType, Symbol, TastyResult};
+use tracing::{debug, error};
 
 impl TastyTrade {
     pub async fn quote_streamer_tokens(&self) -> TastyResult<QuoteStreamerTokens> {
-        self.get("/quote-streamer-tokens").await
+        let url = format!("{}/api-quote-tokens", self.config.base_url);
+        debug!("Requesting quote streamer tokens from: {}", url);
+
+        // Hacer la solicitud HTTP directamente para poder examinar la respuesta
+        let response = self.client.get(&url).send().await?;
+
+        // Verificar el código de estado
+        let status = response.status();
+        debug!("Response status: {}", status);
+
+        if !status.is_success() {
+            error!("Failed to get quote streamer tokens: HTTP {}", status);
+            let text = response.text().await?;
+            error!("Response body: {}", text);
+            return Err(crate::TastyTradeError::Connection(format!(
+                "Failed to get quote streamer tokens: HTTP {}, Body: {}",
+                status, text
+            )));
+        }
+
+        // Intentar decodificar la respuesta como JSON
+        let text = response.text().await?;
+        debug!("Response body: {}", text);
+
+        match serde_json::from_str::<TastyApiResponse<QuoteStreamerTokens>>(&text) {
+            Ok(TastyApiResponse::Success(s)) => Ok(s.data),
+            Ok(TastyApiResponse::Error { error }) => Err(error.into()),
+            Err(e) => {
+                error!("Failed to parse response: {}", e);
+                Err(crate::TastyTradeError::Json(e))
+            }
+        }
     }
 }
 
@@ -14,8 +46,8 @@ impl TastyTrade {
 #[serde(rename_all = "kebab-case")]
 pub struct QuoteStreamerTokens {
     pub token: String,
+    #[serde(rename = "dxlink-url")]
     pub streamer_url: String,
-    pub websocket_url: String,
     pub level: String,
 }
 

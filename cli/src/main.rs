@@ -25,10 +25,10 @@ use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, Zero},
 };
-use tastytrade_rs::api::quote_streaming::DxFeedSymbol;
-use tastytrade_rs::streaming::account_streaming::{AccountEvent, AccountMessage};
-use tastytrade_rs::utils::config::Config;
-use tastytrade_rs::{
+use tastytrade::api::quote_streaming::DxFeedSymbol;
+use tastytrade::streaming::account_streaming::{AccountEvent, AccountMessage};
+use tastytrade::utils::config::Config;
+use tastytrade::{
     QuantityDirection, Symbol, TastyTrade,
     dxfeed::{self, Event, EventData},
 };

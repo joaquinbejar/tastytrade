@@ -1,6 +1,6 @@
-//! # tastytrade-rs
+//! # tastytrade
 //!
-//! `tastytrade-rs` is a Rust client library for the Tastytrade API, providing programmatic access to
+//! `tastytrade` is a Rust client library for the Tastytrade API, providing programmatic access to
 //! trading functionality, market data, and account information.
 //!
 //! ## Features
@@ -14,8 +14,8 @@
 //! ## Usage
 //!
 //! ```rust,no_run
-//! use tastytrade_rs::TastyTrade;
-//! use tastytrade_rs::utils::config::Config;
+//! use tastytrade::TastyTrade;
+//! use tastytrade::utils::config::Config;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,8 +45,8 @@
 //! ```rust,no_run
 //! // Create a quote streamer
 //! use dxfeed::{Event, EventData};
-//! use tastytrade_rs::{Symbol, TastyTrade};
-//! use tastytrade_rs::utils::config::Config;
+//! use tastytrade::{Symbol, TastyTrade};
+//! use tastytrade::utils::config::Config;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,8 +77,8 @@
 //!  
 //!  1. Clone the repository:
 //!  ```shell
-//!  git clone https://github.com/joaquinbejar/tastytrade-rs
-//!  cd tastytrade-rs
+//!  git clone https://github.com/joaquinbejar/tastytrade
+//!  cd tastytrade
 //!  ```
 //!  
 //!  2. Build the project:
@@ -185,6 +185,8 @@ pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
 pub use dxfeed;
 pub use error::{ApiError, DxFeedError, TastyTradeError};
+pub use types::order::{
+    Action, Order, OrderBuilder, OrderLeg, OrderLegBuilder, OrderType, PriceEffect, TimeInForce,
+};
 pub use types::order::{AsSymbol, InstrumentType, LiveOrderRecord, Symbol};
 pub use types::position::{BriefPosition, FullPosition, QuantityDirection};
-pub use types::order::{Action, TimeInForce, OrderType, PriceEffect, OrderLeg, Order, OrderBuilder, OrderLegBuilder};

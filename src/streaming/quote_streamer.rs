@@ -102,7 +102,6 @@ impl QuoteStreamer {
         let mut this = Self {
             host: tokens.streamer_url,
             token: tokens.token,
-
             connection: std::ptr::null_mut(),
             subscriptions: HashMap::new(),
             next_sub_id: 0,

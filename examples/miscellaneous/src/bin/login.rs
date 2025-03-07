@@ -1,9 +1,7 @@
-// examples/demo_login.rs
-
 use std::env;
-use tastytrade_rs::TastyTrade;
-use tastytrade_rs::utils::config::Config;
-use tastytrade_rs::utils::logger::setup_logger;
+use tastytrade::TastyTrade;
+use tastytrade::utils::config::Config;
+use tastytrade::utils::logger::setup_logger;
 use tracing::info;
 
 #[tokio::main]

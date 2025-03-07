@@ -1,7 +1,7 @@
 use dxfeed::EventData::Quote;
-use tastytrade_rs::TastyTrade;
-use tastytrade_rs::dxfeed;
-use tastytrade_rs::utils::config::Config;
+use tastytrade::TastyTrade;
+use tastytrade::dxfeed;
+use tastytrade::utils::config::Config;
 
 #[tokio::main]
 async fn main() {

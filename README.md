@@ -1,8 +1,8 @@
-# tastytrade-rs
+# tastytrade
 
-## tastytrade-rs
+## tastytrade
 
-`tastytrade-rs` is a Rust client library for the Tastytrade API, providing programmatic access to
+`tastytrade` is a Rust client library for the Tastytrade API, providing programmatic access to
 trading functionality, market data, and account information.
 
 ### Features
@@ -16,8 +16,8 @@ trading functionality, market data, and account information.
 ### Usage
 
 ```rust
-use tastytrade_rs::TastyTrade;
-use tastytrade_rs::utils::config::Config;
+use tastytrade::TastyTrade;
+use tastytrade::utils::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,8 +47,8 @@ The library supports real-time data streaming for both market data and account u
 ```rust
 // Create a quote streamer
 use dxfeed::{Event, EventData};
-use tastytrade_rs::{Symbol, TastyTrade};
-use tastytrade_rs::utils::config::Config;
+use tastytrade::{Symbol, TastyTrade};
+use tastytrade::utils::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,8 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
  1. Clone the repository:
  ```shell
- git clone https://github.com/joaquinbejar/tastytrade-rs
- cd tastytrade-rs
+ git clone https://github.com/joaquinbejar/tastytrade
+ cd tastytrade
  ```
 
  2. Build the project:
