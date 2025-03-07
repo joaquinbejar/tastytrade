@@ -12,6 +12,16 @@ pub enum PriceEffect {
     None,
 }
 
+impl fmt::Display for PriceEffect {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            PriceEffect::Debit => write!(f, "Debit"),
+            PriceEffect::Credit => write!(f, "Credit"),
+            PriceEffect::None => write!(f, "None"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum Action {
     #[serde(rename = "Buy to Open")]

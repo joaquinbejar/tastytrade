@@ -13,9 +13,7 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-
-pub const BASE_URL: &str = "https://api.tastyworks.com";
-pub const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct TastyTrade {
@@ -53,7 +51,7 @@ impl TastyTrade {
         )
         .await?;
 
-        println!("{creds:?}");
+        info!("{creds:?}");
         let client = Self::create_client(&creds);
 
         Ok(Self {

@@ -13,3 +13,4 @@ rust_decimal = { version = "1.29.1", features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
 ] }
+derive_builder = "0.20.2"
