@@ -105,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // List some popular equity symbols as examples
-    info!("\nQuerying information for some popular symbols:");
+    info!("Querying information for some popular symbols:");
     let popular_symbols = vec!["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"];
 
     for symbol in popular_symbols {
