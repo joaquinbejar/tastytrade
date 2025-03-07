@@ -4,7 +4,6 @@
     Date: 7/3/25
  ******************************************************************************/
 
-// examples/list_available_symbols.rs
 
 use std::env;
 use tastytrade_rs::{AsSymbol, TastyTrade};
