@@ -4,7 +4,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum InstrumentType {
@@ -24,7 +23,6 @@ pub enum InstrumentType {
     /// Represents a cryptocurrency instrument.
     Cryptocurrency,
 }
-
 
 /// Represents equity instrument information.
 ///
