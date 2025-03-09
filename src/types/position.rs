@@ -26,7 +26,6 @@ impl Display for QuantityDirection {
     }
 }
 
-
 /// Represents a full position for an account.
 ///
 /// This struct provides detailed information about a specific position held in an account, including
@@ -91,8 +90,6 @@ pub struct FullPosition {
     /// The date and time when the position was last updated.
     pub updated_at: String,
 }
-
-
 
 /// Represents a brief overview of a position.
 ///
