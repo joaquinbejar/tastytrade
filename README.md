@@ -42,13 +42,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Real-time Data
 
-The library supports real-time data streaming for both market data and account updates:
+The library supports real-time data streaming for both market data and account updates using DXLink:
 
 ```rust
 // Create a quote streamer
-use dxfeed::{Event, EventData};
 use tastytrade::{Symbol, TastyTrade};
 use tastytrade::utils::config::Config;
+use dxfeed::{Event, EventData};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
            .await
            .unwrap();
     let mut quote_streamer = tasty.create_quote_streamer().await?;
-    let quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
+    let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
 
     // Add symbols to subscribe to
     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]);
