@@ -4,6 +4,7 @@
    Date: 5/3/25
 ******************************************************************************/
 
+pub(crate) mod balance;
 pub(crate) mod event;
 pub(crate) mod instrument;
 pub(crate) mod login;
