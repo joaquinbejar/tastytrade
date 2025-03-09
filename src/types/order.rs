@@ -346,7 +346,7 @@ pub struct OrderLeg {
 ///
 /// This structure encapsulates the details of a placed order, including the order record itself,
 /// any warnings generated during order placement, the effect of the order on buying power, and
-/// the fee calculation associated with the order.  The `#[serde(...)]` attributes control how 
+/// the fee calculation associated with the order.  The `#[serde(...)]` attributes control how
 /// the struct is serialized and deserialized, ensuring compatibility with the Tastyworks API.
 pub struct OrderPlacedResult {
     /// The details of the placed order.
