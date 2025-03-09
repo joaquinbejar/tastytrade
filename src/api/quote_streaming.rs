@@ -1,6 +1,7 @@
 use crate::TastyTrade;
 use crate::api::base::TastyApiResponse;
-use crate::{AsSymbol, InstrumentType, Symbol, TastyResult};
+use crate::types::instrument::InstrumentType;
+use crate::{AsSymbol, Symbol, TastyResult};
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::{debug, error};

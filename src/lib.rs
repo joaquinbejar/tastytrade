@@ -185,8 +185,9 @@ pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
 pub use dxfeed;
 pub use error::{ApiError, DxFeedError, TastyTradeError};
+pub use types::instrument::InstrumentType;
 pub use types::order::{
     Action, Order, OrderBuilder, OrderLeg, OrderLegBuilder, OrderType, PriceEffect, TimeInForce,
 };
-pub use types::order::{AsSymbol, InstrumentType, LiveOrderRecord, Symbol};
+pub use types::order::{AsSymbol, LiveOrderRecord, Symbol};
 pub use types::position::{BriefPosition, FullPosition, QuantityDirection};
