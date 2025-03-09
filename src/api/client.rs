@@ -217,7 +217,6 @@ impl TastyTrade {
         Ok(None)
     }
 
-    /// Creates a connection to DxFeed for market data.
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         debug!("Session token: {}", self.session_token);
         QuoteStreamer::connect(self).await

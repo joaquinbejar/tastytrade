@@ -125,7 +125,18 @@ impl From<io::Error> for TastyTradeError {
     }
 }
 
-// Helper methods for error handling
+impl From<dxlink::DXLinkError> for TastyTradeError {
+    fn from(err: dxlink::DXLinkError) -> Self {
+        match err {
+            dxlink::DXLinkError::Authentication(e) => Self::Auth(e),
+            dxlink::DXLinkError::Connection(e) => Self::Connection(e),
+            dxlink::DXLinkError::WebSocket(e) => Self::WebSocket(e),
+            dxlink::DXLinkError::Serialization(e) => Self::Json(e),
+            _ => Self::Streaming(format!("DXLink error: {}", err)),
+        }
+    }
+}
+
 impl TastyTradeError {
     pub fn auth_error(msg: impl Into<String>) -> Self {
         Self::Auth(msg.into())
