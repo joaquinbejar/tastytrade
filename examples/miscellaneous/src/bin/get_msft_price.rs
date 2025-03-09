@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create subscription
     debug!("Creating subscription with flags: {}", dxfeed::DXF_ET_QUOTE);
-    let quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+    let quote_sub = &mut *quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE);
     debug!("Subscription created successfully");
 
     // Get streamer symbol

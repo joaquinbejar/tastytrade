@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Quote streamer created successfully");
 
     info!("Creating subscription with flags: {}", dxfeed::DXF_ET_QUOTE);
-    let quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+    let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
     info!("Subscription created successfully");
 
     info!(
