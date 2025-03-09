@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use crate::types::balance::Balance;
 use crate::{
-    BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, TastyTradeError,
-    accounts::{Account, Balance},
+    BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, TastyTradeError, accounts::Account,
 };
 use dxlink::{DXLinkClient, EventType, FeedSubscription};
 use futures_util::{SinkExt, StreamExt};
