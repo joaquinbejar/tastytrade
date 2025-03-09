@@ -19,9 +19,9 @@ pub struct LoginCredentials<'a> {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-/// Represents a user in a login response.  This struct is used for deserializing the JSON response 
-/// received after a successful login.  The `#[serde(rename_all = "kebab-case")]` attribute ensures 
-/// that the fields in the JSON response are matched to the struct fields correctly, even if the 
+/// Represents a user in a login response.  This struct is used for deserializing the JSON response
+/// received after a successful login.  The `#[serde(rename_all = "kebab-case")]` attribute ensures
+/// that the fields in the JSON response are matched to the struct fields correctly, even if the
 /// casing is different (e.g., "external-id" in JSON will map to `external_id` in the struct).
 pub struct LoginResponseUser {
     /// The user's email address.
