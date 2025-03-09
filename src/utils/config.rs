@@ -18,23 +18,18 @@ const WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
 pub struct Config {
     /// TastyTrade API username/email
     pub username: String,
-
     /// TastyTrade API password
     #[serde(skip_serializing, default)]
     pub password: String,
-
     /// Whether to use demo/cert environment
     pub use_demo: bool,
-
     /// Log level: "INFO", "DEBUG", "WARN", "ERROR", "TRACE"
     pub log_level: String,
-
     /// Whether to remember login session
     pub remember_me: bool,
-
     /// Base URL for API requests
     pub base_url: String,
-
+    /// Websocket URL.
     pub websocket_url: String,
 }
 
