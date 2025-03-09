@@ -464,20 +464,21 @@ impl Drop for AccountStreamer {
     }
 }
 
-/// Creates a new `AccountStreamer` instance.
-///
-/// This function establishes a connection to the TastyTrade streaming API for account updates.
-/// It uses DXLink for enhanced streaming capabilities and falls back to a legacy
-/// implementation if DXLink setup fails.  A background task is spawned to handle
-/// incoming account events and dispatch them through the returned `event_receiver`.
-/// Another task manages outgoing actions (subscriptions, heartbeats) via the `action_sender`.
-///
-/// # Errors
-///
-/// Returns a `TastyTradeError` if there is an issue connecting to the streaming API
-/// or setting up the DXLink channel.
-///
+
 impl TastyTrade {
+    
+    /// Creates a new `AccountStreamer`.
+    ///
+    /// This function attempts to establish a connection to the TastyTrade streaming API
+    /// for account updates.  It prioritizes using DXLink, a newer and more robust
+    /// streaming solution. If DXLink connection fails, it falls back to a legacy
+    /// websocket implementation.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(AccountStreamer)` - If the connection is successful, returns an
+    ///   `AccountStreamer` instance, which can be used to receive account events.
+    /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.
     pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
     }
