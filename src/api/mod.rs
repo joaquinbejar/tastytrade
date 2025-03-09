@@ -4,4 +4,5 @@ pub mod client;
 
 pub mod option_chain;
 
+pub mod instrument;
 pub mod quote_streaming;

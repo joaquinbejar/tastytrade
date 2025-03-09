@@ -1,9 +1,9 @@
+use crate::accounts::AccountNumber;
+use crate::types::instrument::InstrumentType;
 use derive_builder::Builder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
-use crate::accounts::AccountNumber;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum PriceEffect {
@@ -34,19 +34,6 @@ pub enum Action {
     SellToClose,
     Sell,
     Buy,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum InstrumentType {
-    Equity,
-    #[serde(rename = "Equity Option")]
-    EquityOption,
-    #[serde(rename = "Equity Offering")]
-    EquityOffering,
-    Future,
-    #[serde(rename = "Future Option")]
-    FutureOption,
-    Cryptocurrency,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

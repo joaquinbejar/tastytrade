@@ -1,10 +1,9 @@
+use super::order::{PriceEffect, Symbol};
+use crate::accounts::AccountNumber;
+use crate::types::instrument::InstrumentType;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-
-use crate::accounts::AccountNumber;
-
-use super::order::{InstrumentType, PriceEffect, Symbol};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub enum QuantityDirection {
