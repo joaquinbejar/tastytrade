@@ -7,26 +7,26 @@ description = "Library for trading through tastytrade's API"
 repository = "https://github.com/joaquinbejar/tastytrade"
 
 include = [
-	"benches/**/*",
-	"src/**/*",
-	"Cargo.toml",
-	"README.md",
-	"LICENSE",
-	"examples/**/*.rs",
-	"tests/**/*.rs",
-	"Makefile",
-	"rust-toolchain.toml",
-	"Draws/**/*.png",
-	"Docker/**/*.Dockerfile",
-	"Docker/**/*.yml",
+    "benches/**/*",
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+    "examples/**/*.rs",
+    "tests/**/*.rs",
+    "Makefile",
+    "rust-toolchain.toml",
+    "Draws/**/*.png",
+    "Docker/**/*.Dockerfile",
+    "Docker/**/*.yml",
 ]
 
 [dependencies]
 derive_builder = "0.20"
 reqwest = { version = "0.12", features = ["json"] }
 rust_decimal = { version = "1.37", features = [
-	"serde-with-arbitrary-precision",
-	"serde-with-float",
+    "serde-with-arbitrary-precision",
+    "serde-with-float",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -36,7 +36,7 @@ tokio-tungstenite = { version = "0.27", features = ["native-tls"] }
 tokio = { version = "1.47", features = ["full"] }
 futures-util = "0.3"
 erased-serde = "0.4"
-dxfeed = { path = "./dxfeed" }
+dxfeed = { git = "https://github.com/joaquinbejar/dxfeed-rs.git", branch = "main" }
 dxlink = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.14"
@@ -53,12 +53,10 @@ path = "tests/integration/mod.rs"
 
 [workspace]
 members = [
-	"examples/accounts-status",
-	"examples/quote-streaming",
-	"cli",
-	"examples/miscellaneous",
-	"dxfeed",
-	"libdxfeed-sys",
+    "examples/accounts-status",
+    "examples/quote-streaming",
+    "cli",
+    "examples/miscellaneous",
 ]
 
 [workspace.dependencies]
