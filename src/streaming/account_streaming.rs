@@ -44,13 +44,12 @@ struct SubRequest<T> {
     value: Option<T>,
 }
 
-
 /// Represents an action to be performed by a handler.
-/// 
+///
 /// This struct encapsulates both the type of action to be executed and an optional
 /// value associated with that action.  The value is dynamically typed and serializable,
 /// allowing for flexibility in the data passed along with the action.
-/// 
+///
 pub struct HandlerAction {
     /// The specific action to be performed.
     action: SubRequestAction,
@@ -151,11 +150,10 @@ pub enum AccountEvent {
     AccountMessage(Box<AccountMessage>),
 }
 
-
 /**
 Represents a command that can be sent to a DXLink service.
 
-This enum defines the different types of commands that can be used to interact with a DXLink service, 
+This enum defines the different types of commands that can be used to interact with a DXLink service,
 primarily for managing subscriptions to data feeds.
 */
 enum DXLinkCommand {
@@ -172,16 +170,14 @@ enum DXLinkCommand {
     #[allow(dead_code)]
     Unsubscribe(u32, Vec<FeedSubscription>),
 
-
     /// Disconnects from the DXLink service.
     Disconnect,
 }
 
-
 /// AccountStreamer struct.
-/// 
+///
 /// Provides a way to stream account events. Uses DXLink for communication.
-/// 
+///
 #[derive(Debug)]
 pub struct AccountStreamer {
     /// Receiver for account events.
@@ -195,7 +191,6 @@ pub struct AccountStreamer {
 }
 
 impl AccountStreamer {
-
     /// Establishes a connection to the TastyTrade streaming API for account updates.
     ///
     /// This function initializes and manages two separate streaming connections:
@@ -464,9 +459,7 @@ impl Drop for AccountStreamer {
     }
 }
 
-
 impl TastyTrade {
-    
     /// Creates a new `AccountStreamer`.
     ///
     /// This function attempts to establish a connection to the TastyTrade streaming API

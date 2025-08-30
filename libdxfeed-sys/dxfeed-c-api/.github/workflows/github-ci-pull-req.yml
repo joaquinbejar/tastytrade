@@ -1,0 +1,238 @@
+on:
+  pull_request:
+    types: [ opened, reopened, synchronize ]
+
+name: Build
+
+env:
+  DOCS_ARTIFACT_TEMPLATE: dxfeed-c-api-%VERSION%-docs
+  MAC_ARTIFACT_TEMPLATE: dxfeed-c-api-%VERSION%-macosx
+  LINUX_ARTIFACT_TEMPLATE: dxfeed-c-api-%VERSION%-linux
+  CENTOS_ARTIFACT_TEMPLATE: dxfeed-c-api-%VERSION%-centos
+  WINDOWS_ARTIFACT_TEMPLATE: dxfeed-c-api-#VERSION#-windows
+  RELEASE_PREFIX: "dxFeed C API "
+  BUILD_VERSION: 0.0.0-pr
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    name: build and run tests
+    steps:
+      - uses: actions/checkout@main
+      - name: Test
+        run: |
+          mkdir build-test
+          cd build-test
+          cmake -DCMAKE_BUILD_TYPE=Release -DDISABLE_TLS=ON -DTARGET_PLATFORM=x64 -DDXFC_BUILD_UNIT_TESTS=ON ..
+          cmake --build . --config Release
+          ctest -C Release
+        env:
+          CTEST_OUTPUT_ON_FAILURE: True
+
+  # --------------------------- BUILD DOCUMENTATION
+  build_docs:
+    runs-on: ubuntu-latest
+    name: build documentation
+    steps:
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${DOCS_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g") >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - uses: actions/checkout@main
+      - name: Build documentation
+        uses: ./.github/actions/doxygen
+        id: build-docs
+        with:
+          artifact: ${{ env.ARTIFACT }}
+          release: ${{ env.RELEASE_VERSION }}
+
+  # --------------------------- BUILD LINUX LIBRARY (WITH TLS SUPPORT)
+  build_linux_tls:
+    runs-on: ubuntu-latest
+    name: build linux (TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${LINUX_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - name: Build Linux library (TLS)
+        run: |
+          ./make_package.sh ${{ env.RELEASE_VERSION }} no-test
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}.zip build/${{ env.ARTIFACT }}.zip
+          ls ./build
+
+  # --------------------------- BUILD LINUX LIBRARY (WITHOUT TLS SUPPORT)
+  build_linux_no_tls:
+    runs-on: ubuntu-latest
+    name: build linux (no TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${LINUX_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - name: Build Linux library (no TLS)
+        run: |
+          ./make_package.sh ${{ env.RELEASE_VERSION }} no-test no-tls
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}-no-tls.zip build/${{ env.ARTIFACT }}-no-tls.zip
+          ls ./build
+
+  # --------------------------- BUILD OLD LINUX (CENTOS 7) LIBRARY (WITH TLS SUPPORT)
+  build_centos_tls:
+    runs-on: ubuntu-latest
+    name: build centos (TLS)
+    steps:
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${CENTOS_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - uses: actions/checkout@main
+      - name: Build centos library (TLS)
+        uses: ./.github/actions/centos
+        id: build-centos
+        with:
+          artifact: ${{ env.ARTIFACT }}
+          release: ${{ env.RELEASE_VERSION }}
+
+  # --------------------------- BUILD OLD LINUX (CENTOS 7) LIBRARY (WITHOUT TLS SUPPORT)
+  build_centos_no_tls:
+    runs-on: ubuntu-latest
+    name: build centos (no TLS)
+    steps:
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${CENTOS_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - uses: actions/checkout@main
+      - name: Build centos library (no TLS)
+        uses: ./.github/actions/centos
+        id: build-centos-nt
+        with:
+          artifact: ${{ env.ARTIFACT }}
+          release: ${{ env.RELEASE_VERSION }}
+          notls: true
+
+  # --------------------------- BUILD MACOSX LIBRARY (WITH TLS SUPPORT)
+  build_macos_tls:
+    runs-on: macos-latest
+    name: build macos (TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${MAC_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - name: Prepare tools
+        run: |
+          brew install p7zip
+      - name: Build MacOSX library (TLS)
+        run: |
+          ./make_package.sh ${{ env.RELEASE_VERSION }} no-test
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}.zip build/${{ env.ARTIFACT }}.zip
+          ls ./build
+
+  # --------------------------- BUILD MACOSX LIBRARY (WITHOUT TLS SUPPORT)
+  build_macos_no_tls:
+    runs-on: macos-latest
+    name: build macos (no TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=${BUILD_VERSION} >> $GITHUB_ENV
+          echo ARTIFACT=$(echo ${MAC_ARTIFACT_TEMPLATE} | sed "s/%VERSION%/${BUILD_VERSION}/g" ) >> $GITHUB_ENV
+      - name: Check env
+        run: |
+          echo Artifact: ${{ env.ARTIFACT }}
+          echo Release : ${{ env.RELEASE_VERSION }}
+      - name: Prepare tools
+        run: |
+          brew install p7zip
+      - name: Build MacOSX library (no TLS)
+        run: |
+          ./make_package.sh ${{ env.RELEASE_VERSION }} no-test no-tls
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}-no-tls.zip build/${{ env.ARTIFACT }}-no-tls.zip
+          ls ./build
+
+  # --------------------------- BUILD WIN LIBRARY (WITH TLS SUPPORT)
+  build_win_tls:
+    runs-on: windows-2022
+    name: build windows (TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=$("$Env:BUILD_VERSION") | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+          echo ARTIFACT=$(echo $Env:WINDOWS_ARTIFACT_TEMPLATE | %{$_ -replace '#VERSION#', $Env:BUILD_VERSION }) | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+      - name: Check env
+        run: |
+          echo "RELEASE    : ${{ env.RELEASE_VERSION }}"
+          echo "ARTIFACT   : ${{ env.ARTIFACT }}"
+      - name: Build Windows library (TLS)
+        run: |
+          ./make_package.bat ${{ env.RELEASE_VERSION }} no-test vs2022
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}.zip build/${{ env.ARTIFACT }}.zip
+          ls ./build
+
+  # --------------------------- BUILD WIN LIBRARY (WITHOUT TLS SUPPORT)
+  build_win_no_tls:
+    runs-on: windows-2022
+    name: build windows (no TLS)
+    steps:
+      - uses: actions/checkout@main
+      - name: Set env
+        run: |
+          echo RELEASE_VERSION=$("$Env:BUILD_VERSION") | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+          echo ARTIFACT=$(echo $Env:WINDOWS_ARTIFACT_TEMPLATE | %{$_ -replace '#VERSION#', $Env:BUILD_VERSION }) | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
+      - name: Check env
+        run: |
+          echo "RELEASE    : ${{ env.RELEASE_VERSION }}"
+          echo "ARTIFACT   : ${{ env.ARTIFACT }}"
+      - name: Build Windows library (no TLS)
+        run: |
+          ./make_package.bat ${{ env.RELEASE_VERSION }} no-test no-tls vs2022
+      - name: Post build
+        run: |
+          ls ./build
+          mv build/dxfeed-c-api-${{ env.RELEASE_VERSION }}-no-tls.zip build/${{ env.ARTIFACT }}-no-tls.zip
+          ls ./build

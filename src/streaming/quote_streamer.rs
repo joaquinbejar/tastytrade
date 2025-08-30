@@ -91,13 +91,12 @@ impl QuoteSubscription {
             // Now we're safe to await since we no longer hold the MutexGuard
             if let (Some(channel_id), Some(tx)) = (channel_id, tx) {
                 // Send subscribe command through the channel
-                if !subscriptions_clone.is_empty() {
-                    if let Err(e) = tx
+                if !subscriptions_clone.is_empty()
+                    && let Err(e) = tx
                         .send(DXLinkCommand::Subscribe(channel_id, subscriptions_clone))
                         .await
-                    {
-                        error!("Failed to send subscription command: {}", e);
-                    }
+                {
+                    error!("Failed to send subscription command: {}", e);
                 }
             }
         });
@@ -185,20 +184,20 @@ impl Clone for QuoteSubscription {
         let (tx, rx) = mpsc::channel(100);
 
         // Register this new channel with the streamer
-        if let Ok(streamer) = self.streamer.lock() {
-            if let Some(cmd_tx) = &streamer.dxlink_command_tx {
-                let cmd_tx_clone = cmd_tx.clone();
-                let sub_id = self.id.0;
+        if let Ok(streamer) = self.streamer.lock()
+            && let Some(cmd_tx) = &streamer.dxlink_command_tx
+        {
+            let cmd_tx_clone = cmd_tx.clone();
+            let sub_id = self.id.0;
 
-                tokio::spawn(async move {
-                    if let Err(e) = cmd_tx_clone
-                        .send(DXLinkCommand::AddEventSender(sub_id as u32, tx))
-                        .await
-                    {
-                        error!("Failed to register cloned event sender: {}", e);
-                    }
-                });
-            }
+            tokio::spawn(async move {
+                if let Err(e) = cmd_tx_clone
+                    .send(DXLinkCommand::AddEventSender(sub_id as u32, tx))
+                    .await
+                {
+                    error!("Failed to register cloned event sender: {}", e);
+                }
+            });
         }
 
         Self {
@@ -486,13 +485,12 @@ impl QuoteStreamer {
                     }
 
                     // Unsubscribe from symbols
-                    if !requests.is_empty() {
-                        if let Err(e) = tx_clone
+                    if !requests.is_empty()
+                        && let Err(e) = tx_clone
                             .send(DXLinkCommand::Unsubscribe(channel, requests))
                             .await
-                        {
-                            error!("Error sending unsubscribe command: {}", e);
-                        }
+                    {
+                        error!("Error sending unsubscribe command: {}", e);
                     }
                 });
             }

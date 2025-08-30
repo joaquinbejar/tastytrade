@@ -194,7 +194,7 @@ impl TastyTrade {
         }
     }
 
-    pub async fn accounts(&self) -> TastyResult<Vec<Account>> {
+    pub async fn accounts(&self) -> TastyResult<Vec<Account<'_>>> {
         let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
         Ok(resp
             .items
@@ -206,7 +206,7 @@ impl TastyTrade {
     pub async fn account(
         &self,
         account_number: impl Into<AccountNumber>,
-    ) -> TastyResult<Option<Account>> {
+    ) -> TastyResult<Option<Account<'_>>> {
         let account_number = account_number.into();
         let accounts = self.accounts().await?;
         for account in accounts {

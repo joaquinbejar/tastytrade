@@ -1,0 +1,19 @@
+[package]
+name = "libdxfeed-sys"
+version = "0.2.1"
+authors = ["John Watson <jrwats@gmail.com>"]
+edition = "2018"
+description = "rust bindings for dxfeed-c-api"
+license = "MIT"
+links = "DXFeed"
+repository = "https://github.com/spotgamma/dxfeed-rust-api"
+
+[dependencies]
+serde = { version = "1.0.147", features = ["derive"], optional = true }
+
+[features]
+serde = ["dep:serde"]
+
+[build-dependencies]
+bindgen = "0.65.1"
+cmake = "0.1.50"

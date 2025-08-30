@@ -65,7 +65,7 @@ pub enum TastyTradeError {
     /// Represents an error originating from the DxFeed data stream.  This variant contains a `DxFeedError` enum, which provides details about the specific DxFeed error.
     DxFeed(DxFeedError),
     /// Represents an error that occurred during WebSocket communication, often related to real-time data streaming. This variant wraps a `tokio_tungstenite::tungstenite::Error`, providing details about the WebSocket error.
-    WebSocket(tokio_tungstenite::tungstenite::Error),
+    WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
     /// Represents an I/O error. This variant wraps a standard `io::Error`, providing details about the I/O operation that failed.
     Io(io::Error),
     /// Represents an authentication error. This variant contains a `String` describing the authentication failure.
@@ -138,7 +138,7 @@ impl Error for TastyTradeError {
             Self::Http(err) => Some(err),
             Self::Json(err) => Some(err),
             Self::DxFeed(err) => Some(err),
-            Self::WebSocket(err) => Some(err),
+            Self::WebSocket(err) => Some(err.as_ref()),
             Self::Io(err) => Some(err),
             Self::Auth(_) => None,
             Self::Connection(_) => None,
@@ -262,7 +262,7 @@ impl From<tokio_tungstenite::tungstenite::Error> for TastyTradeError {
     /// assert!(matches!(tasty_error, TastyTradeError::WebSocket(_)));
     /// ```
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
-        Self::WebSocket(err)
+        Self::WebSocket(Box::new(err))
     }
 }
 
@@ -302,7 +302,13 @@ impl From<dxlink::DXLinkError> for TastyTradeError {
         match err {
             dxlink::DXLinkError::Authentication(e) => Self::Auth(e),
             dxlink::DXLinkError::Connection(e) => Self::Connection(e),
-            dxlink::DXLinkError::WebSocket(e) => Self::WebSocket(e),
+            dxlink::DXLinkError::WebSocket(e) => {
+                // Convert tungstenite 0.26 error to 0.27 error by creating a new error with the same message
+                let converted_error = tokio_tungstenite::tungstenite::Error::Io(
+                    std::io::Error::other(format!("WebSocket error: {}", e)),
+                );
+                Self::WebSocket(Box::new(converted_error))
+            }
             dxlink::DXLinkError::Serialization(e) => Self::Json(e),
             _ => Self::Streaming(format!("DXLink error: {}", err)),
         }

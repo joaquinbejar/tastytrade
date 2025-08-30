@@ -1,0 +1,5 @@
+#include "dxfeed-c-api/include/DXErrorCodes.h"
+#include "dxfeed-c-api/include/DXFeed.h"
+#include "dxfeed-c-api/include/DXTypes.h"
+#include "dxfeed-c-api/include/EventData.h"
+#include "dxfeed-c-api/include/RecordData.h"

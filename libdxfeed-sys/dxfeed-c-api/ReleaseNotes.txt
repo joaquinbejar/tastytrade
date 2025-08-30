@@ -1,0 +1,425 @@
+Version 8.8.2
+* Fixed build on Windows + docs uploading
+
+Version 8.8.1
+* [DXFC-398] Fixed a defect with incorrect serialization of negative numbers (for example, "prices" of indices)
+  transmitted via the QD protocol.
+
+Version 8.8.0
+* [DXFC-396] Added the ability to not shuffle resolved IP addresses.
+  - Added the `connectOrder` property of an address with possible values: `shuffle`, `random`, `ordered`, `priority`
+  - The `shuffle` strategy: Example: `host1:port1,host2:port2,host3:port3[connectOrder=shuffle]` It will shuffle the
+    resolved IP addresses, and it will go through them to the end, and then it will resolve and shuffle and so on.
+  - The `random` strategy: Example: `host1:port1,host2:port2,host3:port3[connectOrder=random]` It will shuffle IP
+    addresses, if the connection is successful, it will reset the state and will shuffle on the next connection after resolve, and so on.
+  - The `ordered` strategy: Example: `host1:port1,host2:port2,host3:port3[connectOrder=ordered]` It will NOT shuffle the
+    resolved IP addresses, and it will go through them to the end, and then it will resolve and NOT shuffle and so on.
+  - The `priority` strategy: Example: `host1:port1,host2:port2,host3:port3[connectOrder=priority]` It will NOT shuffle IP
+    addresses, if the connection is successful, it will reset the state and will NOT shuffle on the next connection after resolve, and so on.
+  - The default strategy is `shuffle`
+  - If several strategies are specified in the address line, the last one will be selected.
+    - Example #1: `host1:port1,host2:port2,host3:port3[connectOrder=priority,connectOrder=ordered]` will be equivalent
+      to `host1:port1,host2:port2,host3:port3[connectOrder=ordered]`
+    - Example #2: `(host1:port1,host2:port2[connectOrder=random])(host3:port3[connectOrder=priority,connectOrder=ordered])`
+      will be equivalent to `host1:port1,host2:port2,host3:port3[connectOrder=ordered]`
+* [DXFC-397] Fixed format for specifying a list of DNS names for resolve.
+  - The list of addresses can now be specified separated by commas: `host1:port1,host2:port2,host3:port3`
+  - The last specified port will be considered the default port, i.e. such a list of `host1,host2:port2,host3:port3`
+    will be equivalent to `host1:port3,host2:port2,host3:port3`
+  - The notation separated by parentheses remains valid, but will be "linearized", i.e. the list
+    `(host1:port1)(host2:port2)(host3:port3)` will be equivalent to `host1:port1,host2:port2,host3:port3` when resolving addresses
+* Fixed log formatting
+
+Version 8.7.0
+* [DXFC-395] Added the ability to enumerate all resolved IP addresses by DNS names. IP addresses will be shuffled.
+  - For the address of QD endpoints specified in the form `(host1:port1)(host2:port2)(host3:port3)` IP addresses will be determined, then they will be shuffled.
+  - Shuffled addresses will be selected in order until a connection occurs. When the end of the list is reached, the endpoints will again be determined by IP addresses, and so on.
+  - If a disconnect occurs, the next IP from the list will be selected and an attempt will be made to reconnect.
+* [DXFC-394] Disabled shuffling of specified addresses (DNS names) for connection in the form: `(host1:port1)(host2:port2)(host3:port3)`
+* [DXFC-334] Fixed a bug with precision error when converting WideDecimal to Double
+* [DXFC-376] The SnapshotConsoleSample was improved: added an ability to specify from-time and to-time arguments.
+
+Version 8.6.3
+* [DXFC-331] Fixed a bug when deleting a PriceLevelBook object caused crashes.
+
+Version 8.6.2
+* [DXFC-327] Fixed a bug where the timestamp = 0 was set for the price level when processing a removed order.
+* [DXFC-328] Fixed a bug where UPDATE lists with non-existent price levels sometimes appear in PLB incremental updates.
+
+Version 8.6.1
+* Fixed the sln-based projects build.
+* Fixed possible symbol corruption
+* Fixed a bug where price level updates could be treated as volume increases.
+
+Version 8.6.0
+* [DXFC-297] Improved the handling of transaction flags and signs of transaction flags.
+* [DXFC-295] Fixed a bug with incorrect filtering of orders based on MM and Quotes.
+* Fixed wrong `time` parameter processing in the SnapshotConsoleSample.
+* [DXFC-298] Added the new PLB (Price Level Book) building mechanism.
+  Added the ability to specify the number of the price levels.
+  Added the ability to subscribe to incremental price level updates.
+  API changes:
+    - Added the new handle type for PLB - dxf_price_level_book_v2_t
+    - Added the new listener type:
+      `typedef void (*dxf_price_level_book_inc_listener_t)(dxf_price_level_book_const_data_ptr_t removals, dxf_price_level_book_const_data_ptr_t additions, dxf_price_level_book_const_data_ptr_t updates, void* user_data);`
+      Incremental changes of removals, additions and updates of price levels are passed to this type of listener.
+    - Added the new function to create PLB:
+      `dxf_create_price_level_book_v3(dxf_connection_t connection, dxf_const_string_t symbol, const char* source, int levels_number, OUT dxf_price_level_book_v2_t* book)`
+      You can specify only one order source (including AGGREGATE_ASK or AGGREGATE_BID), you can specify the number of levels.
+    - Added the new functions to close PLB and set listeners:
+      `dxf_close_price_level_book_v2(dxf_price_level_book_v2_t book)`
+      `dxf_set_price_level_book_listeners_v2(dxf_price_level_book_v2_t book, dxf_price_level_book_listener_t on_new_book_listener, dxf_price_level_book_listener_t on_book_update_listener, dxf_price_level_book_inc_listener_t on_incremental_change_listener, void* user_data);`
+  Added a new sample: PriceLevelBookSample2.
+  See documentation.
+
+Version 8.5.3
+* [DXFC-137] Fixed a bug where it was not possible to create a snapshot due to a collision of snapshot keys.
+* Fixed a bug with debug logging of the `dxf_get_last_error` function.
+* Fixed a potential bug when static data of record field setters  were not in thread local storage.
+
+Version 8.5.2
+* Fixed a potential bug with flags that were not in thread local storage
+
+Version 8.5.1
+* [DXFC-276] Fixed a bug with broken wildcard subscription
+
+Version 8.5.0
+* [DXFC-274] The repeated call to load the configuration from a file or line does not return errors and does not raise any exceptions.
+  Also added error codes for some situations when reading configurations:
+  - dx_cfgec_empty_config_string = 105
+  - dx_cfgec_empty_config_file_name = 106
+  - dx_cfgec_toml_parser_error = 107
+  When logging, dx_cfgec_toml_parser_error will be accompanied by more detailed information about the parsing error.
+* Fixed some minor bugs after adding LGTM and CodeQL checks
+* The win sockets version is set to 2.2.*
+* [Attention] Some architectural issues have been discovered that impose restrictions on the use of connection objects.
+  It is not recommended to use multiple connections in parallel in the same process. This applies to structures\objects created with
+  `dxf_create_connection`, `dxf_create_connection_auth_basic`, `dxf_create_connection_auth_bearer`, `dxf_create_connection_auth_custom`.
+  This limitation will be lifted after API design changes.
+
+Version 8.4.1
+* [DXFC-261] Fixed a bug related to leaking socket handles
+* [samples] Added `-r` parameter to CommandLineSample to enable connection reestablishment mechanism.
+* Added debug logging for some main API functions
+
+Version 8.4.0
+* [DXFC-260] Fixed names of event fields for reading candledata.
+* [samples] Added header for enabling NULL macros.
+
+Version 8.3.0
+* [DXFC-254] The amount of memory used to store the symbols required for a subscription has been reduced by several times.
+  [Deprecated] `dxf_get_last_event` is deprecated and will be removed in version 9.0.0, since this mechanism consumes a lot of RAM.
+  Please save the latest event by symbol and type to achieve this functionality. The `subscriptions.disableLastEventStorage` configuration property was added.
+  It allows to disable the last event storage mechanism. Default value = true. This property will be also removed in version 9.0.0.
+  How to enable the last event storage mechanism:
+  ```c
+  dxf_load_config_from_wstring(L"subscriptions.disableLastEventStorage = false\n");
+  ```
+
+Version 8.2.0
+* [DXFC-252] Fixed bug with "freezing" the dxf_close_connection `function` if not called immediately after disconnecting the connection.  
+  The `network.reestablishConnections` config property was added. This property describes a flag that allows to disable the connection reestablishment mechanism. (default value = true).  
+  An example of disabling:  
+  ```c
+  dxf_load_config_from_wstring(L"network.reestablishConnections = false\n");
+  ```
+
+Version 8.1.0
+* [DXFC-251] Fixed a bug with receiving gap-filling data every time the user subscribed to symbols that he had already subscribed to earlier.
+* [DXFC-237] Added the new order sources: `MEMX` (Members Exchange' order source), `memx` (Members Exchange' price level source)
+  and `smfe` (SmallEx' price level source)
+* Improved the CommandLineSample: the cross-platform synchronization primitives were added.
+
+Version 8.0.1
+* [DXFC-236] Fixed the ancient glitch with random garbage data in fields of removed events' (TX_REMOVE flag = 1).
+
+Version 8.0.0
+* [DXFC-231] [Breaking changes] Converted the types and representations of certain event fields to store WideDecimal
+  - Fields that are now of type `double`: `dxf_order_t.size`, `dxf_order_t.count`, `dxf_trade_t.size`, `dxf_trade_eth_t.size`,
+    `dxf_quote_t.bid_size`, `dxf_quote_t.ask_size`, `dxf_summary_t.open_interest`, `dxf_profile_t.div_freq`,
+    `dxf_time_and_sale_t.size`, `dxf_candle_t.open_interest`
+  - Added the `dxf_order_t.executed_size` (`dxf_double_t`) field which is related to FOB support
+* [DXFC-222] Added the new `dxf_create_price_level_book_v2` function with an easier way (for Python and .NET API) to
+  pass a list of sources (pair of parameters: `const char** sources` and `int sources_count`)
+
+Version 7.6.0
+* [DXFC-224] Fixed a bug with a race conditions occurred while reading files
+* [DXFC-225] Added initial support for the WideDecimal type. This will allow reading data coming from CandleWebService
+  or data recorded in `tape` format. The examples of usage added to CommandLineSample and CandleSample help output.
+* Now heartbeat logging in the CommandLineSample is optional. To enable, you must use the `-b` flag.
+* [DXFC-227] Improved the project brief in the doxygen documentation
+
+Version 7.5.0
+* [DXFC-223] The new price level order source was added: iex.
+
+Version 7.4.0
+* [Samples] Fixed the heartbeat notifier's setting. Added lag measurements to the performance test.
+
+Version 7.3.0
+* [DXFC-218] Improved the SnapshotConsoleSample
+  - the `date` (-t) parameter was added. Format: DD-MM-YYYY, default value: current date and time.
+    Previously, without this parameter, the time was set equal to 0 (01-01-1970)!
+  - the cross-platform synchronization primitives were added
+* [DXFC-219] Fixed a bug with broken parsing of negative values
+* [DXFC-202] Added the ability to filter log messages by level
+  The `logger.level` config property was added. This property describes a minimum logging level.
+  Possible values: "error", "warn", "info", "debug", "trace". Default value = "info"
+  An example of limiting the output of logs:
+  ```c
+  dxf_load_config_from_wstring(L"logger.level = \"error\"\n");
+  ```
+
+Version 7.2.0
+* All sample programs were moved to the `samples` directory
+* [DXFC-212] Extended the Order event for Full Order Book
+  - the `action`, `action_time`, `order_id`, `aux_order_id`, `trade_id`, `trade_price`, `trade_size` fields were added to the `dxf_order_t` structure
+    See the `dxf_order_action_t` enum description (documentation) where it is indicated in which cases which fields will be filled.
+  - the FullOrderBook sample was added.
+* [DXFC-211] Fixed a bug with broken construction of order snapshots (books), based on Quote (order scope = Composite|Regional) & MarketMaker (order scope = Aggregate) events
+* Improved the `dxf_event_listener_t` & `dxf_event_listener_t_v2` documentation
+* The `data_count` parameter of `dxf_event_listener_t` & `dxf_event_listener_t_v2` listeners has been deprecated (it always returns 1). It will be removed in 8.0.0 version
+
+Version 7.1.0
+* [DXFC-209] Implemented the heartbeat semantics with payload
+  - Added the new function `dxf_set_on_server_heartbeat_notifier(dxf_connection_t connection, dxf_conn_on_server_heartbeat_notifier_t notifier, void* user_data)`
+    that sets a server heartbeat notifier's callback to the connection.
+    This notifier will be invoked when the new heartbeat arrives from a server and contains non empty payload
+
+    Function parameters:
+      - connection - The handle of a previously created connection
+      - notifier   - The notifier callback function pointer
+      - user_data  - The data to be passed to the callback function
+
+  - Added the new callback type of connection incoming heartbeat notification `dxf_conn_on_server_heartbeat_notifier_t`
+
+    Passed parameters:
+      - connection      - The connection handle
+      - server_millis   - The server time in milliseconds (from the incoming heartbeat payload)
+      - server_lag_mark - The server's messages composing lag time in microseconds (from the incoming heartbeat payload)
+      - connection_rtt  - The calculated connection RTT in microseconds
+      - user_data       - The user data passed to dxf_set_on_server_heartbeat_notifier
+
+    An example of implementation:
+    ```c
+    void on_server_heartbeat_notifier(dxf_connection_t connection, dxf_long_t server_millis, dxf_int_t server_lag_mark,
+        dxf_int_t connection_rtt, void* user_data)
+    {
+        fwprintf(stderr, L"\n##### Server time (UTC) = %" PRId64 " ms, Server lag = %d us, RTT = %d us #####\n",
+            server_millis, server_lag_mark, connection_rtt);
+    }
+    ```
+
+  See usage example in the CommandLineSample.c
+
+Version 7.0.0
+* [DXFC-175] [Breaking changes] Extended the Trade and Profile events to support additional fields from QD records
+  - the `_52_high_price` & `_52_low_price` `Profile` event fields were renamed to `high_52_week_price` &
+    `low_52_week_price` respectively
+  - the `change` field was added to `TradeETH` event
+* [DXFC-207] Extended the Trade and TradeETH events with new field dayId
+  - the `day_id` field was added to the `dx_trade_t`, `dx_trade_eth_t` and `dxf_trade_t` structures.
+    `day_id` - identifier of the day that `Trade` or `TradeETH` represents. Identifier of the day is the number of
+    days passed since January 1, 1970.
+* [DXFC-181] Extended the Underlying and Series events with putVolume and callVolume fields
+  - the `call_volume` and `put_volume` fields were added to the `dx_series_t`, `dxf_series_t`, `dx_underlying_t`
+    and `dxf_underlying_t` structures.
+    `call_volume` - call options traded volume for a day. `put_volume` - put options traded volume for a day
+  - the `option_volume` field was added to the `dxf_series_t`, `dxf_underlying_t` structures.
+    `option_volume` - options traded volume  for a day.
+* [DXFC-176] [Samples] Subscription methods are now called in a more correct order. Fixed output of hostnames.
+* [DXFC-208] Added the ability to configure client\server heartbeat parameters
+  - The default heartbeat period (DEFAULT_HEARTBEAT_PERIOD) is set to 10 seconds. Which corresponds to the defaults
+    of Java API. The default heartbeat timeout remains the same (120 seconds).
+  - Added the ability to load a configuration from a file or a string:
+    The config file sample: [Sample](https://github.com/dxFeed/dxfeed-c-api/blob/master/dxfeed-api-config.sample.toml)
+    The config file properties:
+    - `network.heartbeatPeriod` -- The period between sending heartbeat messages (default value = 10 seconds)
+    - `network.heartbeatTimeout` -- Timeout for receiving messages from the server, after which the api tries to
+      change the server and/or reconnect (default value = 120 seconds)
+  - Added the new function `dxf_load_config_from_file(const char* file_name)` that initializes the C-API configuration
+    and loads a config (in TOML format) from a file.
+      - `file_name` -- The config (in TOML format) file name
+  - Added the new function `dxf_load_config_from_string(const char* config)` that initializes the C-API configuration
+    and loads a config (in TOML format) from a string.
+      - `config` -- The config (in TOML format) string
+  - Added the new function `dxf_load_config_from_wstring(dxf_const_string_t config)` that initializes the C-API configuration
+    and loads a config (in TOML format) from a wide string (dxf_const_string_t)
+      - `config` -- The config (in TOML format) string
+
+  For the successful application of the configuration, these functions must be called before creating any connection.
+  Examples of using functions can be found in their descriptions and in the generated documentation.
+
+Version 6.2.0
+* Added missing documentation to EventData.h file
+* [DXFC-205] Fixed a bug with disconnecting (by server side) when removing symbols if no symbols have been added
+* [DXFC-203] Fixed segfaults and debug assertion failings when clearing symbols in a subscription's event listener
+* [DXFC-201] Added the ability to call logging initialization again without any effect
+* [DXFC-206] Fixed a minor memory leak related to incomplete deinitialization of the server message processor context.
+
+Version 6.1.0
+* [DXFC-199] Fixed the IPF parsing in the PerformanceTest
+* The minimal version of CMake has been changed to 3.0.0
+* Build on CentOS switched to CentOS 7
+* [DXFC-200] [Linux] Added ability to build a static library and samples
+* Win pthreads headers were removed from the project
+
+Version 6.0.1
+* [DXFC-194] Fixed bug with System.AccessViolationException while closing connection
+
+Version 6.0.0
+* [DXFC-191] Fixed a bug where crashes and memory corruption occurred when adding and removing symbols
+* [DXFC-190] Fixed a bug with memory corruption during connection restoration and changing the list of subscription symbols
+* [DXFC-184] [Breaking changes] The order source for subscribing to aggregated data (MarketMaker) has been changed from COMPOSITE_ASK|BID to AGGREGATE_ASK|BID.
+  This is now compliant with Java API
+* [DXFC-146] COM support was removed
+* [DXFC-192] Fixed a bug with SEGFAULT in TLS mode when sending data on reconnection
+* [DXFC-193] Fixed a bug with excess memory consumption when retrieving Option symbols
+* [DXFC-171] Added descriptions to all error codes
+* [DXFC-187] Fixed a bug with a second addition of the same symbols
+
+Version 5.13.0
+* [DXFC-189] Fixed a bug with inability to receive (API does not publish) orders with Scope = Aggregate
+
+Version 5.12.0
+* [DXFC-185] The new order source for cboe C2 options was added: C2OX
+* [DXFC-188] Fixed a bug with concurrent call of `tls_init` function
+
+Version 5.11.0
+* [DXFC-182] The new order (price level) sources were added: ntv, glbx, xeur
+* [DXFC-178] Added the ability to log received and transmitted data blocks
+  - [API] Added the new function `dxf_initialize_logger_v2` with additional parameter `log_data_transfer`(compare with `dxf_initialize_logger` function).
+    This flag defining the logging mode; if it's nonzero then the data transfer (portions of received and sent data) logging will be enabled.
+    It will also create two files with names similar to the name of the main log file, but ending with "*.receive.data" and "*.send.data"
+  - [Samples] Added the additional command line parameters:
+    - `-p` - Enables the data transfer logging
+    - `-o` - Sets the program timeout in seconds (default = 604800, i.e a week)
+
+Version 5.10.0
+* [DXFC-174] Added the ability to subscribe to regional quotes. Now Quote subscription requests both composite and regional events. Please, use the `scope` field to filter events.
+* [DXFC-168] The list of supported order sources was updated: NTV,NFX,ESPD,XNFI,ICE,ISE,DEA,DEX,BYX,BZX,BATE,CHIX,CEUX,BXTR,IST,BI20,ABE,FAIR,GLBX,ERIS,XEUR,CFE,SMFE
+* [DXFC-136] Fixed error erasure on repeated snapshot creation with same parameters
+  - Changed `dx_perform_common_actions` to use `resetError` flag
+  - Added internal `dx_close_subscription` function to implement `resetError` flag usage
+
+Version 5.9.0
+* Added the ability to override the type of data the application subscribes to
+  - Added the API functions: `dxf_create_subscription_with_flags` and `dxf_create_subscription_timed_with_flags` which accept an additional parameter `subscr_flags`.
+    - Use `dx_esf_force_ticker` flag to force subscription to ticker data
+    - Use `dx_esf_force_stream` flag to force subscription to stream data
+    - Use `dx_esf_force_history` flag to force subscription to history data
+  - [Samples] Added an additional command line parameter "[-s <subscr_data>]" to CommandLineSample (to describe how to use the new function with flags). This parameter accepts the next values:
+    - TICKER to force subscription to ticker data
+    - STREAM to force subscription to stream data
+    - HISTORY to force subscription to history data
+* Added the candle price level attribute support. The candle price level (pl) defines additional axis to split candles within particular price corridor in addition to candle period attribute with the default value Double.NaN.
+  So a one-minute candles of "AAPL" with price level 0.1 shall be specified with "AAPL{=m,pl=0.1}".
+  Example: `CandleSample demo.dxfeed.com:7300 AAPL{=m,pl=0.1} -t 2020-01-01`
+* Added ability to retrieve regional TnS. Now API backend (C-API) subsribes to both composite and regional TimeAndSale events. Sometimes server may sent equal composite and regional TnS which differ by suffix only (for example: TimeAndSale and TimeAndSale&K). So the `scope` field was added with possible values: dxf_osc_composite and dxf_osc_regional. Same field was added for Summary events. Please, use the `scope` field to filter out duplicates.
+
+Version 5.8.0
+* Improved the documentation (converted to doxygen format)
+
+Version 5.7.0
+* Fixed an issue with crash on reconnect (connection by TLS)
+* Added ability to subscribe to "*" (wildcard) symbol
+  - See descriptions of the `dxf_add_symbol`, `dxf_add_symbols`, `dxf_remove_symbol`, `dxf_remove_symbols` functions in the DXFeed.h
+
+Version 5.6.3
+* Fixed multiple symbols subscription in samples on Linux
+* Fixed formatting and logging of indices, strings, timestamps and identifiers on Linux
+
+Version 5.6.2
+* Subscription process was accelerated by sorting internal symbol collection
+
+Version 5.6.1
+* Fixed an issue with incorrect index field calculation
+
+Version 5.6.0
+* Fixed an issue with exception when subscribing to empty symbols
+
+Version 5.5.2
+* Fixed a memory leak in ServerMessageProcessor
+
+Version 5.5.1
+* Used recursive mutexes on Linux
+  - The pthread mutexes were converted to recursive
+  - Fixed zip packaging on Linux
+
+Version 5.5.0
+* Fixed an issue with concurrent modification of record digests data
+* Updated the Series API to QDS 3.271
+* Fixed a Series snapshot data processing
+* Added the C++ wrapper & sample
+
+Version 5.4.0
+* Notifications for connection status changes
+  - the ability to notify about changes in the connection status is added. See: dxf_connection_status_t enum,
+    dxf_conn_status_notifier_t callback, dxf_create_connection* and dxf_get_current_connection_status functions
+* [Samples] Expand the parameter set by passing an authentication token
+  - The optional command line parameter "[-T <token>]" is added
+* [Samples] Add the ability to change the number of displayed records
+  - The optional command line parameter "[-l <records_print_limit>]" is added (0 - unlimited).
+  - Affected samples: SnapshotConsoleSample, IncSnapshotConsoleSample
+* Fix build with CLion
+
+Version 5.3.4
+* Fix build with TLS on CentOS
+
+Version 5.3.3
+* Fix build for linux
+
+Version 5.3.2
+* New listener for dxf_quote_t events is added to dxf_regional_book_t
+
+Version 5.3.1
+* Fix field flags for Trade and TradeETH records
+
+Version 5.3.0
++ Add support of regional and composite events for trades and quotes
++ Add processing of server heartbeats
++ Add API functions to get current address and other properties from connection
+* Fix possible race condition between reconnection and subsciption
+* Improve stability: locks revision
+
+Version 5.2.3
+* Fix authentication with Auther other than
+  default Login/Password one.
+
+Version 5.2.2
+* Improve subscription: combine small network packets
+  into one.
+
+Version 5.2.0
+* Records and Events were overhauled:
+  - All Records and Events were synced with Java API.
+  - All indexed events has `event_flags' now.
+  - All index calculations must be compatible with Java.
+  - All public bit flags are replaced with enums.
+  - All inner (record-only) fields were removed from events.
+  - Trade and TradeETH events were merged.
+  - Order and SpreadOrder events were merged.
+  ! These changes are not backward-compatible.
+
+Version 5.1.1
+* Fix possible race condition on working queue cleanup.
+
+Version 5.1.0
++ Add license of LibreSSL
+
+Version 5.0.0
++ Implement Entitlement API for C.
++ Implement support for different connection schemes.
++ Implement support for SSL/TLS.
+* Fix memory leak on reconnects.
+* Fix memory leak in C++ snapshot wrapper.
+
+Version 4.9.2
+* Fix ORDER (all-mixed-up) subscription.
+
+Version 4.9.1
+* Fix Quote subscription bug introduced in 4.9.0.
+
+Version 4.9.0
++ Implement RegionalBook.
+* Fix mutex misuse bug in PriceLevelBook.
+* Fix memory leak in COM/C++ code.
