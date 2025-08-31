@@ -14,11 +14,13 @@ use tastytrade::dxfeed::{self, Event, EventData};
 use tastytrade::utils::config::Config;
 use tastytrade::{InstrumentType, Symbol, TastyTrade};
 use tracing::{debug, error, info};
+use tastytrade::utils::logger::setup_logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    setup_logger();
     // Load configuration from environment variables
-    let config = Config::from_env();
+    let config = Config::new();
     info!(
         "Configuration loaded, connecting to {}...",
         if config.use_demo {

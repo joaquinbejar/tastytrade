@@ -13,7 +13,7 @@ use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tracing::{debug, info};
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct TastyTrade {
@@ -51,7 +51,7 @@ impl TastyTrade {
         )
         .await?;
 
-        info!("{creds:?}");
+        debug!("{creds:?}");
         let client = Self::create_client(&creds);
 
         Ok(Self {

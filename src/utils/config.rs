@@ -63,8 +63,23 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Creates a new instance of the type by loading configuration or setup 
+    /// details from the environment.
+    ///
+    /// This function is a constructor that initializes the object by calling
+    /// `from_env()`, which is expected to handle the process of reading and 
+    /// setting up values from the environment context (e.g., environment variables).
+    ///
+    /// # Returns
+    /// A new instance of the type.
+    ///
+    pub fn new() -> Self {
+        Self::from_env()
+    }
+    
     /// Initialize a new configuration from environment variables
     pub fn from_env() -> Self {
+        dotenv::dotenv().ok();
         let username = env::var("TASTYTRADE_USERNAME").unwrap_or_default();
         let password = env::var("TASTYTRADE_PASSWORD").unwrap_or_default();
         let use_demo = env::var("TASTYTRADE_USE_DEMO")
