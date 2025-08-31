@@ -70,3 +70,7 @@ pub mod config;
 
 /// and logger setup for the application.
 pub mod logger;
+
+pub mod download;
+pub mod parse;
+pub mod file;

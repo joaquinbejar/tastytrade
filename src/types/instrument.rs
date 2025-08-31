@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
+use chrono::{DateTime, Utc};
 
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -600,4 +601,38 @@ pub struct QuantityDecimalPrecision {
     /// The number of decimal places required for the minimum increment value.  This ensures that
     /// the minimum increment is represented with the correct level of precision.
     pub minimum_increment_precision: u32,
+}
+
+/// Structure to hold symbol information from TastyTrade
+#[derive(Clone, Serialize, Deserialize, DebugPretty, DisplaySimple)]
+pub struct SymbolEntry {
+    /// The trading symbol identifier
+    pub symbol: String,
+    /// The Epic identifier used by the exchange
+    pub epic: String,
+    /// Human-readable name of the instrument
+    pub name: String,
+    /// Instrument type classification
+    pub instrument_type: InstrumentType,
+    /// The exchange where this instrument is traded
+    pub exchange: String,
+    /// Expiration date and time for the instrument
+    pub expiry: DateTime<Utc>,
+    /// Timestamp of the last update to this record
+    pub last_update: DateTime<Utc>,
+}
+
+impl PartialEq for SymbolEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.symbol == other.symbol && self.epic == other.epic
+    }
+}
+
+impl Eq for SymbolEntry {}
+
+impl std::hash::Hash for SymbolEntry {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.symbol.hash(state);
+        self.epic.hash(state);
+    }
 }

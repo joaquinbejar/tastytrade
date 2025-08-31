@@ -47,6 +47,7 @@ pub use crate::types::instrument::{
     Cryptocurrency, DestinationVenueSymbol, EquityInstrument, EquityInstrumentInfo, EquityOption,
     Expiration, Future, FutureOption, FutureOptionProduct, FutureProduct, FutureRoll,
     InstrumentType, NestedOptionChain, QuantityDecimalPrecision, Strike, TickSize, Warrant,
+    SymbolEntry
 };
 
 // Re-export DxFeed types
@@ -68,7 +69,7 @@ pub use crate::api::option_chain::{
 };
 
 // Re-export utility types
-pub use crate::utils::{config::TastyTradeConfig, logger::setup_logger};
+pub use crate::utils::{config::TastyTradeConfig, logger::setup_logger, download::*, parse::*, file::*};
 
 // Re-export login types
 pub use crate::types::login::{LoginCredentials, LoginResponse, LoginResponseUser};
