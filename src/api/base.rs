@@ -1,14 +1,14 @@
-use std::fmt::Display;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 use crate::{ApiError, TastyTradeError};
-use serde::{Deserialize, Serialize};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_with::VecSkipError;
 use serde_with::serde_as;
+use std::fmt::Display;
 
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum TastyApiResponse<T> {
+pub enum TastyApiResponse<T: Serialize + std::fmt::Debug> {
     Success(Response<T>),
     Error { error: ApiError },
 }
@@ -22,14 +22,12 @@ impl Display for TastyApiResponse<String> {
     }
 }
 
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
-pub struct Response<T> {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Response<T: Serialize + std::fmt::Debug> {
     pub data: T,
     pub context: String,
     pub pagination: Option<Pagination>,
 }
-
-
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -46,13 +44,13 @@ pub struct Pagination {
 }
 
 #[serde_as]
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
-pub struct Items<T: DeserializeOwned> {
-    // TODO: not this
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Items<T: DeserializeOwned + Serialize + std::fmt::Debug> {
     #[serde_as(as = "VecSkipError<_>")]
     pub items: Vec<T>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Paginated<T> {
     pub items: Vec<T>,
     pub pagination: Pagination,

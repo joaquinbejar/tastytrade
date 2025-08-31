@@ -1,14 +1,14 @@
 // For quote_streamer.rs
 use crate::TastyTrade;
+use crate::types::dxfeed;
 use crate::{AsSymbol, Symbol, TastyResult, TastyTradeError};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use crate::types::dxfeed;
 
 #[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
@@ -505,7 +505,9 @@ impl QuoteStreamer {
 
     pub fn subscribe(&self, _symbol: &[&str]) {
         // This method is deprecated - use QuoteSubscription::add_symbols() instead
-        warn!("QuoteStreamer::subscribe() is deprecated. Use QuoteSubscription::add_symbols() instead.");
+        warn!(
+            "QuoteStreamer::subscribe() is deprecated. Use QuoteSubscription::add_symbols() instead."
+        );
     }
 
     pub async fn get_event(&self) -> std::result::Result<dxfeed::Event, flume::RecvError> {

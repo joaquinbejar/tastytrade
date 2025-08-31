@@ -30,17 +30,19 @@ impl Display for TastyTrade {
     }
 }
 
-pub trait FromTastyResponse<T: DeserializeOwned> {
+pub trait FromTastyResponse<T: DeserializeOwned + Serialize + std::fmt::Debug> {
     fn from_tasty(resp: Response<T>) -> Self;
 }
 
-impl<T: DeserializeOwned> FromTastyResponse<T> for T {
+impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<T> for T {
     fn from_tasty(resp: Response<T>) -> Self {
         resp.data
     }
 }
 
-impl<T: DeserializeOwned + Serialize> FromTastyResponse<Items<T>> for Paginated<T> {
+impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<T>>
+    for Paginated<T>
+{
     fn from_tasty(resp: Response<Items<T>>) -> Self {
         Paginated {
             items: resp.data.items,
@@ -125,7 +127,7 @@ impl TastyTrade {
 
     pub async fn get_with_query<T, R, U>(&self, url: U, query: &[(&str, &str)]) -> TastyResult<R>
     where
-        T: DeserializeOwned,
+        T: DeserializeOwned + Serialize + std::fmt::Debug,
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
@@ -137,10 +139,6 @@ impl TastyTrade {
             .query(query)
             .send()
             .await?
-            // .inspect_json::<TastyApiResponse<T>, TastyError>(move |text| {
-            //     println!("{:?}", std::any::type_name::<T>());
-            //     println!("{text}");
-            // })
             .json::<TastyApiResponse<T>>()
             .await?;
 
@@ -150,13 +148,16 @@ impl TastyTrade {
         }
     }
 
-    pub async fn get<T: DeserializeOwned, U: AsRef<str>>(&self, url: U) -> TastyResult<T> {
+    pub async fn get<T: DeserializeOwned + Serialize + std::fmt::Debug, U: AsRef<str>>(
+        &self,
+        url: U,
+    ) -> TastyResult<T> {
         self.get_with_query(url, &[]).await
     }
 
     pub async fn post<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
     where
-        R: DeserializeOwned,
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
         P: Serialize,
         U: AsRef<str>,
     {
@@ -181,7 +182,7 @@ impl TastyTrade {
 
     pub async fn delete<R, U>(&self, url: U) -> TastyResult<R>
     where
-        R: DeserializeOwned,
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
         U: AsRef<str>,
     {
         let url = format!("{}{}", self.config.base_url, url.as_ref());

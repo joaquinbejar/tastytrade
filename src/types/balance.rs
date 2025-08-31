@@ -5,10 +5,10 @@
 ******************************************************************************/
 use crate::PriceEffect;
 use crate::accounts::AccountNumber;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents an account balance.
 ///
@@ -259,9 +259,9 @@ impl fmt::Display for SnapshotTimeOfDay {
 mod tests {
     use super::*;
     use crate::accounts::AccountNumber;
+    use chrono::Datelike;
     use rust_decimal::Decimal;
     use std::str::FromStr;
-    use chrono::Datelike;
 
     #[test]
     fn test_snapshot_time_of_day_display() {
@@ -274,7 +274,7 @@ mod tests {
         let eod = SnapshotTimeOfDay::Eod;
         let serialized = serde_json::to_string(&eod).unwrap();
         assert_eq!(serialized, "\"EOD\"");
-        
+
         let bod = SnapshotTimeOfDay::Bod;
         let serialized = serde_json::to_string(&bod).unwrap();
         assert_eq!(serialized, "\"BOD\"");
@@ -284,7 +284,7 @@ mod tests {
     fn test_snapshot_time_of_day_deserialization() {
         let eod: SnapshotTimeOfDay = serde_json::from_str("\"EOD\"").unwrap();
         matches!(eod, SnapshotTimeOfDay::Eod);
-        
+
         let bod: SnapshotTimeOfDay = serde_json::from_str("\"BOD\"").unwrap();
         matches!(bod, SnapshotTimeOfDay::Bod);
     }
@@ -324,7 +324,7 @@ mod tests {
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
             updated_at: "2024-01-01T12:00:00Z".to_string(),
         };
-        
+
         let serialized = serde_json::to_string(&balance).unwrap();
         assert!(serialized.contains("TEST123"));
         assert!(serialized.contains("1000.50"));
@@ -365,7 +365,7 @@ mod tests {
             pending_cash_effect: PriceEffect::Credit,
             snapshot_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
         };
-        
+
         assert_eq!(snapshot.account_number.0, "SNAP123");
         assert_eq!(snapshot.cash_balance, Decimal::from_str("2000.00").unwrap());
         assert_eq!(snapshot.snapshot_date.year(), 2024);
@@ -407,7 +407,7 @@ mod tests {
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
             updated_at: "2024-01-01T12:00:00Z".to_string(),
         };
-        
+
         let debug_str = format!("{:?}", balance);
         assert!(debug_str.contains("DEBUG123"));
     }

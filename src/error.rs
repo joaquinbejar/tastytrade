@@ -1,9 +1,8 @@
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
-
 
 /// Represents errors that can occur during interactions with DxFeed.
 ///
@@ -87,7 +86,6 @@ impl Display for TastyTradeError {
         }
     }
 }
-
 
 impl Error for TastyTradeError {
     /// Returns the underlying source of the error if available.
@@ -420,20 +418,39 @@ mod tests {
             message: "API error message".to_string(),
             errors: None,
         };
-        
+
         let test_cases = vec![
             (TastyTradeError::Api(api_error), "API error"),
-            (TastyTradeError::Auth("Auth failed".to_string()), "Authentication failed"),
-            (TastyTradeError::Connection("Connection failed".to_string()), "Connection error"),
-            (TastyTradeError::Streaming("Stream failed".to_string()), "Streaming error"),
-            (TastyTradeError::Unknown("Unknown error".to_string()), "Unknown error"),
-            (TastyTradeError::ConfigError("Config error".to_string()), "Configuration error"),
+            (
+                TastyTradeError::Auth("Auth failed".to_string()),
+                "Authentication failed",
+            ),
+            (
+                TastyTradeError::Connection("Connection failed".to_string()),
+                "Connection error",
+            ),
+            (
+                TastyTradeError::Streaming("Stream failed".to_string()),
+                "Streaming error",
+            ),
+            (
+                TastyTradeError::Unknown("Unknown error".to_string()),
+                "Unknown error",
+            ),
+            (
+                TastyTradeError::ConfigError("Config error".to_string()),
+                "Configuration error",
+            ),
         ];
 
         for (error, expected_prefix) in test_cases {
             let display_str = format!("{}", error);
-            assert!(display_str.contains(expected_prefix), 
-                "Error '{}' should contain '{}'", display_str, expected_prefix);
+            assert!(
+                display_str.contains(expected_prefix),
+                "Error '{}' should contain '{}'",
+                display_str,
+                expected_prefix
+            );
         }
     }
 
@@ -445,12 +462,12 @@ mod tests {
             errors: None,
         };
         let tastytrade_error = TastyTradeError::from(api_error);
-        
+
         match tastytrade_error {
             TastyTradeError::Api(err) => {
                 assert_eq!(err.code, Some("TEST".to_string()));
                 assert_eq!(err.message, "Test message");
-            },
+            }
             _ => panic!("Expected Api variant"),
         }
     }
@@ -459,9 +476,9 @@ mod tests {
     fn test_from_serde_json_error() {
         let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let tastytrade_error = TastyTradeError::from(json_error);
-        
+
         match tastytrade_error {
-            TastyTradeError::Json(_) => {}, // Success
+            TastyTradeError::Json(_) => {} // Success
             _ => panic!("Expected Json variant"),
         }
     }
@@ -470,9 +487,9 @@ mod tests {
     fn test_from_io_error() {
         let io_error = io::Error::new(io::ErrorKind::NotFound, "File not found");
         let tastytrade_error = TastyTradeError::from(io_error);
-        
+
         match tastytrade_error {
-            TastyTradeError::Io(_) => {}, // Success
+            TastyTradeError::Io(_) => {} // Success
             _ => panic!("Expected Io variant"),
         }
     }
@@ -481,9 +498,9 @@ mod tests {
     fn test_from_dxfeed_error() {
         let dxfeed_error = DxFeedError::CreateConnectionError;
         let tastytrade_error = TastyTradeError::from(dxfeed_error);
-        
+
         match tastytrade_error {
-            TastyTradeError::DxFeed(DxFeedError::CreateConnectionError) => {}, // Success
+            TastyTradeError::DxFeed(DxFeedError::CreateConnectionError) => {} // Success
             _ => panic!("Expected DxFeed variant"),
         }
     }
@@ -523,10 +540,10 @@ mod tests {
             errors: None,
         };
         let tastytrade_error = TastyTradeError::Api(api_error);
-        
+
         // Test that source() returns Some for Api errors
         assert!(tastytrade_error.source().is_some());
-        
+
         // Test that source() returns None for string-based errors
         let auth_error = TastyTradeError::Auth("Auth failed".to_string());
         assert!(auth_error.source().is_none());
@@ -538,7 +555,7 @@ mod tests {
             code: Some("INNER_CODE".to_string()),
             message: "Inner error message".to_string(),
         };
-        
+
         assert_eq!(inner_error.code, Some("INNER_CODE".to_string()));
         assert_eq!(inner_error.message, "Inner error message");
     }
@@ -549,17 +566,17 @@ mod tests {
             code: Some("VALIDATION_ERROR".to_string()),
             message: "Field is required".to_string(),
         };
-        
+
         let api_error = ApiError {
             code: Some("BAD_REQUEST".to_string()),
             message: "Request validation failed".to_string(),
             errors: Some(vec![inner_error]),
         };
-        
+
         assert_eq!(api_error.code, Some("BAD_REQUEST".to_string()));
         assert_eq!(api_error.message, "Request validation failed");
         assert!(api_error.errors.is_some());
-        
+
         let inner_errors = api_error.errors.unwrap();
         assert_eq!(inner_errors.len(), 1);
         assert_eq!(inner_errors[0].code, Some("VALIDATION_ERROR".to_string()));

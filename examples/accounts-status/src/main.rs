@@ -1,7 +1,5 @@
+use tastytrade::prelude::*;
 use tracing::{debug, error, info};
-use tastytrade::TastyTrade;
-use tastytrade::utils::config::Config;
-use tastytrade::utils::logger::setup_logger;
 
 #[tokio::main]
 async fn main() {

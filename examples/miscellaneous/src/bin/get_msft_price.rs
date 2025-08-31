@@ -10,11 +10,8 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 use std::env;
 use std::time::Duration;
-use tastytrade::dxfeed::{self, Event, EventData};
-use tastytrade::utils::config::Config;
-use tastytrade::{InstrumentType, Symbol, TastyTrade};
+use tastytrade::prelude::*;
 use tracing::{debug, error, info};
-use tastytrade::utils::logger::setup_logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,8 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!("Quote streamer created successfully");
 
     // Create subscription
-    debug!("Creating subscription with flags: {}", dxfeed::DXF_ET_QUOTE);
-    let quote_sub = &mut *quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+    debug!("Creating subscription with flags: {}", DXF_ET_QUOTE);
+    let quote_sub = &mut *quote_streamer.create_sub(DXF_ET_QUOTE);
     debug!("Subscription created successfully");
 
     // Get streamer symbol

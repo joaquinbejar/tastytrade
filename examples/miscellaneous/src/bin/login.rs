@@ -1,7 +1,5 @@
 use std::env;
-use tastytrade::TastyTrade;
-use tastytrade::utils::config::Config;
-use tastytrade::utils::logger::setup_logger;
+use tastytrade::prelude::*;
 use tracing::info;
 
 #[tokio::main]

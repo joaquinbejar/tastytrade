@@ -47,7 +47,7 @@ impl TastyTrade {
             ("page-offset", page_offset_str.as_str()),
         ];
 
-        self.get_with_query("/instruments/equities/active", &query)
+        self.get_with_query::<Items<EquityInstrument>, _, _>("/instruments/equities/active", &query)
             .await
     }
 

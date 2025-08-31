@@ -1,10 +1,10 @@
 use super::order::{PriceEffect, Symbol};
 use crate::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents the direction of a quantity, such as a trade or position.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -163,11 +163,11 @@ mod tests {
         let long = QuantityDirection::Long;
         let serialized = serde_json::to_string(&long).unwrap();
         assert_eq!(serialized, "\"Long\"");
-        
+
         let short = QuantityDirection::Short;
         let serialized = serde_json::to_string(&short).unwrap();
         assert_eq!(serialized, "\"Short\"");
-        
+
         let zero = QuantityDirection::Zero;
         let serialized = serde_json::to_string(&zero).unwrap();
         assert_eq!(serialized, "\"Zero\"");
@@ -177,10 +177,10 @@ mod tests {
     fn test_quantity_direction_deserialization() {
         let long: QuantityDirection = serde_json::from_str("\"Long\"").unwrap();
         matches!(long, QuantityDirection::Long);
-        
+
         let short: QuantityDirection = serde_json::from_str("\"Short\"").unwrap();
         matches!(short, QuantityDirection::Short);
-        
+
         let zero: QuantityDirection = serde_json::from_str("\"Zero\"").unwrap();
         matches!(zero, QuantityDirection::Zero);
     }
@@ -188,9 +188,9 @@ mod tests {
     #[test]
     fn test_quantity_direction_clone_and_copy() {
         let original = QuantityDirection::Long;
-        let cloned = original.clone();
+        let cloned = original;
         let copied = original;
-        
+
         matches!(cloned, QuantityDirection::Long);
         matches!(copied, QuantityDirection::Long);
     }
@@ -232,10 +232,10 @@ mod tests {
             "created-at": "2024-01-01T10:00:00Z",
             "updated-at": "2024-01-01T16:00:00Z"
         }"#;
-        
+
         let position: Result<FullPosition, _> = serde_json::from_str(json);
         assert!(position.is_ok());
-        
+
         let position = position.unwrap();
         assert_eq!(position.account_number.0, "TEST123");
         assert_eq!(position.symbol.0, "AAPL");
@@ -265,10 +265,10 @@ mod tests {
             "created-at": "2024-01-01T09:00:00Z",
             "updated-at": "2024-01-01T15:30:00Z"
         }"#;
-        
+
         let position: Result<BriefPosition, _> = serde_json::from_str(json);
         assert!(position.is_ok());
-        
+
         let position = position.unwrap();
         assert_eq!(position.account_number.0, "BRIEF123");
         assert_eq!(position.symbol.0, "MSFT");
@@ -299,10 +299,10 @@ mod tests {
             "created-at": "2024-01-01T12:00:00Z",
             "updated-at": "2024-01-01T12:00:00Z"
         }"#;
-        
+
         let position: Result<BriefPosition, _> = serde_json::from_str(json);
         assert!(position.is_ok());
-        
+
         let position = position.unwrap();
         matches!(position.quantity_direction, QuantityDirection::Zero);
         assert_eq!(position.quantity, Decimal::ZERO);

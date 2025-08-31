@@ -12,6 +12,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use std::collections::BTreeMap;
 use tui::{
     Frame, Terminal,

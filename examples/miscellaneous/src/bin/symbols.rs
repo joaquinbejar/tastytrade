@@ -5,10 +5,7 @@
 ******************************************************************************/
 
 use std::env;
-use tastytrade::Symbol;
-use tastytrade::utils::config::Config;
-use tastytrade::utils::logger::setup_logger;
-use tastytrade::{AsSymbol, TastyTrade};
+use tastytrade::prelude::*;
 use tracing::{debug, info};
 
 #[tokio::main]

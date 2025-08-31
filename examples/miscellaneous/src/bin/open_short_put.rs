@@ -8,13 +8,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 use std::env;
 use std::time::Duration;
-use tastytrade::dxfeed::{self, Event, EventData};
-use tastytrade::utils::config::Config;
-use tastytrade::utils::logger::setup_logger;
-use tastytrade::{
-    Action, InstrumentType, OrderBuilder, OrderLegBuilder, OrderType, PriceEffect, Symbol,
-    TastyTrade, TimeInForce,
-};
+use tastytrade::prelude::*;
 use tracing::{error, info, warn};
 
 // Configuration constants
@@ -98,8 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut quote_streamer = tasty.create_quote_streamer().await?;
     info!("Quote streamer created successfully");
 
-    info!("Creating subscription with flags: {}", dxfeed::DXF_ET_QUOTE);
-    let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
+    info!("Creating subscription with flags: {}", DXF_ET_QUOTE);
+    let mut quote_sub = quote_streamer.create_sub(DXF_ET_QUOTE | DXF_ET_GREEKS);
     info!("Subscription created successfully");
 
     info!(

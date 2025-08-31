@@ -1,12 +1,14 @@
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(
+    DebugPretty, DisplaySimple, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone,
+)]
 #[serde(transparent)]
 pub struct AccountNumber(pub String);
 
@@ -33,7 +35,7 @@ pub struct AccountDetails {
     pub funding_date: Option<String>,
 }
 
-#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AccountInner {
     pub account: AccountDetails,
@@ -70,7 +72,7 @@ impl Account<'_> {
     ) -> TastyResult<Paginated<BalanceSnapshot>> {
         let resp: Paginated<BalanceSnapshot> = self
             .tasty
-            .get_with_query(
+            .get_with_query::<Items<BalanceSnapshot>, _, _>(
                 &format!(
                     "/accounts/{}/balance-snapshots",
                     self.inner.account.account_number.0

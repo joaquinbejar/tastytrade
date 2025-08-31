@@ -1,11 +1,11 @@
 use super::{base::Items, quote_streaming::DxFeedSymbol};
 use crate::api::base::TastyResult;
 use crate::{AsSymbol, Symbol, TastyTrade};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 impl TastyTrade {
     pub async fn nested_option_chain_for(
@@ -93,7 +93,7 @@ mod tests {
         let json = r#"{
             "streamer-symbol": "AAPL240920C00150000"
         }"#;
-        
+
         let option_info: OptionInfo = serde_json::from_str(json).unwrap();
         assert_eq!(option_info.streamer_symbol.0, "AAPL240920C00150000");
     }
@@ -105,7 +105,7 @@ mod tests {
             "call": "AAPL240920C00150000",
             "put": "AAPL240920P00150000"
         }"#;
-        
+
         let strike: Strike = serde_json::from_str(json).unwrap();
         assert_eq!(strike.strike_price, Decimal::from_str("150.00").unwrap());
         assert_eq!(strike.call.0, "AAPL240920C00150000");
@@ -127,14 +127,17 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let expiration: Expiration = serde_json::from_str(json).unwrap();
         assert_eq!(expiration.expiration_type, "Regular");
         assert_eq!(expiration.expiration_date, "2024-09-20");
         assert_eq!(expiration.days_to_expiration, 30);
         assert_eq!(expiration.settlement_type, "PM");
         assert_eq!(expiration.strikes.len(), 1);
-        assert_eq!(expiration.strikes[0].strike_price, Decimal::from_str("150.00").unwrap());
+        assert_eq!(
+            expiration.strikes[0].strike_price,
+            Decimal::from_str("150.00").unwrap()
+        );
     }
 
     #[test]
@@ -154,7 +157,7 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let chain: NestedOptionChain = serde_json::from_str(json).unwrap();
         assert_eq!(chain.underlying_symbol.0, "AAPL");
         assert_eq!(chain.root_symbol.0, "AAPL");
@@ -171,13 +174,19 @@ mod tests {
             "extra-field": "extra-value",
             "another-field": 42
         }"#;
-        
+
         let chain: OptionChain = serde_json::from_str(json).unwrap();
         assert_eq!(chain.underlying_symbol.0, "MSFT");
         assert_eq!(chain.strike_price, Decimal::from_str("300.00").unwrap());
         assert_eq!(chain.extra.len(), 2);
-        assert_eq!(chain.extra.get("extra-field").unwrap().as_str().unwrap(), "extra-value");
-        assert_eq!(chain.extra.get("another-field").unwrap().as_i64().unwrap(), 42);
+        assert_eq!(
+            chain.extra.get("extra-field").unwrap().as_str().unwrap(),
+            "extra-value"
+        );
+        assert_eq!(
+            chain.extra.get("another-field").unwrap().as_i64().unwrap(),
+            42
+        );
     }
 
     #[test]
@@ -187,7 +196,7 @@ mod tests {
         };
         let debug_str = format!("{:?}", option_info);
         assert!(debug_str.contains("TEST"));
-        
+
         let strike = Strike {
             strike_price: Decimal::from_str("100.00").unwrap(),
             call: Symbol::from("CALL"),
@@ -222,20 +231,29 @@ mod tests {
                 }
             ]
         }"#;
-        
+
         let expiration: Expiration = serde_json::from_str(json).unwrap();
         assert_eq!(expiration.expiration_type, "Weekly");
         assert_eq!(expiration.strikes.len(), 3);
-        
+
         // Test first strike
-        assert_eq!(expiration.strikes[0].strike_price, Decimal::from_str("145.00").unwrap());
+        assert_eq!(
+            expiration.strikes[0].strike_price,
+            Decimal::from_str("145.00").unwrap()
+        );
         assert_eq!(expiration.strikes[0].call.0, "AAPL240927C00145000");
-        
+
         // Test middle strike
-        assert_eq!(expiration.strikes[1].strike_price, Decimal::from_str("150.00").unwrap());
+        assert_eq!(
+            expiration.strikes[1].strike_price,
+            Decimal::from_str("150.00").unwrap()
+        );
         assert_eq!(expiration.strikes[1].put.0, "AAPL240927P00150000");
-        
+
         // Test last strike
-        assert_eq!(expiration.strikes[2].strike_price, Decimal::from_str("155.00").unwrap());
+        assert_eq!(
+            expiration.strikes[2].strike_price,
+            Decimal::from_str("155.00").unwrap()
+        );
     }
 }

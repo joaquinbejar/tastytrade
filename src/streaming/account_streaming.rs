@@ -15,7 +15,7 @@ use tracing::{debug, error, warn};
 /**
 Represents the different types of subscription requests.  Used for managing real-time data streams.
 */
-#[derive(DebugPretty, DisplaySimple, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubRequestAction {
     /// Represents a heartbeat message.  Used to maintain an active connection.
@@ -30,13 +30,25 @@ pub enum SubRequestAction {
     UserMessageSubscribe,
 }
 
+impl std::fmt::Display for SubRequestAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubRequestAction::Heartbeat => write!(f, "heartbeat"),
+            SubRequestAction::Connect => write!(f, "connect"),
+            SubRequestAction::PublicWatchlistsSubscribe => write!(f, "public-watchlists-subscribe"),
+            SubRequestAction::QuoteAlertsSubscribe => write!(f, "quote-alerts-subscribe"),
+            SubRequestAction::UserMessageSubscribe => write!(f, "user-message-subscribe"),
+        }
+    }
+}
+
 /// Represents a subscription request.
 ///
 /// This struct is used to send subscription requests to the server.
 /// The `value` field is optional and its type depends on the `action` field.
-#[derive(DebugPretty, DisplaySimple, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
-struct SubRequest<T> {
+struct SubRequest<T: Serialize> {
     /// Authentication token.
     auth_token: String,
     /// Action to be performed.
@@ -51,6 +63,7 @@ struct SubRequest<T> {
 /// value associated with that action.  The value is dynamically typed and serializable,
 /// allowing for flexibility in the data passed along with the action.
 ///
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 pub struct HandlerAction {
     /// The specific action to be performed.
     action: SubRequestAction,
@@ -105,7 +118,7 @@ pub enum AccountMessage {
 ///     "request-id": 12345
 /// }
 /// ```
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct StatusMessage {
     /// The status of the request (e.g., "success", "error").
@@ -122,7 +135,7 @@ pub struct StatusMessage {
 ///
 /// This struct is deserialized from a JSON response and provides details about the error.
 /// All fields are in kebab-case to match the API's naming convention.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ErrorMessage {
     /// The status of the error.
@@ -179,7 +192,7 @@ enum DXLinkCommand {
 ///
 /// Provides a way to stream account events. Uses DXLink for communication.
 ///
-#[derive(DebugPretty, DisplaySimple, Serialize)]
+#[derive(Debug)]
 pub struct AccountStreamer {
     /// Receiver for account events.
     pub event_receiver: flume::Receiver<AccountEvent>,
@@ -310,7 +323,7 @@ impl AccountStreamer {
 
         tokio::spawn(async move {
             while let Ok(action) = action_receiver.recv_async().await {
-                let message = SubRequest {
+                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
                     auth_token: token_clone.clone(),
                     action: action.action,
                     value: action.value,

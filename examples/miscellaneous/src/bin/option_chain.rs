@@ -7,10 +7,7 @@
 use chrono::{Local, NaiveDate};
 use rust_decimal::Decimal;
 use std::env;
-use tastytrade::Symbol;
-use tastytrade::TastyTrade;
-use tastytrade::utils::config::Config;
-use tastytrade::utils::logger::setup_logger;
+use tastytrade::prelude::*;
 use tracing::{debug, info};
 
 #[tokio::main]

@@ -1,10 +1,10 @@
 use super::order::Symbol;
 use crate::api::quote_streaming::DxFeedSymbol;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]

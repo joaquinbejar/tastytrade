@@ -1,10 +1,10 @@
 use crate::utils::logger::setup_logger_with_level;
 use crate::{TastyTrade, TastyTradeError};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::Path;
-use std::env;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
@@ -49,11 +49,11 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Creates a new instance of the type by loading configuration or setup 
+    /// Creates a new instance of the type by loading configuration or setup
     /// details from the environment.
     ///
     /// This function is a constructor that initializes the object by calling
-    /// `from_env()`, which is expected to handle the process of reading and 
+    /// `from_env()`, which is expected to handle the process of reading and
     /// setting up values from the environment context (e.g., environment variables).
     ///
     /// # Returns
@@ -62,7 +62,7 @@ impl Config {
     pub fn new() -> Self {
         Self::from_env()
     }
-    
+
     /// Initialize a new configuration from environment variables
     pub fn from_env() -> Self {
         dotenv::dotenv().ok();
@@ -166,8 +166,6 @@ mod tests {
         assert_eq!(config.username, "test_user");
         assert_eq!(config.password, "test_pass");
         assert!(config.use_demo);
-        // The log level might be affected by logger state, so let's be more flexible
-        assert!(config.log_level == "DEBUG" || config.log_level == "ERROR" || config.log_level == "INFO");
         assert!(config.remember_me);
         assert_eq!(config.base_url, BASE_DEMO_URL.to_string());
         assert_eq!(config.websocket_url, WEBSOCKET_DEMO_URL.to_string());
@@ -235,7 +233,7 @@ mod tests {
             env::remove_var("LOGLEVEL");
             env::remove_var("TASTYTRADE_REMEMBER_ME");
         }
-        
+
         // Set environment variables for testing
         unsafe {
             env::set_var("TASTYTRADE_USERNAME", "test_user");
@@ -249,7 +247,11 @@ mod tests {
         assert_eq!(config.password, "test_pass");
         assert!(!config.use_demo);
         // The log level might be affected by logger state, so let's be more flexible
-        assert!(config.log_level == "DEBUG" || config.log_level == "ERROR" || config.log_level == "INFO");
+        assert!(
+            config.log_level == "DEBUG"
+                || config.log_level == "ERROR"
+                || config.log_level == "INFO"
+        );
         assert!(!config.remember_me);
         assert_eq!(config.base_url, BASE_URL.to_string());
         assert_eq!(config.websocket_url, WEBSOCKET_URL.to_string());

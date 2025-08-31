@@ -1,10 +1,10 @@
 use crate::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
 use derive_builder::Builder;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents the effect of a price on an account.
 ///
@@ -175,7 +175,9 @@ impl fmt::Display for OrderStatus {
 /// This simplifies the process and avoids unnecessary nesting in the resulting
 /// JSON or other serialized formats.  It also ensures ordering, equality, and
 /// hashing are based on the underlying string value.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    DebugPretty, DisplaySimple, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
 #[serde(transparent)]
 pub struct Symbol(pub String);
 
@@ -236,7 +238,7 @@ pub struct OrderId(pub u64);
 /// attributes are used to control how the struct is serialized and deserialized
 /// to and from JSON, ensuring compatibility with the Tastyworks API.  For example,
 /// `rename_all = "kebab-case"` converts field names to kebab-case during serialization.
-#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LiveOrderRecord {
     /// The unique identifier for the order.
@@ -341,7 +343,7 @@ pub struct OrderLeg {
     action: Action,
 }
 
-#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 /// Represents the result of placing an order.
 ///
@@ -366,7 +368,7 @@ pub struct OrderPlacedResult {
 /// details about the simulated order execution, including potential warnings,
 /// buying power effects, and fee calculations.  It's designed for deserialization
 /// from a JSON response using `serde`, with kebab-case field renaming.
-#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DryRunResult {
     /// Details of the simulated order.
@@ -494,16 +496,25 @@ mod tests {
         assert_eq!(format!("{}", OrderStatus::Filled), "Filled");
         assert_eq!(format!("{}", OrderStatus::Cancelled), "Cancelled");
         assert_eq!(format!("{}", OrderStatus::InFlight), "In Flight");
-        assert_eq!(format!("{}", OrderStatus::CancelRequested), "Cancel Requested");
-        assert_eq!(format!("{}", OrderStatus::ReplaceRequested), "Replace Requested");
-        assert_eq!(format!("{}", OrderStatus::PartiallyRemoved), "Partially Removed");
+        assert_eq!(
+            format!("{}", OrderStatus::CancelRequested),
+            "Cancel Requested"
+        );
+        assert_eq!(
+            format!("{}", OrderStatus::ReplaceRequested),
+            "Replace Requested"
+        );
+        assert_eq!(
+            format!("{}", OrderStatus::PartiallyRemoved),
+            "Partially Removed"
+        );
     }
 
     #[test]
     fn test_symbol_from_string() {
         let symbol = Symbol::from("AAPL");
         assert_eq!(symbol.0, "AAPL");
-        
+
         let symbol = Symbol::from(String::from("MSFT"));
         assert_eq!(symbol.0, "MSFT");
     }
@@ -513,15 +524,15 @@ mod tests {
         let symbol_str = "TSLA";
         let symbol = symbol_str.as_symbol();
         assert_eq!(symbol.0, "TSLA");
-        
+
         let symbol_string = String::from("GOOGL");
         let symbol = symbol_string.as_symbol();
         assert_eq!(symbol.0, "GOOGL");
-        
+
         let symbol_obj = Symbol::from("NVDA");
         let symbol = symbol_obj.as_symbol();
         assert_eq!(symbol.0, "NVDA");
-        
+
         let symbol_ref = &Symbol::from("AMD");
         let symbol = symbol_ref.as_symbol();
         assert_eq!(symbol.0, "AMD");
@@ -543,7 +554,7 @@ mod tests {
             .legs(vec![])
             .build()
             .unwrap();
-            
+
         // Test that the order was built successfully
         // We can't directly access private fields, but we can serialize to test
         let serialized = serde_json::to_string(&order).unwrap();
@@ -562,7 +573,7 @@ mod tests {
             .action(Action::Buy)
             .build()
             .unwrap();
-            
+
         let serialized = serde_json::to_string(&order_leg).unwrap();
         assert!(serialized.contains("Equity"));
         assert!(serialized.contains("AAPL"));
@@ -576,25 +587,25 @@ mod tests {
         let action = Action::BuyToOpen;
         let serialized = serde_json::to_string(&action).unwrap();
         assert_eq!(serialized, "\"Buy to Open\"");
-        
+
         let action = Action::SellToClose;
         let serialized = serde_json::to_string(&action).unwrap();
         assert_eq!(serialized, "\"Sell to Close\"");
-        
+
         // Test OrderType enum serialization
         let order_type = OrderType::MarketableLimit;
         let serialized = serde_json::to_string(&order_type).unwrap();
         assert_eq!(serialized, "\"Marketable Limit\"");
-        
+
         let order_type = OrderType::StopLimit;
         let serialized = serde_json::to_string(&order_type).unwrap();
         assert_eq!(serialized, "\"Stop Limit\"");
-        
+
         // Test TimeInForce enum serialization
         let tif = TimeInForce::Gtc;
         let serialized = serde_json::to_string(&tif).unwrap();
         assert_eq!(serialized, "\"GTC\"");
-        
+
         let tif = TimeInForce::GTCExt;
         let serialized = serde_json::to_string(&tif).unwrap();
         assert_eq!(serialized, "\"GTC Ext\"");
@@ -605,14 +616,14 @@ mod tests {
         // Test Action enum deserialization
         let action: Action = serde_json::from_str("\"Buy to Open\"").unwrap();
         matches!(action, Action::BuyToOpen);
-        
+
         let action: Action = serde_json::from_str("\"Sell to Close\"").unwrap();
         matches!(action, Action::SellToClose);
-        
+
         // Test OrderStatus enum deserialization
         let status: OrderStatus = serde_json::from_str("\"In Flight\"").unwrap();
         matches!(status, OrderStatus::InFlight);
-        
+
         let status: OrderStatus = serde_json::from_str("\"Cancel Requested\"").unwrap();
         matches!(status, OrderStatus::CancelRequested);
     }
@@ -622,7 +633,7 @@ mod tests {
         let symbol1 = Symbol::from("AAPL");
         let symbol2 = symbol1.clone();
         assert_eq!(symbol1, symbol2);
-        
+
         let symbol3 = Symbol::from("MSFT");
         assert_ne!(symbol1, symbol3);
     }
@@ -632,7 +643,7 @@ mod tests {
         let symbol1 = Symbol::from("AAPL");
         let symbol2 = Symbol::from("MSFT");
         let symbol3 = Symbol::from("AAPL");
-        
+
         assert!(symbol1 < symbol2);
         assert!(symbol1 <= symbol3);
         assert!(symbol2 > symbol1);
@@ -649,7 +660,7 @@ mod tests {
     #[test]
     fn test_all_enum_variants_exist() {
         // Test that all Action variants can be created
-        let _actions = vec![
+        let _actions = [
             Action::BuyToOpen,
             Action::SellToOpen,
             Action::BuyToClose,
@@ -657,9 +668,9 @@ mod tests {
             Action::Sell,
             Action::Buy,
         ];
-        
+
         // Test that all OrderType variants can be created
-        let _order_types = vec![
+        let _order_types = [
             OrderType::Limit,
             OrderType::Market,
             OrderType::MarketableLimit,
@@ -667,9 +678,9 @@ mod tests {
             OrderType::StopLimit,
             OrderType::NotionalMarket,
         ];
-        
+
         // Test that all TimeInForce variants can be created
-        let _time_in_forces = vec![
+        let _time_in_forces = [
             TimeInForce::Day,
             TimeInForce::Gtc,
             TimeInForce::Gtd,
@@ -677,9 +688,9 @@ mod tests {
             TimeInForce::GTCExt,
             TimeInForce::Ioc,
         ];
-        
+
         // Test that all OrderStatus variants can be created
-        let _statuses = vec![
+        let _statuses = [
             OrderStatus::Received,
             OrderStatus::Routed,
             OrderStatus::InFlight,

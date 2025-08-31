@@ -178,6 +178,7 @@ mod error;
 pub mod streaming;
 mod types;
 
+pub mod prelude;
 pub mod utils;
 
 pub use api::accounts;
@@ -192,4 +193,3 @@ pub use types::order::{
 };
 pub use types::order::{AsSymbol, LiveOrderRecord, Symbol};
 pub use types::position::{BriefPosition, FullPosition, QuantityDirection};
-
