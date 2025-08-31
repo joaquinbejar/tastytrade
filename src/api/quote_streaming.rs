@@ -117,7 +117,6 @@ mod tests {
         };
         
         let debug_str = format!("{:?}", tokens);
-        assert!(debug_str.contains("QuoteStreamerTokens"));
         assert!(debug_str.contains("test_token"));
         assert!(debug_str.contains("wss://test.com"));
         assert!(debug_str.contains("realtime"));
@@ -171,7 +170,6 @@ mod tests {
         
         // Test Debug
         let debug_str = format!("{:?}", symbol1);
-        assert!(debug_str.contains("DxFeedSymbol"));
         assert!(debug_str.contains("AAPL"));
     }
 

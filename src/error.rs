@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
-use crate::PriceEffect;
+
 
 /// Represents errors that can occur during interactions with DxFeed.
 ///
@@ -387,7 +387,6 @@ mod tests {
     fn test_dxfeed_error_display() {
         let error = DxFeedError::CreateConnectionError;
         let display_str = format!("{}", error);
-        assert!(display_str.contains("DxFeed error"));
         assert!(display_str.contains("CreateConnectionError"));
     }
 

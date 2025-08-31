@@ -1,5 +1,5 @@
 use std::fmt::Display;
-use pretty_simple_display::{DebugPretty, DisplaySimple};
+
 use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
@@ -40,7 +40,7 @@ impl<T: DeserializeOwned> FromTastyResponse<T> for T {
     }
 }
 
-impl<T: DeserializeOwned> FromTastyResponse<Items<T>> for Paginated<T> {
+impl<T: DeserializeOwned + Serialize> FromTastyResponse<Items<T>> for Paginated<T> {
     fn from_tasty(resp: Response<Items<T>>) -> Self {
         Paginated {
             items: resp.data.items,
@@ -104,8 +104,8 @@ impl TastyTrade {
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::USER_AGENT, "tastytrade")
             .json(&LoginCredentials {
-                login,
-                password,
+                login: login.to_string(),
+                password: password.to_string(),
                 remember_me,
             })
             .send()

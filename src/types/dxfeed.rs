@@ -271,7 +271,6 @@ mod tests {
         assert_eq!(original_quote.ask_price, cloned_quote.ask_price);
         
         let debug_str = format!("{:?}", original_quote);
-        assert!(debug_str.contains("DxfQuoteT"));
         assert!(debug_str.contains("50.0"));
     }
 

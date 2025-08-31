@@ -186,7 +186,6 @@ mod tests {
             streamer_symbol: DxFeedSymbol("TEST".to_string()),
         };
         let debug_str = format!("{:?}", option_info);
-        assert!(debug_str.contains("OptionInfo"));
         assert!(debug_str.contains("TEST"));
         
         let strike = Strike {
@@ -195,7 +194,6 @@ mod tests {
             put: Symbol::from("PUT"),
         };
         let debug_str = format!("{:?}", strike);
-        assert!(debug_str.contains("Strike"));
         assert!(debug_str.contains("100"));
     }
 

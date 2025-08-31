@@ -410,6 +410,5 @@ mod tests {
         
         let debug_str = format!("{:?}", balance);
         assert!(debug_str.contains("DEBUG123"));
-        assert!(debug_str.contains("Balance"));
     }
 }

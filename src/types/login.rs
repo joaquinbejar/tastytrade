@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize};
 /// serialization with kebab-case renaming for compatibility with external APIs.
 #[derive(DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct LoginCredentials<'a> {
+pub struct LoginCredentials {
     /// The username for login.
-    pub login: &'a str,
+    pub login: String,
     /// The password for login.
-    pub password: &'a str,
+    pub password: String,
     /// A flag indicating whether to remember the login.
     pub remember_me: bool,
 }
