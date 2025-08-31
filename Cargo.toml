@@ -22,25 +22,25 @@ include = [
 ]
 
 [dependencies]
-derive_builder = "0.20"
-reqwest = { version = "0.12", features = ["json"] }
-rust_decimal = { version = "1.37", features = [
+derive_builder = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+rust_decimal = { workspace = true, features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
 ] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
-flume = "0.11"
-tokio-tungstenite = { version = "0.27", features = ["native-tls"] }
-tokio = { version = "1.47", features = ["full"] }
-futures-util = "0.3"
-erased-serde = "0.4"
-dxlink = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
-serde_with = "3.14"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+flume = { workspace = true }
+tokio-tungstenite = { workspace = true, features = ["native-tls"] }
+tokio = { workspace = true, features = ["full"] }
+futures-util = { workspace = true }
+erased-serde = { workspace = true }
+dxlink = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+serde_with = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 serial_test = "3.2"
@@ -60,3 +60,22 @@ members = [
 
 [workspace.dependencies]
 tastytrade = { path = "." }
+derive_builder = "0.20"
+reqwest = { version = "0.12", features = ["json"] }
+rust_decimal = { version = "1.37", features = [
+    "serde-with-arbitrary-precision",
+    "serde-with-float",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+flume = "0.11"
+tokio-tungstenite = { version = "0.27", features = ["native-tls"] }
+tokio = { version = "1.47", features = ["full"] }
+futures-util = "0.3"
+erased-serde = "0.4"
+dxlink = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+serde_with = "3.14"
+tracing = "0.1"
+tracing-subscriber = "0.3"

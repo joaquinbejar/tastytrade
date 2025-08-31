@@ -13,31 +13,6 @@ trading functionality, market data, and account information.
 - Order management (placing, modifying, canceling)
 - Real-time account streaming for balance updates and order status changes
 
-### Configuration
-
-Before using the library, you need to set up your TastyTrade credentials. The easiest way is to use environment variables:
-
-1. **Copy the example environment file:**
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Edit `.env` with your credentials:**
-   ```bash
-   # Your TastyTrade credentials
-   TASTYTRADE_USERNAME=your_username@example.com
-   TASTYTRADE_PASSWORD=your_password
-   
-   # Use sandbox environment for testing
-   TASTYTRADE_USE_DEMO=true
-   
-   # Optional: Set log level
-   LOGLEVEL=INFO
-   ```
-
-3. **For sandbox/testing:** Set `TASTYTRADE_USE_DEMO=true` to use the certification environment
-4. **For production:** Set `TASTYTRADE_USE_DEMO=false` to use the live trading environment
-
 ### Usage
 
 ```rust
@@ -46,7 +21,8 @@ use tastytrade::utils::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Login to Tastytrade using environment variables
+    // Login to Tastytrade
+
     let config = Config::from_env();
     let tasty = TastyTrade::login(&config).await?;
 
@@ -62,25 +38,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-```
-
-### Running Examples
-
-The repository includes several examples that demonstrate different features:
-
-```bash
-# Make sure you have configured your .env file first
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run the accounts status example
-cargo run --example accounts-status
-
-# Run the quote streaming example  
-cargo run --example quote-streaming
-
-# Run other examples
-cargo run --example miscellaneous
 ```
 
 ### Real-time Data

@@ -5,5 +5,5 @@ edition = "2024"
 
 
 [dependencies]
-tastytrade = { path = "../.." }
-tokio = { version = "1.28.1", features = ["full"] }
+tastytrade = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
