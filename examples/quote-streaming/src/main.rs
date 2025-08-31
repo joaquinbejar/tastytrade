@@ -1,11 +1,11 @@
 use tastytrade::Symbol;
 use tastytrade::TastyTrade;
 use tastytrade::dxfeed::{self, EventData};
-use tastytrade::utils::config::Config;
+use tastytrade::utils::config::TastyTradeConfig;
 
 #[tokio::main]
 async fn main() {
-    let config = Config::from_env();
+    let config = TastyTradeConfig::from_env();
 
     // Check if credentials are configured
     if !config.has_valid_credentials() {

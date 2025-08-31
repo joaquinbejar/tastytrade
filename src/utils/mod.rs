@@ -32,10 +32,10 @@
 //!
 //! **Example:**
 //! ```rust,no_run
-//! use tastytrade::utils::config::Config;
+//! use tastytrade::utils::config::TastyTradeConfig;
 //!
 //! // Initialize configuration from environment variables
-//! let config = Config::from_env();
+//! let config = TastyTradeConfig::from_env();
 //!
 //! // Create a TastyTrade client
 //! let tasty = config.create_client();

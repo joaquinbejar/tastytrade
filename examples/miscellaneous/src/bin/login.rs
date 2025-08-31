@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load configuration from environment variables
-    let config = Config::from_env();
+    let config = TastyTradeConfig::from_env();
     info!("Configuration loaded, connecting to demo environment...");
 
     // Login to the TastyTrade API

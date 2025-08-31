@@ -29,7 +29,7 @@ use rust_decimal::{
 use serde::Serialize;
 use tastytrade::api::quote_streaming::DxFeedSymbol;
 use tastytrade::streaming::account_streaming::{AccountEvent, AccountMessage};
-use tastytrade::utils::config::Config;
+use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::{
     QuantityDirection, Symbol, TastyTrade,
     dxfeed::{self, Event, EventData},
@@ -163,7 +163,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     println!("Logging in...");
-    let config = Config::from_env();
+    let config = TastyTradeConfig::from_env();
     let tasty = TastyTrade::login(&config)
         .await
         .context("Logging into tastytrade")?;

@@ -8,7 +8,7 @@ use crate::api::base::TastyApiResponse;
 use crate::api::base::TastyResult;
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::login::{LoginCredentials, LoginResponse};
-use crate::utils::config::Config;
+use crate::utils::config::TastyTradeConfig;
 use reqwest::ClientBuilder;
 use reqwest::header;
 use reqwest::header::HeaderMap;
@@ -21,7 +21,7 @@ use tracing::debug;
 pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
-    pub(crate) config: Config,
+    pub(crate) config: TastyTradeConfig,
 }
 
 impl Display for TastyTrade {
@@ -52,7 +52,7 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
 }
 
 impl TastyTrade {
-    pub async fn login(config: &Config) -> TastyResult<Self> {
+    pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
         let creds = Self::do_login_request(
             &config.username,
             &config.password,
@@ -168,9 +168,6 @@ impl TastyTrade {
             .body(serde_json::to_string(&payload).unwrap())
             .send()
             .await?
-            //.inspect_json::<TastyApiResponse<R>, TastyError>(move |text| {
-            //    println!("{text}");
-            //})
             .json::<TastyApiResponse<R>>()
             .await?;
 

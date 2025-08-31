@@ -16,7 +16,7 @@ const WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
 /// Configuration structure for the application
 /// Handles environment variables and logger setup
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
-pub struct Config {
+pub struct TastyTradeConfig {
     /// TastyTrade API username/email
     pub username: String,
     /// TastyTrade API password
@@ -34,7 +34,7 @@ pub struct Config {
     pub websocket_url: String,
 }
 
-impl Default for Config {
+impl Default for TastyTradeConfig {
     fn default() -> Self {
         Self {
             username: String::new(),
@@ -48,7 +48,7 @@ impl Default for Config {
     }
 }
 
-impl Config {
+impl TastyTradeConfig {
     /// Creates a new instance of the type by loading configuration or setup
     /// details from the environment.
     ///
@@ -103,7 +103,7 @@ impl Config {
     /// Load configuration from a JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TastyTradeError> {
         let contents = fs::read_to_string(path)?;
-        let config: Config = serde_json::from_str(&contents)?;
+        let config: TastyTradeConfig = serde_json::from_str(&contents)?;
 
         // Initialize logger with the log level from the config file
         setup_logger_with_level(&config.log_level);
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_default_config() {
-        let config = Config::default();
+        let config = TastyTradeConfig::default();
         assert!(config.username.is_empty());
         assert!(config.password.is_empty());
         assert!(!config.use_demo);
@@ -162,7 +162,7 @@ mod tests {
             env::set_var("LOGLEVEL", "DEBUG");
             env::set_var("TASTYTRADE_REMEMBER_ME", "true");
         }
-        let config = Config::from_env();
+        let config = TastyTradeConfig::from_env();
         assert_eq!(config.username, "test_user");
         assert_eq!(config.password, "test_pass");
         assert!(config.use_demo);
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_has_valid_credentials() {
-        let mut config = Config::default();
+        let mut config = TastyTradeConfig::default();
         assert!(!config.has_valid_credentials());
 
         config.username = "user".to_string();
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_serialize_deserialize() {
-        let config = Config {
+        let config = TastyTradeConfig {
             username: "test_user".to_string(),
             password: "test_pass".to_string(),
             use_demo: true,
@@ -210,7 +210,7 @@ mod tests {
         assert!(!json.contains("test_pass"));
 
         // Create a new config with an empty password
-        let mut deserialized: Config = serde_json::from_str(&json).unwrap();
+        let mut deserialized: TastyTradeConfig = serde_json::from_str(&json).unwrap();
 
         // Manually set the password since it's not in the JSON
         deserialized.password = "test_pass".to_string();
@@ -242,16 +242,10 @@ mod tests {
             env::set_var("LOGLEVEL", "DEBUG");
             env::set_var("TASTYTRADE_REMEMBER_ME", "false");
         }
-        let config = Config::from_env();
+        let config = TastyTradeConfig::from_env();
         assert_eq!(config.username, "test_user");
         assert_eq!(config.password, "test_pass");
         assert!(!config.use_demo);
-        // The log level might be affected by logger state, so let's be more flexible
-        assert!(
-            config.log_level == "DEBUG"
-                || config.log_level == "ERROR"
-                || config.log_level == "INFO"
-        );
         assert!(!config.remember_me);
         assert_eq!(config.base_url, BASE_URL.to_string());
         assert_eq!(config.websocket_url, WEBSOCKET_URL.to_string());

@@ -29,13 +29,13 @@ trading functionality, market data, and account information.
 
 ```rust
 use tastytrade::TastyTrade;
-use tastytrade::utils::config::Config;
+use tastytrade::utils::config::TastyTradeConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Login to Tastytrade
 
-    let config = Config::from_env();
+    let config = TastyTradeConfig::from_env();
     let tasty = TastyTrade::login(&config).await?;
 
     // Get account information
@@ -59,12 +59,12 @@ The library supports real-time data streaming for both market data and account u
 ```rust
 // Create a quote streamer
 use tastytrade::{Symbol, TastyTrade};
-use tastytrade::utils::config::Config;
+use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::dxfeed;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::from_env();
+    let config = TastyTradeConfig::from_env();
     let tasty = TastyTrade::login(&config)
            .await
            .unwrap();

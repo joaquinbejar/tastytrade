@@ -15,13 +15,13 @@
 //!
 //! ```rust,no_run
 //! use tastytrade::TastyTrade;
-//! use tastytrade::utils::config::Config;
+//! use tastytrade::utils::config::TastyTradeConfig;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Login to Tastytrade
 //!     
-//!     let config = Config::from_env();
+//!     let config = TastyTradeConfig::from_env();
 //!     let tasty = TastyTrade::login(&config).await?;
 //!     
 //!     // Get account information
@@ -45,12 +45,12 @@
 //! ```rust,no_run
 //! // Create a quote streamer
 //! use tastytrade::{Symbol, TastyTrade};
-//! use tastytrade::utils::config::Config;
+//! use tastytrade::utils::config::TastyTradeConfig;
 //! use tastytrade::dxfeed;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = Config::from_env();
+//!     let config = TastyTradeConfig::from_env();
 //!     let tasty = TastyTrade::login(&config)
 //!            .await
 //!            .unwrap();

@@ -17,7 +17,7 @@ use tracing::{debug, error, info};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
     // Load configuration from environment variables
-    let config = Config::new();
+    let config = TastyTradeConfig::new();
     info!(
         "Configuration loaded, connecting to {}...",
         if config.use_demo {

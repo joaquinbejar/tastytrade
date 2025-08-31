@@ -63,7 +63,6 @@ struct SubRequest<T: Serialize> {
 /// value associated with that action.  The value is dynamically typed and serializable,
 /// allowing for flexibility in the data passed along with the action.
 ///
-#[derive(DebugPretty, DisplaySimple, Serialize)]
 pub struct HandlerAction {
     /// The specific action to be performed.
     action: SubRequestAction,

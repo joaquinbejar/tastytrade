@@ -14,7 +14,7 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
-    let config = Config::new();
+    let config = TastyTradeConfig::new();
 
     // Check if credentials are configured
     if !config.has_valid_credentials() {
