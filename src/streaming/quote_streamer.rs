@@ -503,13 +503,14 @@ impl QuoteStreamer {
     }
 
     pub fn subscribe(&self, _symbol: &[&str]) {
-        // Empty compatibility implementation, not used with DXLink
-        unimplemented!()
+        // This method is deprecated - use QuoteSubscription::add_symbols() instead
+        warn!("QuoteStreamer::subscribe() is deprecated. Use QuoteSubscription::add_symbols() instead.");
     }
 
     pub async fn get_event(&self) -> std::result::Result<dxfeed::Event, flume::RecvError> {
-        // Empty compatibility implementation, not used with DXLink
-        unimplemented!()
+        // This method is deprecated - use QuoteSubscription::get_event() instead
+        // Return an error indicating this method should not be used
+        Err(flume::RecvError::Disconnected)
     }
 }
 

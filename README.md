@@ -144,6 +144,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 This crate also includes a sample CLI application in the `tastytrade-cli` directory
 that demonstrates a portfolio viewer with real-time updates.
 
+### Sandbox Environment and Testing
+
+1. **Enable debug logging:**
+   ```bash
+   # In your .env file
+   LOGLEVEL=DEBUG
+   ```
+
+2. **Sandbox limitations:**
+   - **Future symbols**: May not be available or use different formats in sandbox
+   - **Cryptocurrency symbols**: Limited availability in certification environment
+   - **Valid test symbols**: Use common equities like AAPL, MSFT, TSLA for testing
+   - **Option symbols**: Require specific format (e.g., "AAPL  240920C00150000")
+
  ## Testing
 
  To run unit tests:
