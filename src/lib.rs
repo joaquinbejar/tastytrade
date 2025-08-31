@@ -46,7 +46,7 @@
 //! // Create a quote streamer
 //! use tastytrade::{Symbol, TastyTrade};
 //! use tastytrade::utils::config::Config;
-//! use dxfeed::{Event, EventData};
+//! use tastytrade::dxfeed;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,9 +61,9 @@
 //!     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]);
 //!
 //!     // Listen for events
-//!     if let Ok(Event { sym, data }) = quote_sub.get_event().await {
+//!     if let Ok(dxfeed::Event { sym, data }) = quote_sub.get_event().await {
 //!         match data {
-//!             EventData::Quote(quote) => {
+//!             dxfeed::EventData::Quote(quote) => {
 //!                 println!("Quote for {}: {}/{}", sym, quote.bid_price, quote.ask_price);
 //!             }
 //!             _ => {}
@@ -183,8 +183,9 @@ pub mod utils;
 pub use api::accounts;
 pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
-pub use dxfeed;
+
 pub use error::{ApiError, DxFeedError, TastyTradeError};
+pub use types::dxfeed;
 pub use types::instrument::InstrumentType;
 pub use types::order::{
     Action, Order, OrderBuilder, OrderLeg, OrderLegBuilder, OrderType, PriceEffect, TimeInForce,

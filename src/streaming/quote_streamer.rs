@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use crate::types::dxfeed;
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
 
@@ -112,7 +114,7 @@ impl QuoteSubscription {
                 match market_event {
                     MarketEvent::Quote(quote) => {
                         let symbol = quote.event_symbol;
-                        let data = dxfeed::EventData::Quote(dxfeed::dxf_quote_t {
+                        let data = dxfeed::EventData::Quote(dxfeed::DxfQuoteT {
                             time: 0,
                             sequence: 0,
                             time_nanos: 0,
@@ -120,9 +122,9 @@ impl QuoteSubscription {
                             bid_exchange_code: 0,
                             bid_price: quote.bid_price,
                             ask_price: quote.ask_price,
-                            bid_size: quote.bid_size,
+                            bid_size: quote.bid_size as i64,
                             ask_time: 0,
-                            ask_size: quote.ask_size,
+                            ask_size: quote.ask_size as i64,
                             ask_exchange_code: 0,
                             scope: 0,
                         });
@@ -131,13 +133,13 @@ impl QuoteSubscription {
                     MarketEvent::Trade(trade) => {
                         // Convert Trade to dxfeed format
                         let symbol = trade.event_symbol;
-                        let data = dxfeed::EventData::Trade(dxfeed::dxf_trade_t {
+                        let data = dxfeed::EventData::Trade(dxfeed::DxfTradeT {
                             time: 0,
                             sequence: 0,
                             time_nanos: 0,
                             exchange_code: 0,
                             price: trade.price,
-                            size: trade.size,
+                            size: trade.size as i64,
 
                             tick: 0,
                             change: 0.0,
@@ -154,7 +156,7 @@ impl QuoteSubscription {
                     MarketEvent::Greeks(greeks) => {
                         // Convert Greeks to dxfeed format
                         let symbol = greeks.event_symbol;
-                        let data = dxfeed::EventData::Greeks(dxfeed::dxf_greeks_t {
+                        let data = dxfeed::EventData::Greeks(dxfeed::DxfGreeksT {
                             event_flags: 0,
                             index: 0,
                             time: 0,
