@@ -25,6 +25,7 @@ use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, Zero},
 };
+use serde::Serialize;
 use tastytrade::api::quote_streaming::DxFeedSymbol;
 use tastytrade::streaming::account_streaming::{AccountEvent, AccountMessage};
 use tastytrade::utils::config::Config;
@@ -45,13 +46,13 @@ struct Args {
     password: String,
 }
 
-#[derive(Debug)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 struct SimpleGreeks {
     theta: f64,
     delta: f64,
 }
 
-#[derive(Debug)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 struct PriceRecord {
     symbol: Symbol,
     open: Decimal,

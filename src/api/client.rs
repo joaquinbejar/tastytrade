@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
@@ -20,6 +22,12 @@ pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
     pub(crate) config: Config,
+}
+
+impl Display for TastyTrade {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TastyTrade")
+    }
 }
 
 pub trait FromTastyResponse<T: DeserializeOwned> {

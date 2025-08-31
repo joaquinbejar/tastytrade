@@ -1,3 +1,4 @@
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 
 /// Login credentials for authentication.
@@ -5,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// This struct holds the login information required for authentication, including
 /// the username, password, and a "remember me" flag.  It's designed for
 /// serialization with kebab-case renaming for compatibility with external APIs.
-#[derive(Debug, Serialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoginCredentials<'a> {
     /// The username for login.
@@ -17,7 +18,7 @@ pub struct LoginCredentials<'a> {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 /// Represents a user in a login response.  This struct is used for deserializing the JSON response
 /// received after a successful login.  The `#[serde(rename_all = "kebab-case")]` attribute ensures
@@ -40,7 +41,7 @@ pub struct LoginResponseUser {
 /// even if the casing is different (e.g., "session-token" in JSON will map to
 /// `session_token` in the struct).
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoginResponse {
     /// The user information associated with the login.

@@ -13,3 +13,5 @@ tokio = { workspace = true }
 tui = { version = "0.19" }
 futures = { version = "0.3"}
 futures-util = { version = "0.3" }
+serde = { version = "1.0.219", features = ["derive"] }
+pretty-simple-display = { workspace = true }

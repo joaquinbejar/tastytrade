@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::{env, fmt};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
@@ -14,7 +15,7 @@ const WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
 
 /// Configuration structure for the application
 /// Handles environment variables and logger setup
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// TastyTrade API username/email
     pub username: String,
@@ -31,21 +32,6 @@ pub struct Config {
     pub base_url: String,
     /// Websocket URL.
     pub websocket_url: String,
-}
-
-impl fmt::Display for Config {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Config {{ username: {}, password: [REDACTED], use_demo: {}, log_level: {}, remember_me: {}, base_url: {}, websocket_url: {} }}",
-            self.username,
-            self.use_demo,
-            self.log_level,
-            self.remember_me,
-            self.base_url,
-            self.websocket_url
-        )
-    }
 }
 
 impl Default for Config {

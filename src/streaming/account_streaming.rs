@@ -6,6 +6,7 @@ use crate::{
 };
 use dxlink::{DXLinkClient, EventType, FeedSubscription};
 use futures_util::{SinkExt, StreamExt};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -14,7 +15,7 @@ use tracing::{debug, error, warn};
 /**
 Represents the different types of subscription requests.  Used for managing real-time data streams.
 */
-#[derive(Debug, Serialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubRequestAction {
     /// Represents a heartbeat message.  Used to maintain an active connection.
@@ -33,7 +34,7 @@ pub enum SubRequestAction {
 ///
 /// This struct is used to send subscription requests to the server.
 /// The `value` field is optional and its type depends on the `action` field.
-#[derive(Debug, Serialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SubRequest<T> {
     /// Authentication token.
@@ -178,7 +179,7 @@ enum DXLinkCommand {
 ///
 /// Provides a way to stream account events. Uses DXLink for communication.
 ///
-#[derive(Debug)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 pub struct AccountStreamer {
     /// Receiver for account events.
     pub event_receiver: flume::Receiver<AccountEvent>,

@@ -4,6 +4,7 @@ use derive_builder::Builder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents the effect of a price on an account.
 ///
@@ -174,7 +175,7 @@ impl fmt::Display for OrderStatus {
 /// This simplifies the process and avoids unnecessary nesting in the resulting
 /// JSON or other serialized formats.  It also ensures ordering, equality, and
 /// hashing are based on the underlying string value.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
 pub struct Symbol(pub String);
 
@@ -223,7 +224,7 @@ impl AsSymbol for &Symbol {
 /// This struct provides a transparent wrapper around a `u64` to represent an order ID.
 /// The `#[serde(transparent)]` attribute ensures that during serialization and deserialization,
 /// the `OrderId` is treated as if it were just a `u64`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
 #[serde(transparent)]
 pub struct OrderId(pub u64);
 
@@ -235,7 +236,7 @@ pub struct OrderId(pub u64);
 /// attributes are used to control how the struct is serialized and deserialized
 /// to and from JSON, ensuring compatibility with the Tastyworks API.  For example,
 /// `rename_all = "kebab-case"` converts field names to kebab-case during serialization.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LiveOrderRecord {
     /// The unique identifier for the order.
@@ -274,7 +275,7 @@ pub struct LiveOrderRecord {
 /// "kebab-case")]` attribute ensures that the fields are serialized and
 /// deserialized with kebab-case naming conventions.
 #[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LiveOrderLeg {
     /// The type of instrument for this leg.
@@ -340,7 +341,7 @@ pub struct OrderLeg {
     action: Action,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 /// Represents the result of placing an order.
 ///
@@ -365,7 +366,7 @@ pub struct OrderPlacedResult {
 /// details about the simulated order execution, including potential warnings,
 /// buying power effects, and fee calculations.  It's designed for deserialization
 /// from a JSON response using `serde`, with kebab-case field renaming.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DryRunResult {
     /// Details of the simulated order.
@@ -384,7 +385,7 @@ pub struct DryRunResult {
 /// such as its status, price, and whether it can be cancelled or edited.  The struct
 /// utilizes the `serde` crate for serialization and deserialization, with kebab-case
 /// renaming for compatibility with external APIs.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DryRunRecord {
     /// The account number associated with the dry-run order.
@@ -423,7 +424,7 @@ pub struct DryRunRecord {
 /// precision issues.  The `#[serde(rename_all = "kebab-case")]` attribute
 /// ensures that the fields in the JSON response are matched to the struct
 /// fields correctly, even if the casing is different.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BuyingPowerEffect {
     /// The change in margin requirement.
@@ -453,7 +454,7 @@ pub struct BuyingPowerEffect {
 ///
 /// This struct holds the total fees and the effect of those fees on the account balance.
 /// It uses `#[serde(rename_all = "kebab-case")]` to handle kebab-case formatted data during deserialization.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FeeCalculation {
     /// The total fees calculated. Uses `rust_decimal::serde::arbitrary_precision` for deserialization
@@ -469,6 +470,229 @@ pub struct FeeCalculation {
 /// attribute indicates that during deserialization, the field names in the incoming data should be
 /// converted from kebab-case to snake_case. For example, a field named "warning-message" in the
 /// incoming data would be mapped to `warning_message` in the struct.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Warning {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_price_effect_display() {
+        assert_eq!(format!("{}", PriceEffect::Debit), "Debit");
+        assert_eq!(format!("{}", PriceEffect::Credit), "Credit");
+        assert_eq!(format!("{}", PriceEffect::None), "None");
+    }
+
+    #[test]
+    fn test_order_status_display() {
+        assert_eq!(format!("{}", OrderStatus::Received), "Received");
+        assert_eq!(format!("{}", OrderStatus::Live), "Live");
+        assert_eq!(format!("{}", OrderStatus::Filled), "Filled");
+        assert_eq!(format!("{}", OrderStatus::Cancelled), "Cancelled");
+        assert_eq!(format!("{}", OrderStatus::InFlight), "In Flight");
+        assert_eq!(format!("{}", OrderStatus::CancelRequested), "Cancel Requested");
+        assert_eq!(format!("{}", OrderStatus::ReplaceRequested), "Replace Requested");
+        assert_eq!(format!("{}", OrderStatus::PartiallyRemoved), "Partially Removed");
+    }
+
+    #[test]
+    fn test_symbol_from_string() {
+        let symbol = Symbol::from("AAPL");
+        assert_eq!(symbol.0, "AAPL");
+        
+        let symbol = Symbol::from(String::from("MSFT"));
+        assert_eq!(symbol.0, "MSFT");
+    }
+
+    #[test]
+    fn test_symbol_as_symbol_trait() {
+        let symbol_str = "TSLA";
+        let symbol = symbol_str.as_symbol();
+        assert_eq!(symbol.0, "TSLA");
+        
+        let symbol_string = String::from("GOOGL");
+        let symbol = symbol_string.as_symbol();
+        assert_eq!(symbol.0, "GOOGL");
+        
+        let symbol_obj = Symbol::from("NVDA");
+        let symbol = symbol_obj.as_symbol();
+        assert_eq!(symbol.0, "NVDA");
+        
+        let symbol_ref = &Symbol::from("AMD");
+        let symbol = symbol_ref.as_symbol();
+        assert_eq!(symbol.0, "AMD");
+    }
+
+    #[test]
+    fn test_order_id() {
+        let order_id = OrderId(12345);
+        assert_eq!(order_id.0, 12345);
+    }
+
+    #[test]
+    fn test_order_builder() {
+        let order = OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Limit)
+            .price(Decimal::from_str("150.50").unwrap())
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![])
+            .build()
+            .unwrap();
+            
+        // Test that the order was built successfully
+        // We can't directly access private fields, but we can serialize to test
+        let serialized = serde_json::to_string(&order).unwrap();
+        assert!(serialized.contains("Day"));
+        assert!(serialized.contains("Limit"));
+        assert!(serialized.contains("150.50"));
+        assert!(serialized.contains("Debit"));
+    }
+
+    #[test]
+    fn test_order_leg_builder() {
+        let order_leg = OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol(Symbol::from("AAPL"))
+            .quantity(Decimal::from(100))
+            .action(Action::Buy)
+            .build()
+            .unwrap();
+            
+        let serialized = serde_json::to_string(&order_leg).unwrap();
+        assert!(serialized.contains("Equity"));
+        assert!(serialized.contains("AAPL"));
+        assert!(serialized.contains("100"));
+        assert!(serialized.contains("Buy"));
+    }
+
+    #[test]
+    fn test_enum_serialization() {
+        // Test Action enum serialization
+        let action = Action::BuyToOpen;
+        let serialized = serde_json::to_string(&action).unwrap();
+        assert_eq!(serialized, "\"Buy to Open\"");
+        
+        let action = Action::SellToClose;
+        let serialized = serde_json::to_string(&action).unwrap();
+        assert_eq!(serialized, "\"Sell to Close\"");
+        
+        // Test OrderType enum serialization
+        let order_type = OrderType::MarketableLimit;
+        let serialized = serde_json::to_string(&order_type).unwrap();
+        assert_eq!(serialized, "\"Marketable Limit\"");
+        
+        let order_type = OrderType::StopLimit;
+        let serialized = serde_json::to_string(&order_type).unwrap();
+        assert_eq!(serialized, "\"Stop Limit\"");
+        
+        // Test TimeInForce enum serialization
+        let tif = TimeInForce::Gtc;
+        let serialized = serde_json::to_string(&tif).unwrap();
+        assert_eq!(serialized, "\"GTC\"");
+        
+        let tif = TimeInForce::GTCExt;
+        let serialized = serde_json::to_string(&tif).unwrap();
+        assert_eq!(serialized, "\"GTC Ext\"");
+    }
+
+    #[test]
+    fn test_enum_deserialization() {
+        // Test Action enum deserialization
+        let action: Action = serde_json::from_str("\"Buy to Open\"").unwrap();
+        matches!(action, Action::BuyToOpen);
+        
+        let action: Action = serde_json::from_str("\"Sell to Close\"").unwrap();
+        matches!(action, Action::SellToClose);
+        
+        // Test OrderStatus enum deserialization
+        let status: OrderStatus = serde_json::from_str("\"In Flight\"").unwrap();
+        matches!(status, OrderStatus::InFlight);
+        
+        let status: OrderStatus = serde_json::from_str("\"Cancel Requested\"").unwrap();
+        matches!(status, OrderStatus::CancelRequested);
+    }
+
+    #[test]
+    fn test_symbol_clone_and_eq() {
+        let symbol1 = Symbol::from("AAPL");
+        let symbol2 = symbol1.clone();
+        assert_eq!(symbol1, symbol2);
+        
+        let symbol3 = Symbol::from("MSFT");
+        assert_ne!(symbol1, symbol3);
+    }
+
+    #[test]
+    fn test_symbol_ordering() {
+        let symbol1 = Symbol::from("AAPL");
+        let symbol2 = Symbol::from("MSFT");
+        let symbol3 = Symbol::from("AAPL");
+        
+        assert!(symbol1 < symbol2);
+        assert!(symbol1 <= symbol3);
+        assert!(symbol2 > symbol1);
+        assert_eq!(symbol1, symbol3);
+    }
+
+    #[test]
+    fn test_price_effect_clone() {
+        let effect1 = PriceEffect::Debit;
+        let effect2 = effect1.clone();
+        matches!(effect2, PriceEffect::Debit);
+    }
+
+    #[test]
+    fn test_all_enum_variants_exist() {
+        // Test that all Action variants can be created
+        let _actions = vec![
+            Action::BuyToOpen,
+            Action::SellToOpen,
+            Action::BuyToClose,
+            Action::SellToClose,
+            Action::Sell,
+            Action::Buy,
+        ];
+        
+        // Test that all OrderType variants can be created
+        let _order_types = vec![
+            OrderType::Limit,
+            OrderType::Market,
+            OrderType::MarketableLimit,
+            OrderType::Stop,
+            OrderType::StopLimit,
+            OrderType::NotionalMarket,
+        ];
+        
+        // Test that all TimeInForce variants can be created
+        let _time_in_forces = vec![
+            TimeInForce::Day,
+            TimeInForce::Gtc,
+            TimeInForce::Gtd,
+            TimeInForce::Ext,
+            TimeInForce::GTCExt,
+            TimeInForce::Ioc,
+        ];
+        
+        // Test that all OrderStatus variants can be created
+        let _statuses = vec![
+            OrderStatus::Received,
+            OrderStatus::Routed,
+            OrderStatus::InFlight,
+            OrderStatus::Live,
+            OrderStatus::CancelRequested,
+            OrderStatus::ReplaceRequested,
+            OrderStatus::Contingent,
+            OrderStatus::Filled,
+            OrderStatus::Cancelled,
+            OrderStatus::Expired,
+            OrderStatus::Rejected,
+            OrderStatus::Removed,
+            OrderStatus::PartiallyRemoved,
+        ];
+    }
+}

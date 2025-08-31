@@ -1,3 +1,4 @@
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
@@ -5,7 +6,7 @@ use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone)]
 #[serde(transparent)]
 pub struct AccountNumber(pub String);
 
@@ -15,7 +16,7 @@ impl<T: AsRef<str>> From<T> for AccountNumber {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AccountDetails {
     pub account_number: AccountNumber,
@@ -32,7 +33,7 @@ pub struct AccountDetails {
     pub funding_date: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple,Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AccountInner {
     pub account: AccountDetails,

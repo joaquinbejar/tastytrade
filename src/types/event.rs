@@ -1,3 +1,5 @@
+use pretty_simple_display::{DebugPretty, DisplaySimple};
+use serde::Serialize;
 use crate::streaming::account_streaming::AccountEvent;
 
 /// Represents events originating from different data feeds.

@@ -1,13 +1,15 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::fmt::{self, Display};
+use std::fmt::{self, Display, Formatter};
 use std::io;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
+use crate::PriceEffect;
 
 /// Represents errors that can occur during interactions with DxFeed.
 ///
 /// This enum provides variants for different types of errors related to DxFeed.
 /// Currently, it only includes a variant for connection errors.
-#[derive(Debug)]
+#[derive(DebugPretty, DisplaySimple, Serialize)]
 pub enum DxFeedError {
     /// Represents an error encountered while creating a connection to DxFeed.
     /// This can occur due to various reasons, such as network issues or invalid
@@ -15,18 +17,12 @@ pub enum DxFeedError {
     CreateConnectionError,
 }
 
-impl Display for DxFeedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DxFeed error: {:?}", self)
-    }
-}
-
 impl Error for DxFeedError {}
 
 /// Represents an error returned by the Tastytrade API.
 ///
 /// This struct provides detailed information about errors encountered when interacting with the Tastytrade API.  It includes an optional error code, a human-readable error message, and an optional list of inner errors for more specific diagnostic information.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 pub struct ApiError {
     /// An optional error code. This can be used for programmatic identification of specific errors.
     pub code: Option<String>,
@@ -37,18 +33,12 @@ pub struct ApiError {
 }
 
 /// Represents an inner API error.  This struct is typically nested within a top-level `ApiError` to provide more detailed error information.
-#[derive(Debug, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 pub struct InnerApiError {
     /// An optional error code.  This can be used for programmatic identification of specific errors.
     pub code: Option<String>,
     /// A human-readable error message.  This provides a description of the error that occurred.
     pub message: String,
-}
-
-impl Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error {:?}: {}", self.code, self.message)
-    }
 }
 
 impl Error for ApiError {}
@@ -81,22 +71,23 @@ pub enum TastyTradeError {
 }
 
 impl Display for TastyTradeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Api(err) => write!(f, "API error: {}", err),
-            Self::Http(err) => write!(f, "HTTP error: {}", err),
-            Self::Json(err) => write!(f, "JSON parsing error: {}", err),
-            Self::DxFeed(err) => write!(f, "DxFeed error: {}", err),
-            Self::WebSocket(err) => write!(f, "WebSocket error: {}", err),
-            Self::Io(err) => write!(f, "IO error: {}", err),
-            Self::Auth(msg) => write!(f, "Authentication failed: {}", msg),
-            Self::Connection(msg) => write!(f, "Connection error: {}", msg),
-            Self::Streaming(msg) => write!(f, "Streaming error: {}", msg),
-            Self::Unknown(msg) => write!(f, "Unknown error: {}", msg),
-            Self::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
+            TastyTradeError::Api(err) => write!(f, "API error: {}", err),
+            TastyTradeError::Http(err) => write!(f, "HTTP error: {}", err),
+            TastyTradeError::Json(err) => write!(f, "JSON error: {}", err),
+            TastyTradeError::DxFeed(err) => write!(f, "DxFeed error: {}", err),
+            TastyTradeError::WebSocket(err) => write!(f, "WebSocket error: {}", err),
+            TastyTradeError::Io(err) => write!(f, "I/O error: {}", err),
+            TastyTradeError::Auth(msg) => write!(f, "Authentication failed: {}", msg),
+            TastyTradeError::Connection(msg) => write!(f, "Connection error: {}", msg),
+            TastyTradeError::Streaming(msg) => write!(f, "Streaming error: {}", msg),
+            TastyTradeError::Unknown(msg) => write!(f, "Unknown error: {}", msg),
+            TastyTradeError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
         }
     }
 }
+
 
 impl Error for TastyTradeError {
     /// Returns the underlying source of the error if available.
@@ -384,5 +375,195 @@ impl TastyTradeError {
     /// ```
     pub fn unknown_error(msg: impl Into<String>) -> Self {
         Self::Unknown(msg.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn test_dxfeed_error_display() {
+        let error = DxFeedError::CreateConnectionError;
+        let display_str = format!("{}", error);
+        assert!(display_str.contains("DxFeed error"));
+        assert!(display_str.contains("CreateConnectionError"));
+    }
+
+    #[test]
+    fn test_api_error_display() {
+        let api_error = ApiError {
+            code: Some("TEST_CODE".to_string()),
+            message: "Test message".to_string(),
+            errors: None,
+        };
+        let display_str = format!("{}", api_error);
+        assert!(display_str.contains("TEST_CODE"));
+        assert!(display_str.contains("Test message"));
+    }
+
+    #[test]
+    fn test_api_error_display_no_code() {
+        let api_error = ApiError {
+            code: None,
+            message: "Test message without code".to_string(),
+            errors: None,
+        };
+        let display_str = format!("{}", api_error);
+        assert!(display_str.contains("Test message without code"));
+    }
+
+    #[test]
+    fn test_tastytrade_error_display_variants() {
+        let api_error = ApiError {
+            code: Some("API_ERROR".to_string()),
+            message: "API error message".to_string(),
+            errors: None,
+        };
+        
+        let test_cases = vec![
+            (TastyTradeError::Api(api_error), "API error"),
+            (TastyTradeError::Auth("Auth failed".to_string()), "Authentication failed"),
+            (TastyTradeError::Connection("Connection failed".to_string()), "Connection error"),
+            (TastyTradeError::Streaming("Stream failed".to_string()), "Streaming error"),
+            (TastyTradeError::Unknown("Unknown error".to_string()), "Unknown error"),
+            (TastyTradeError::ConfigError("Config error".to_string()), "Configuration error"),
+        ];
+
+        for (error, expected_prefix) in test_cases {
+            let display_str = format!("{}", error);
+            assert!(display_str.contains(expected_prefix), 
+                "Error '{}' should contain '{}'", display_str, expected_prefix);
+        }
+    }
+
+    #[test]
+    fn test_from_api_error() {
+        let api_error = ApiError {
+            code: Some("TEST".to_string()),
+            message: "Test message".to_string(),
+            errors: None,
+        };
+        let tastytrade_error = TastyTradeError::from(api_error);
+        
+        match tastytrade_error {
+            TastyTradeError::Api(err) => {
+                assert_eq!(err.code, Some("TEST".to_string()));
+                assert_eq!(err.message, "Test message");
+            },
+            _ => panic!("Expected Api variant"),
+        }
+    }
+
+    #[test]
+    fn test_from_serde_json_error() {
+        let json_error = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
+        let tastytrade_error = TastyTradeError::from(json_error);
+        
+        match tastytrade_error {
+            TastyTradeError::Json(_) => {}, // Success
+            _ => panic!("Expected Json variant"),
+        }
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_error = io::Error::new(io::ErrorKind::NotFound, "File not found");
+        let tastytrade_error = TastyTradeError::from(io_error);
+        
+        match tastytrade_error {
+            TastyTradeError::Io(_) => {}, // Success
+            _ => panic!("Expected Io variant"),
+        }
+    }
+
+    #[test]
+    fn test_from_dxfeed_error() {
+        let dxfeed_error = DxFeedError::CreateConnectionError;
+        let tastytrade_error = TastyTradeError::from(dxfeed_error);
+        
+        match tastytrade_error {
+            TastyTradeError::DxFeed(DxFeedError::CreateConnectionError) => {}, // Success
+            _ => panic!("Expected DxFeed variant"),
+        }
+    }
+
+    #[test]
+    fn test_constructor_methods() {
+        let auth_error = TastyTradeError::auth_error("Invalid credentials");
+        match auth_error {
+            TastyTradeError::Auth(msg) => assert_eq!(msg, "Invalid credentials"),
+            _ => panic!("Expected Auth variant"),
+        }
+
+        let connection_error = TastyTradeError::connection_error("Connection timeout");
+        match connection_error {
+            TastyTradeError::Connection(msg) => assert_eq!(msg, "Connection timeout"),
+            _ => panic!("Expected Connection variant"),
+        }
+
+        let streaming_error = TastyTradeError::streaming_error("Stream interrupted");
+        match streaming_error {
+            TastyTradeError::Streaming(msg) => assert_eq!(msg, "Stream interrupted"),
+            _ => panic!("Expected Streaming variant"),
+        }
+
+        let unknown_error = TastyTradeError::unknown_error("Something went wrong");
+        match unknown_error {
+            TastyTradeError::Unknown(msg) => assert_eq!(msg, "Something went wrong"),
+            _ => panic!("Expected Unknown variant"),
+        }
+    }
+
+    #[test]
+    fn test_error_source() {
+        let api_error = ApiError {
+            code: Some("TEST".to_string()),
+            message: "Test message".to_string(),
+            errors: None,
+        };
+        let tastytrade_error = TastyTradeError::Api(api_error);
+        
+        // Test that source() returns Some for Api errors
+        assert!(tastytrade_error.source().is_some());
+        
+        // Test that source() returns None for string-based errors
+        let auth_error = TastyTradeError::Auth("Auth failed".to_string());
+        assert!(auth_error.source().is_none());
+    }
+
+    #[test]
+    fn test_inner_api_error() {
+        let inner_error = InnerApiError {
+            code: Some("INNER_CODE".to_string()),
+            message: "Inner error message".to_string(),
+        };
+        
+        assert_eq!(inner_error.code, Some("INNER_CODE".to_string()));
+        assert_eq!(inner_error.message, "Inner error message");
+    }
+
+    #[test]
+    fn test_api_error_with_inner_errors() {
+        let inner_error = InnerApiError {
+            code: Some("VALIDATION_ERROR".to_string()),
+            message: "Field is required".to_string(),
+        };
+        
+        let api_error = ApiError {
+            code: Some("BAD_REQUEST".to_string()),
+            message: "Request validation failed".to_string(),
+            errors: Some(vec![inner_error]),
+        };
+        
+        assert_eq!(api_error.code, Some("BAD_REQUEST".to_string()));
+        assert_eq!(api_error.message, "Request validation failed");
+        assert!(api_error.errors.is_some());
+        
+        let inner_errors = api_error.errors.unwrap();
+        assert_eq!(inner_errors.len(), 1);
+        assert_eq!(inner_errors[0].code, Some("VALIDATION_ERROR".to_string()));
+        assert_eq!(inner_errors[0].message, "Field is required");
     }
 }

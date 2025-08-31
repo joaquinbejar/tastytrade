@@ -4,12 +4,13 @@ use crate::{AsSymbol, Symbol, TastyResult, TastyTradeError};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use pretty_simple_display::{DebugPretty, DisplaySimple};
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-
 use crate::types::dxfeed;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
 
 pub struct QuoteSubscription {

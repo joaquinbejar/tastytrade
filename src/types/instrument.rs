@@ -3,6 +3,8 @@ use crate::api::quote_streaming::DxFeedSymbol;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Display;
+use pretty_simple_display::{DebugPretty, DisplaySimple};
 
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,11 +26,24 @@ pub enum InstrumentType {
     Cryptocurrency,
 }
 
+impl Display for InstrumentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstrumentType::Equity => write!(f, "Equity"),
+            InstrumentType::EquityOption => write!(f, "Equity Option"),
+            InstrumentType::EquityOffering => write!(f, "Equity Offering"),
+            InstrumentType::Future => write!(f, "Future"),
+            InstrumentType::FutureOption => write!(f, "Future Option"),
+            InstrumentType::Cryptocurrency => write!(f, "Cryptocurrency"),
+        }
+    }
+}
+
 /// Represents equity instrument information.
 ///
 /// This struct holds the symbol and the streamer symbol for an equity instrument.
 /// It uses kebab-case for serialization and deserialization.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EquityInstrumentInfo {
     /// The symbol of the equity instrument.
@@ -41,7 +56,7 @@ pub struct EquityInstrumentInfo {
 ///
 /// This struct is deserialized from a JSON response using `serde`.
 /// The fields are renamed to kebab-case during deserialization.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct TickSize {
     /// The value of the tick size.
@@ -54,7 +69,7 @@ pub struct TickSize {
 ///
 /// This struct is deserialized from a JSON response using `serde`.
 /// The fields are renamed to kebab-case during deserialization.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EquityInstrument {
     /// The unique identifier of the equity instrument.
@@ -104,7 +119,7 @@ pub struct EquityInstrument {
 /// This struct holds information about a specific strike price, including its monetary value
 /// and the associated call and put option symbols.  It uses symbols specifically designed for
 /// interaction with the DxFeed data stream.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Strike {
     /// The strike price itself, represented as a Decimal for precision.
@@ -132,7 +147,7 @@ pub struct Strike {
 /// vector of `Strike` structs representing the available strike prices for
 /// this expiration date.  The data structure uses kebab-case for its fields
 /// to match the format of incoming data.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Expiration {
     /// The type of expiration (e.g., "weekly", "monthly").
@@ -160,7 +175,7 @@ pub struct Expiration {
 /// and a collection of expiration dates along with their associated
 /// strike prices.  The data structure uses kebab-case for its fields
 /// to match the format of incoming data.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct NestedOptionChain {
     /// The symbol of the underlying asset (e.g., "AAPL").
@@ -181,7 +196,7 @@ pub struct NestedOptionChain {
 }
 
 /// Represents an equity option.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct EquityOption {
     /// The symbol of the equity option.
@@ -229,7 +244,7 @@ pub struct EquityOption {
 ///
 /// This struct is deserialized from a JSON response using `serde`.
 /// The fields are renamed to kebab-case during deserialization.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Future {
     /// The symbol of the future contract.
@@ -296,7 +311,7 @@ pub struct Future {
 /// description, exchange details, product type, listed and active months, and various
 /// other characteristics.  It utilizes the `kebab-case` naming convention for serialization
 /// and deserialization.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FutureProduct {
     /// The root symbol of the future product.
@@ -353,7 +368,7 @@ pub struct FutureProduct {
 /// active count, whether it's cash-settled, the business days offset, and
 /// if it's the first notice.
 ///
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FutureRoll {
     /// The name of the future roll.
@@ -375,7 +390,7 @@ pub struct FutureRoll {
 /// information, and various other characteristics.  It utilizes the
 /// `serde` crate for serialization and deserialization, with a `kebab-case`
 /// naming convention.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FutureOption {
     /// The symbol of the future option.
@@ -455,7 +470,7 @@ pub struct FutureOption {
 /// type, expiration type, and other relevant attributes.  It's designed to be
 /// serialized and deserialized using the `serde` library, with field names
 /// converted to kebab-case.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FutureOptionProduct {
     /// The root symbol of the future option.
@@ -495,7 +510,7 @@ pub struct FutureOptionProduct {
 /// This struct holds information about a cryptocurrency instrument, including its ID, symbol,
 /// instrument type, description, trading restrictions, activity status, tick size,
 /// streamer symbol, and destination venue symbols.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Cryptocurrency {
     /// The unique identifier for the cryptocurrency.
@@ -526,7 +541,7 @@ pub struct Cryptocurrency {
 /// destination venue. It includes details such as the symbol's ID, the symbol
 /// itself, the destination venue name, precision for quantity and price, and
 /// whether the symbol is routable.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DestinationVenueSymbol {
     /// The unique identifier for the symbol.
@@ -547,7 +562,7 @@ pub struct DestinationVenueSymbol {
 ///
 /// Warrants are derivative securities that give the holder the right, but not the obligation,
 /// to buy or sell an underlying asset at a certain price before expiration.  
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Warrant {
     /// The symbol of the warrant.
@@ -572,7 +587,7 @@ pub struct Warrant {
 /// required for the minimum increment.  For instance, a `value` of 2 and a `minimum_increment_precision`
 /// of 2 would allow quantities like 1.23, and the minimum increment would also need to be expressed
 /// with two decimal places (e.g., 0.01).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct QuantityDecimalPrecision {
     /// The type of instrument.  Examples include `Equity`, `EquityOption`, `Future`, etc.
