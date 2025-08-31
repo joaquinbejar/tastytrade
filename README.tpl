@@ -1,6 +1,3 @@
-<div style="text-align: center;">
-<img src="https://raw.githubusercontent.com/joaquinbejar/tastytrade/refs/heads/main/doc/images/logo.png" alt="tastytrade" style="width: 100%; height: 100%;">
-</div>
 
 [![Dual License](https://img.shields.io/badge/license-MIT%20and%20Apache%202.0-blue)](./LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/tastytrade.svg)](https://crates.io/crates/tastytrade)
