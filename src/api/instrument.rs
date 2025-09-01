@@ -152,6 +152,9 @@ impl TastyTrade {
         &self,
         symbols: Option<&[impl AsSymbol]>,
         product_code: Option<&str>,
+        exchange: Option<&str>,
+        only_active_futures: Option<bool>,
+        security_ids: Option<&[&str]>,
     ) -> TastyResult<Vec<crate::types::instrument::Future>> {
         let mut query = Vec::new();
 
@@ -171,6 +174,20 @@ impl TastyTrade {
             query.push(("product-code", code));
         }
 
+        if let Some(exchange_name) = exchange {
+            query.push(("exchange", exchange_name));
+        }
+
+        if let Some(only_active) = only_active_futures {
+            query.push(("only-active-futures", if only_active { "true" } else { "false" }));
+        }
+
+        if let Some(security_id_list) = security_ids {
+            for security_id in security_id_list {
+                query.push(("security-id[]", security_id));
+            }
+        }
+
         let resp: Items<crate::types::instrument::Future> =
             self.get_with_query("/instruments/futures", &query).await?;
         Ok(resp.items)
@@ -180,7 +197,8 @@ impl TastyTrade {
         &self,
         symbol: impl AsSymbol,
     ) -> TastyResult<crate::types::instrument::Future> {
-        self.get(format!("/instruments/futures/{}", symbol.as_symbol().0))
+        let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
+        self.get(format!("/instruments/futures/{}", encoded_symbol))
             .await
     }
 
@@ -272,9 +290,13 @@ impl TastyTrade {
     }
 
     pub async fn get_future_option(&self, symbol: impl AsSymbol) -> TastyResult<FutureOption> {
+        let encoded_symbol = symbol.as_symbol().0
+            .replace("/", "%2F")
+            .replace(".", "%2E")
+            .replace(" ", "%20");
         self.get(format!(
             "/instruments/future-options/{}",
-            symbol.as_symbol().0
+            encoded_symbol
         ))
         .await
     }
