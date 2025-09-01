@@ -177,6 +177,16 @@ impl TastyTrade {
         .await
     }
 
+    pub async fn list_futures_option_chains(
+        &self,
+        product_code: &str,
+    ) -> TastyResult<Vec<FutureOption>> {
+        let resp: Items<FutureOption> = self
+            .get(format!("/futures-option-chains/{}", product_code))
+            .await?;
+        Ok(resp.items)
+    }
+
     pub async fn list_nested_futures_option_chains(
         &self,
         product_code: &str,
