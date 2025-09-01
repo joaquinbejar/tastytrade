@@ -48,11 +48,16 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
         debug!("🔍 FromTastyResponse conversion:");
         debug!("🔍 resp.data.items.len(): {}", resp.data.items.len());
         debug!("🔍 resp.pagination: {:?}", resp.pagination);
-        
-        let pagination = resp.pagination.expect("Pagination should be present for paginated responses");
-        debug!("🔍 pagination.current_item_count: {}", pagination.current_item_count);
+
+        let pagination = resp
+            .pagination
+            .expect("Pagination should be present for paginated responses");
+        debug!(
+            "🔍 pagination.current_item_count: {}",
+            pagination.current_item_count
+        );
         debug!("🔍 pagination.total_items: {}", pagination.total_items);
-        
+
         Paginated {
             items: resp.data.items,
             pagination,

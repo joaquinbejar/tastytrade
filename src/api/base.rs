@@ -3,8 +3,8 @@ use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use tracing::warn;
 use std::fmt::Display;
+use tracing::warn;
 
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -57,30 +57,39 @@ where
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-         struct ItemsHelper {
-             items: Vec<serde_json::Value>,
-         }
-         
-         let helper = ItemsHelper::deserialize(deserializer)?;
+        struct ItemsHelper {
+            items: Vec<serde_json::Value>,
+        }
+
+        let helper = ItemsHelper::deserialize(deserializer)?;
         let mut items = Vec::new();
         let mut error_count = 0;
-        
+
         for (index, value) in helper.items.into_iter().enumerate() {
             match serde_json::from_value::<T>(value.clone()) {
                 Ok(item) => items.push(item),
                 Err(e) => {
                     error_count += 1;
                     warn!("🔍 Failed to deserialize item {} in Items<T>: {}", index, e);
-                    warn!("🔍 Raw value: {}", serde_json::to_string_pretty(&value).unwrap_or_else(|_| "<invalid json>".to_string()));
-                    if error_count <= 3 { // Only log first 3 errors to avoid spam
+                    warn!(
+                        "🔍 Raw value: {}",
+                        serde_json::to_string_pretty(&value)
+                            .unwrap_or_else(|_| "<invalid json>".to_string())
+                    );
+                    if error_count <= 3 {
+                        // Only log first 3 errors to avoid spam
                         warn!("🔍 Deserialization error details: {:?}", e);
                     }
                 }
             }
         }
-        
-        warn!("🔍 Items<T> deserialization summary: {} successful, {} failed", items.len(), error_count);
-        
+
+        warn!(
+            "🔍 Items<T> deserialization summary: {} successful, {} failed",
+            items.len(),
+            error_count
+        );
+
         Ok(Items { items })
     }
 }

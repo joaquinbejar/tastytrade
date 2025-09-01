@@ -10,37 +10,39 @@ use tastytrade::utils::config::TastyTradeConfig;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
-    
+
     println!("🚀 Testing list_active_equities method");
     println!("======================================");
-    
+
     // Load configuration from environment
     let config = TastyTradeConfig::from_env();
-    
+
     // Check if we have valid credentials
     if !config.has_valid_credentials() {
-        eprintln!("❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables.");
+        eprintln!(
+            "❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables."
+        );
         return Err("Missing credentials".into());
     }
-    
+
     println!("🔐 Logging into TastyTrade...");
     let tasty = TastyTrade::login(&config).await?;
     println!("✅ Successfully logged in!");
-    
+
     println!();
     println!("📊 Testing list_active_equities with different page offsets...");
-    
+
     // Test all available pages
     let mut page = 0;
     loop {
         println!();
         println!("📄 ==================== PAGE {} ====================", page);
-        
+
         match tasty.list_active_equities(page).await {
             Ok(paginated_result) => {
                 let items_count = paginated_result.items.len();
                 let pagination = &paginated_result.pagination;
-                
+
                 println!("📊 Page {}: {} items found", page, items_count);
                 println!("📊 Pagination info:");
                 println!("   - page_offset: {}", pagination.page_offset);
@@ -49,19 +51,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   - per_page: {}", pagination.per_page);
                 println!("   - item_offset: {}", pagination.item_offset);
                 println!("   - current_item_count: {}", pagination.current_item_count);
-                
+
                 if items_count > 0 {
                     println!("📋 EQUITY INSTRUMENTS FOUND:");
                     for (i, equity) in paginated_result.items.iter().enumerate() {
-                        println!("   {}. Symbol: {} | ID: {} | Active: {} | Description: {} | Instrument Type: {}", 
-                            i + 1, 
-                            equity.symbol.0, 
-                            equity.id, 
+                        println!(
+                            "   {}. Symbol: {} | ID: {} | Active: {} | Description: {} | Instrument Type: {}",
+                            i + 1,
+                            equity.symbol.0,
+                            equity.id,
                             equity.active,
                             equity.description,
                             equity.instrument_type
                         );
-                        
+
                         // Show additional details for first few items
                         if i < 3 {
                             println!("      - Type: {:?}", equity.instrument_type);
@@ -74,22 +77,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("❌ NO ITEMS FOUND ON PAGE {}", page);
                     if pagination.total_items > 0 {
-                        println!("⚠️  But API indicates {} total items exist!", pagination.total_items);
+                        println!(
+                            "⚠️  But API indicates {} total items exist!",
+                            pagination.total_items
+                        );
                     }
                 }
-                
+
                 // Stop if we've gone past the total pages
                 if page + 1 >= pagination.total_pages {
-                    println!("🛑 Reached end of pages (page {} is the last page of {})", page, pagination.total_pages);
+                    println!(
+                        "🛑 Reached end of pages (page {} is the last page of {})",
+                        page, pagination.total_pages
+                    );
                     break;
                 }
-                
+
                 // Stop if this page is empty and we have no total items
                 if items_count == 0 && pagination.total_items == 0 {
                     println!("🛑 No more data available");
                     break;
                 }
-                
+
                 // Move to next page
                 page += 1;
             }
@@ -99,9 +108,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    
+
     println!();
     println!("✅ Test completed!");
-    
+
     Ok(())
 }

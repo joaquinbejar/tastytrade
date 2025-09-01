@@ -91,28 +91,37 @@ async fn download_equity_options(
             Ok(paginated_equities) => {
                 let current_count = paginated_equities.items.len();
                 info!("    📄 Page {}: {} items found", page, current_count);
-                
+
                 // Check pagination info first
                 let pagination = &paginated_equities.pagination;
-                
+
                 // Debug: Print full response structure
                 info!("    🔍 DEBUG - Full response for page {}:", page);
                 info!("    🔍 Items count: {}", current_count);
-                
+
                 // Print ALL items in this page
                 for (i, item) in paginated_equities.items.iter().enumerate() {
-                    info!("    🔍 Item {}: symbol={}, id={}, active={}, description={}", 
-                        i, item.symbol.0, item.id, item.active, item.description);
+                    info!(
+                        "    🔍 Item {}: symbol={}, id={}, active={}, description={}",
+                        i, item.symbol.0, item.id, item.active, item.description
+                    );
                 }
-                
+
                 if current_count == 0 {
-                    info!("    🔍 ⚠️  PAGE {} IS EMPTY - but API says there are {} total items", page, pagination.total_items);
+                    info!(
+                        "    🔍 ⚠️  PAGE {} IS EMPTY - but API says there are {} total items",
+                        page, pagination.total_items
+                    );
                 }
-                info!("    📊 Pagination: page {}/{}, total items: {}", 
-                    pagination.page_offset, pagination.total_pages, pagination.total_items);
-                info!("    🔍 DEBUG - Pagination details: per_page={}, item_offset={}, current_item_count={}", 
-                    pagination.per_page, pagination.item_offset, pagination.current_item_count);
-                
+                info!(
+                    "    📊 Pagination: page {}/{}, total items: {}",
+                    pagination.page_offset, pagination.total_pages, pagination.total_items
+                );
+                info!(
+                    "    🔍 DEBUG - Pagination details: per_page={}, item_offset={}, current_item_count={}",
+                    pagination.per_page, pagination.item_offset, pagination.current_item_count
+                );
+
                 if current_count > 0 {
                     all_equities.extend(paginated_equities.items);
                 }
@@ -121,13 +130,16 @@ async fn download_equity_options(
                 if pagination.page_offset + 1 >= pagination.total_pages {
                     break;
                 }
-                
+
                 // If we have total_items but no items on this page, continue to next page
                 if current_count == 0 && pagination.total_items > 0 {
-                    info!("    📄 Empty page but {} total items exist, continuing...", pagination.total_items);
+                    info!(
+                        "    📄 Empty page but {} total items exist, continuing...",
+                        pagination.total_items
+                    );
                     continue;
                 }
-                
+
                 // If no items and no total items, we're done
                 if current_count == 0 && pagination.total_items == 0 {
                     break;
@@ -257,14 +269,14 @@ async fn download_future_options(
     };
 
     // Products that typically don't have option chains
-    let products_without_options = vec![
-        "GE",   // Eurodollar
-        "ZQ",   // 30 Day Fed Fund
-        "ZT",   // 2-Year Note
-        "ZF",   // 5-Year Note
-        "ZN",   // 10-Year Note
-        "ZB",   // 30-Year Bond
-        "UB",   // Ultra Bond
+    let products_without_options = [
+        "GE", // Eurodollar
+        "ZQ", // 30 Day Fed Fund
+        "ZT", // 2-Year Note
+        "ZF", // 5-Year Note
+        "ZN", // 10-Year Note
+        "ZB", // 30-Year Bond
+        "UB",
     ];
 
     for product in products_to_process {
@@ -272,10 +284,13 @@ async fn download_future_options(
             "  🔮 Processing future options for product: {} ({})",
             product.code, product.description
         );
-        
+
         // Skip products that typically don't have option chains
         if products_without_options.contains(&product.code.as_str()) {
-            info!("    📝 {} ({}) typically has no option chains - skipping", product.code, product.description);
+            info!(
+                "    📝 {} ({}) typically has no option chains - skipping",
+                product.code, product.description
+            );
             continue;
         }
 
