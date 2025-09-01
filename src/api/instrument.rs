@@ -4,7 +4,11 @@
    Date: 9/3/25
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
-use crate::types::instrument::{CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct, FuturesNestedOptionChain, NestedOptionChain, QuantityDecimalPrecision, Warrant};
+use crate::types::instrument::{
+    CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument,
+    EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct,
+    FuturesNestedOptionChain, NestedOptionChain, QuantityDecimalPrecision, Warrant,
+};
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
@@ -70,22 +74,24 @@ impl TastyTrade {
         &self,
         underlying_symbol: impl AsSymbol,
     ) -> TastyResult<CompactOptionChain> {
-        
         let url = format!("/option-chains/{}/compact", underlying_symbol.as_symbol().0);
         let full_url = format!("{}{}", self.config.base_url, url);
-        
+
         let response = self.client.get(&full_url).send().await?;
         let text = response.text().await?;
-        
-        let parsed: CompactOptionChainResponse = serde_json::from_str(&text)
-            .map_err(|e| crate::TastyTradeError::Unknown(
-                format!("Failed to parse compact option chain response for {}: {}. Full response: {}", full_url, e, text)
-            ))?;
-            
-        parsed.data.items.into_iter().next()
-            .ok_or_else(|| crate::TastyTradeError::Unknown(
-                "No compact option chain data found in response".to_string()
+
+        let parsed: CompactOptionChainResponse = serde_json::from_str(&text).map_err(|e| {
+            crate::TastyTradeError::Unknown(format!(
+                "Failed to parse compact option chain response for {}: {}. Full response: {}",
+                full_url, e, text
             ))
+        })?;
+
+        parsed.data.items.into_iter().next().ok_or_else(|| {
+            crate::TastyTradeError::Unknown(
+                "No compact option chain data found in response".to_string(),
+            )
+        })
     }
 
     pub async fn list_nested_option_chains(
@@ -133,18 +139,20 @@ impl TastyTrade {
         struct EquityOptionResponse {
             data: EquityOption,
         }
-        
+
         let url = format!("/instruments/equity-options/{}", symbol.as_symbol().0);
         let full_url = format!("{}{}", self.config.base_url, url);
-        
+
         let response = self.client.get(&full_url).send().await?;
         let text = response.text().await?;
-        
-        let parsed: EquityOptionResponse = serde_json::from_str(&text)
-            .map_err(|e| crate::TastyTradeError::Unknown(
-                format!("Failed to parse equity option response for {}: {}. Full response: {}", full_url, e, text)
-            ))?;
-            
+
+        let parsed: EquityOptionResponse = serde_json::from_str(&text).map_err(|e| {
+            crate::TastyTradeError::Unknown(format!(
+                "Failed to parse equity option response for {}: {}. Full response: {}",
+                full_url, e, text
+            ))
+        })?;
+
         Ok(parsed.data)
     }
 
@@ -179,7 +187,10 @@ impl TastyTrade {
         }
 
         if let Some(only_active) = only_active_futures {
-            query.push(("only-active-futures", if only_active { "true" } else { "false" }));
+            query.push((
+                "only-active-futures",
+                if only_active { "true" } else { "false" },
+            ));
         }
 
         if let Some(security_id_list) = security_ids {
@@ -266,7 +277,7 @@ impl TastyTrade {
         let nested_chain: FuturesNestedOptionChain = self
             .get(format!("/futures-option-chains/{}/nested", product_code))
             .await?;
-        
+
         // Return as a vector with single item to match the expected return type
         Ok(vec![nested_chain])
     }
@@ -293,15 +304,14 @@ impl TastyTrade {
     }
 
     pub async fn get_future_option(&self, symbol: impl AsSymbol) -> TastyResult<FutureOption> {
-        let encoded_symbol = symbol.as_symbol().0
+        let encoded_symbol = symbol
+            .as_symbol()
+            .0
             .replace("/", "%2F")
             .replace(".", "%2E")
             .replace(" ", "%20");
-        self.get(format!(
-            "/instruments/future-options/{}",
-            encoded_symbol
-        ))
-        .await
+        self.get(format!("/instruments/future-options/{encoded_symbol}"))
+            .await
     }
 
     pub async fn list_cryptocurrencies(
@@ -327,11 +337,8 @@ impl TastyTrade {
 
     pub async fn get_cryptocurrency(&self, symbol: impl AsSymbol) -> TastyResult<Cryptocurrency> {
         let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
-        self.get(format!(
-            "/instruments/cryptocurrencies/{}",
-            encoded_symbol
-        ))
-        .await
+        self.get(format!("/instruments/cryptocurrencies/{encoded_symbol}"))
+            .await
     }
 
     pub async fn list_warrants(

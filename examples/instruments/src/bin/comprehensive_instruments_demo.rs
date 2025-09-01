@@ -118,7 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n📅 Demo 3: Futures");
     info!("==================");
 
-    match tasty.list_futures(None::<&[&str]>, Some("ES"), None, None, None).await {
+    match tasty
+        .list_futures(None::<&[&str]>, Some("ES"), None, None, None)
+        .await
+    {
         Ok(futures) => {
             info!("✅ Retrieved {} ES futures", futures.len());
             if let Some(first_future) = futures.first() {

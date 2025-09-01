@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -268,7 +267,7 @@ pub struct NestedOptionChain {
 pub struct FuturesNestedOptionChain {
     /// Array of futures contracts information.
     pub futures: Vec<FuturesInfo>,
-    
+
     /// Array of option chains data for the futures contracts.
     pub option_chains: Vec<FuturesOptionChains>,
 }
@@ -279,25 +278,25 @@ pub struct FuturesNestedOptionChain {
 pub struct FuturesInfo {
     /// The symbol of the futures contract.
     pub symbol: String,
-    
+
     /// The root symbol of the futures contract.
     pub root_symbol: String,
-    
+
     /// The expiration date of the futures contract.
     pub expiration_date: String,
-    
+
     /// Days to expiration of the futures contract.
     pub days_to_expiration: i32,
-    
+
     /// Whether this is an active month contract.
     pub active_month: bool,
-    
+
     /// Whether this is the next active month contract.
     pub next_active_month: bool,
-    
+
     /// When the futures contract stops trading.
     pub stops_trading_at: String,
-    
+
     /// When the futures contract expires.
     pub expires_at: String,
 }
@@ -308,13 +307,13 @@ pub struct FuturesInfo {
 pub struct FuturesOptionChains {
     /// The underlying symbol for the options.
     pub underlying_symbol: String,
-    
+
     /// The root symbol for the options.
     pub root_symbol: String,
-    
+
     /// The exercise style of the options.
     pub exercise_style: String,
-    
+
     /// The expirations data for the option chain.
     pub expirations: Vec<FuturesExpiration>,
 }
@@ -325,52 +324,52 @@ pub struct FuturesOptionChains {
 pub struct FuturesExpiration {
     /// The underlying symbol.
     pub underlying_symbol: String,
-    
+
     /// The root symbol.
     pub root_symbol: String,
-    
+
     /// The option root symbol.
     pub option_root_symbol: String,
-    
+
     /// The option contract symbol.
     pub option_contract_symbol: String,
-    
+
     /// The asset identifier.
     pub asset: String,
-    
+
     /// The expiration date.
     pub expiration_date: String,
-    
+
     /// Days to expiration.
     pub days_to_expiration: i32,
-    
+
     /// The expiration type.
     pub expiration_type: String,
-    
+
     /// The settlement type.
     pub settlement_type: String,
-    
+
     /// The notional value.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub notional_value: Decimal,
-    
+
     /// The display factor.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub display_factor: Decimal,
-    
+
     /// The strike factor.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub strike_factor: Decimal,
-    
+
     /// When trading stops.
     pub stops_trading_at: String,
-    
+
     /// When the option expires.
     pub expires_at: String,
-    
+
     /// Tick sizes information.
     pub tick_sizes: Vec<FuturesTickSize>,
-    
+
     /// Strike prices and option symbols.
     pub strikes: Vec<FuturesStrike>,
 }
@@ -382,7 +381,7 @@ pub struct FuturesTickSize {
     /// The threshold value (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<String>,
-    
+
     /// The tick size value.
     pub value: String,
 }
@@ -394,17 +393,17 @@ pub struct FuturesStrike {
     /// The strike price.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub strike_price: Decimal,
-    
+
     /// The call option symbol.
     pub call: String,
-    
+
     /// The call option streamer symbol (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_streamer_symbol: Option<String>,
-    
+
     /// The put option symbol.
     pub put: String,
-    
+
     /// The put option streamer symbol (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub put_streamer_symbol: Option<String>,
@@ -875,13 +874,14 @@ mod tests {
             "option-type": "C",
             "option-chain-type": "Standard",
             "symbol": "AAPL  240119C00150000",
-            "exchange": "CBOE",
-            "exchange-symbol": "AAPL   240119C00150000",
+            "instrument-type": "Equity Option",
+            "expiration-type": "Regular",
+            "settlement-type": "PM",
+            "stops-trading-at": "2024-01-19T21:00:00.000+00:00",
+            "market-time-instrument-collection": "Equity Option",
             "is-closing-only": false,
             "days-to-expiration": 30,
             "expires-at": "2024-01-19T21:00:00.000+00:00",
-            "is-confirmed": true,
-            "stops-trading-at": "2024-01-19T21:00:00.000+00:00",
             "streamer-symbol": "AAPL_011924C150"
         }"#;
 
@@ -960,7 +960,7 @@ mod tests {
         }"#;
 
         let chain: FuturesNestedOptionChain = serde_json::from_str(json).unwrap();
-        
+
         // Verify futures array
         assert_eq!(chain.futures.len(), 1);
         assert_eq!(chain.futures[0].symbol, "/ESU5");
@@ -968,33 +968,42 @@ mod tests {
         assert_eq!(chain.futures[0].days_to_expiration, 18);
         assert!(chain.futures[0].active_month);
         assert!(!chain.futures[0].next_active_month);
-        
+
         // Verify option chains array
         assert_eq!(chain.option_chains.len(), 1);
         assert_eq!(chain.option_chains[0].underlying_symbol, "/ES");
         assert_eq!(chain.option_chains[0].exercise_style, "American");
-        
+
         // Verify expirations
         assert_eq!(chain.option_chains[0].expirations.len(), 1);
         let expiration = &chain.option_chains[0].expirations[0];
         assert_eq!(expiration.underlying_symbol, "/ESZ5");
         assert_eq!(expiration.days_to_expiration, 109);
-        
+
         // Verify tick sizes
         assert_eq!(expiration.tick_sizes.len(), 2);
         assert_eq!(expiration.tick_sizes[0].threshold, Some("10.0".to_string()));
         assert_eq!(expiration.tick_sizes[0].value, "0.05");
         assert_eq!(expiration.tick_sizes[1].threshold, None);
         assert_eq!(expiration.tick_sizes[1].value, "0.25");
-        
+
         // Verify strikes
         assert_eq!(expiration.strikes.len(), 2);
-        assert_eq!(expiration.strikes[0].strike_price, Decimal::from_str("800.0").unwrap());
+        assert_eq!(
+            expiration.strikes[0].strike_price,
+            Decimal::from_str("800.0").unwrap()
+        );
         assert_eq!(expiration.strikes[0].call, "./ESZ5 ESZ5  251219C800");
-        assert_eq!(expiration.strikes[0].call_streamer_symbol, Some("./ESZ25C800:XCME".to_string()));
-        
+        assert_eq!(
+            expiration.strikes[0].call_streamer_symbol,
+            Some("./ESZ25C800:XCME".to_string())
+        );
+
         // Second strike without streamer symbols
-        assert_eq!(expiration.strikes[1].strike_price, Decimal::from_str("4300.0").unwrap());
+        assert_eq!(
+            expiration.strikes[1].strike_price,
+            Decimal::from_str("4300.0").unwrap()
+        );
         assert_eq!(expiration.strikes[1].call_streamer_symbol, None);
         assert_eq!(expiration.strikes[1].put_streamer_symbol, None);
     }

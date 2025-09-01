@@ -146,7 +146,8 @@ impl TastyTrade {
         U: AsRef<str>,
     {
         let full_url = format!("{}{}", self.config.base_url, url.as_ref());
-        let query_string = query.iter()
+        let query_string = query
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
@@ -156,29 +157,32 @@ impl TastyTrade {
             format!("{}?{}", full_url, query_string)
         };
 
-        let response = self
-            .client
-            .get(&full_url)
-            .query(query)
-            .send()
-            .await?;
-            
+        let response = self.client.get(&full_url).query(query).send().await?;
+
         let status = response.status();
-        
+
         if !status.is_success() {
-             let error_text = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
-             return Err(crate::TastyTradeError::Unknown(
-                 format!("HTTP {} {} for request {}: {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown"), request_info, error_text)
-             ));
-         }
-         
-         let text = response.text().await?;
-          debug!("🔍 Full response for {}: {}", request_info, text);
-           let result = serde_json::from_str::<TastyApiResponse<T>>(&text).map_err(|e| {
-               crate::TastyTradeError::Unknown(
-                   format!("Failed to parse JSON response for request {}: {}. Full response: {}", request_info, e, text)
-               )
-           })?;
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
+            return Err(crate::TastyTradeError::Unknown(format!(
+                "HTTP {} {} for request {}: {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown"),
+                request_info,
+                error_text
+            )));
+        }
+
+        let text = response.text().await?;
+        debug!("🔍 Full response for {}: {}", request_info, text);
+        let result = serde_json::from_str::<TastyApiResponse<T>>(&text).map_err(|e| {
+            crate::TastyTradeError::Unknown(format!(
+                "Failed to parse JSON response for request {}: {}. Full response: {}",
+                request_info, e, text
+            ))
+        })?;
 
         match result {
             TastyApiResponse::Success(s) => Ok(R::from_tasty(s)),

@@ -337,24 +337,24 @@ async fn download_future_options(
                                 });
 
                                 // Add put option
-                                 symbols.push(SymbolEntry {
-                                     symbol: strike.put.clone(),
-                                     epic: strike.put.clone(), // Using symbol as epic for TastyTrade
-                                     name: format!(
-                                         "{} Future Put ${} {}",
-                                         option_chain.underlying_symbol,
-                                         strike.strike_price,
-                                         expiration.expiration_date
-                                     ),
-                                     instrument_type: InstrumentType::FutureOption,
-                                     exchange: "TASTYTRADE".to_string(),
-                                     expiry,
-                                     last_update,
-                                 });
-                             }
-                         }
-                     }
-                 }
+                                symbols.push(SymbolEntry {
+                                    symbol: strike.put.clone(),
+                                    epic: strike.put.clone(), // Using symbol as epic for TastyTrade
+                                    name: format!(
+                                        "{} Future Put ${} {}",
+                                        option_chain.underlying_symbol,
+                                        strike.strike_price,
+                                        expiration.expiration_date
+                                    ),
+                                    instrument_type: InstrumentType::FutureOption,
+                                    exchange: "TASTYTRADE".to_string(),
+                                    expiry,
+                                    last_update,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 // Check if it's a decoding error specifically
