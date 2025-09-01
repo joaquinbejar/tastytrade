@@ -7,7 +7,7 @@
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
-use tracing::{info, debug, error};
+use tracing::{info, error};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !warrants.is_empty() {
                 // Show first few warrants
                 for (i, warrant) in warrants.iter().enumerate().take(5) {
-                    debug!("   {}. {} | Description: {} | Market: {} | Active: {} | Closing Only: {}", 
+                    info!("   {}. {} | Description: {} | Market: {} | Active: {} | Closing Only: {}", 
                         i + 1, 
                         warrant.symbol.0, 
                         warrant.description,
@@ -49,12 +49,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     
                     if i < 2 {
-                        debug!("      - Instrument Type: {:?}", warrant.instrument_type);
+                        info!("      - Instrument Type: {:?}", warrant.instrument_type);
                     }
                 }
                 
                 if warrants.len() > 5 {
-                    debug!("   ... and {} more warrants", warrants.len() - 5);
+                    info!("   ... and {} more warrants", warrants.len() - 5);
                 }
                 
                 // Analyze warrants by various criteria
@@ -62,9 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let closing_only = warrants.iter().filter(|w| w.is_closing_only).count();
                 
                 info!("   📈 Analysis:");
-                debug!("      - Active: {}", active);
-                debug!("      - Closing Only: {}", closing_only);
-                debug!("      - Inactive: {}", warrants.len() - active);
+                info!("      - Active: {}", active);
+                info!("      - Closing Only: {}", closing_only);
+                info!("      - Inactive: {}", warrants.len() - active);
                 
                 // Group by listed market
                 let mut market_count = std::collections::HashMap::new();
@@ -72,12 +72,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *market_count.entry(warrant.listed_market.clone()).or_insert(0) += 1;
                 }
                 
-                debug!("   📊 Warrants by market:");
+                info!("   📊 Warrants by market:");
                 let mut sorted_markets: Vec<_> = market_count.iter().collect();
                 sorted_markets.sort_by(|a, b| b.1.cmp(a.1));
                 
                 for (i, (market, count)) in sorted_markets.iter().enumerate().take(5) {
-                    debug!("      {}. {}: {} warrants", i + 1, market, count);
+                    info!("      {}. {}: {} warrants", i + 1, market, count);
                 }
                 
                 // Group by instrument type
@@ -86,9 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *type_count.entry(format!("{:?}", warrant.instrument_type)).or_insert(0) += 1;
                 }
                 
-                debug!("   📊 Warrants by instrument type:");
+                info!("   📊 Warrants by instrument type:");
                 for (inst_type, count) in type_count.iter() {
-                    debug!("      - {}: {} warrants", inst_type, count);
+                    info!("      - {}: {} warrants", inst_type, count);
                 }
                 
                 // Test 2: Get specific warrants by symbols
@@ -103,8 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             info!("✅ Retrieved {} specific warrants by symbols", specific_warrants.len());
                             
                             for warrant in &specific_warrants {
-                                debug!("   📊 {}: {}", warrant.symbol.0, warrant.description);
-                                debug!("      - Market: {} | Active: {} | Closing Only: {}", 
+                                info!("   📊 {}: {}", warrant.symbol.0, warrant.description);
+                                info!("      - Market: {} | Active: {} | Closing Only: {}", 
                                     warrant.listed_market, warrant.active, warrant.is_closing_only);
                             }
                         }
@@ -120,13 +120,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         match tasty.get_warrant(symbol).await {
                             Ok(warrant) => {
                                 info!("✅ Retrieved warrant details for {}", warrant.symbol.0);
-                                debug!("   📊 Full details:");
-                                debug!("      - Symbol: {}", warrant.symbol.0);
-                                debug!("      - Instrument Type: {:?}", warrant.instrument_type);
-                                debug!("      - Listed Market: {}", warrant.listed_market);
-                                debug!("      - Description: {}", warrant.description);
-                                debug!("      - Is Closing Only: {}", warrant.is_closing_only);
-                                debug!("      - Active: {}", warrant.active);
+                                info!("   📊 Full details:");
+                                info!("      - Symbol: {}", warrant.symbol.0);
+                                info!("      - Instrument Type: {:?}", warrant.instrument_type);
+                                info!("      - Listed Market: {}", warrant.listed_market);
+                                info!("      - Description: {}", warrant.description);
+                                info!("      - Is Closing Only: {}", warrant.is_closing_only);
+                                info!("      - Active: {}", warrant.active);
                             }
                             Err(e) => {
                                 error!("❌ Error getting warrant details for {}: {}", symbol, e);
@@ -167,19 +167,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 
                 info!("✅ Analyzed warrant descriptions for common keywords");
-                debug!("   📊 Keyword frequency:");
+                info!("   📊 Keyword frequency:");
                 
                 let mut sorted_keywords: Vec<_> = description_keywords.iter().collect();
                 sorted_keywords.sort_by(|a, b| b.1.cmp(a.1));
                 
                 for (keyword, count) in sorted_keywords.iter() {
-                    debug!("      - '{}': {} warrants", keyword, count);
+                    info!("      - '{}': {} warrants", keyword, count);
                 }
                 
                 // Show some sample descriptions
-                debug!("   📊 Sample warrant descriptions:");
+                info!("   📊 Sample warrant descriptions:");
                 for (i, warrant) in warrants.iter().enumerate().take(3) {
-                    debug!("      {}. {}: {}", i + 1, warrant.symbol.0, warrant.description);
+                    info!("      {}. {}: {}", i + 1, warrant.symbol.0, warrant.description);
                 }
                 
             } else {

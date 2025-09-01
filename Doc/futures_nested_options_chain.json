@@ -1,0 +1,189 @@
+{
+  "FuturesNestedOptionChainSerializer": {
+    "type": "object",
+    "properties": {
+      "futures": {
+        "description": "",
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "description": "",
+            "type": "string"
+          },
+          "root-symbol": {
+            "description": "",
+            "type": "string"
+          },
+          "maturity-date": {
+            "description": "",
+            "type": "string",
+            "format": "date"
+          },
+          "expiration-date": {
+            "description": "",
+            "type": "string",
+            "format": "date"
+          },
+          "days-to-expiration": {
+            "description": "",
+            "type": "integer",
+            "format": "int32"
+          },
+          "active-month": {
+            "description": "",
+            "type": "boolean"
+          },
+          "next-active-month": {
+            "description": "",
+            "type": "boolean"
+          },
+          "stops-trading-at": {
+            "description": "",
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires-at": {
+            "description": "",
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "option-chains": {
+        "description": "",
+        "type": "object",
+        "properties": {
+          "underlying-symbol": {
+            "description": "",
+            "type": "string"
+          },
+          "root-symbol": {
+            "description": "",
+            "type": "string"
+          },
+          "exercise-style": {
+            "description": "",
+            "type": "string"
+          },
+          "expirations": {
+            "description": "",
+            "type": "object",
+            "properties": {
+              "underlying-symbol": {
+                "description": "",
+                "type": "string"
+              },
+              "root-symbol": {
+                "description": "",
+                "type": "string"
+              },
+              "option-root-symbol": {
+                "description": "",
+                "type": "string"
+              },
+              "option-contract-symbol": {
+                "description": "",
+                "type": "string"
+              },
+              "asset": {
+                "description": "",
+                "type": "string"
+              },
+              "expiration-date": {
+                "description": "",
+                "type": "string",
+                "format": "date"
+              },
+              "days-to-expiration": {
+                "description": "",
+                "type": "integer",
+                "format": "int32"
+              },
+              "expiration-type": {
+                "description": "",
+                "type": "string"
+              },
+              "settlement-type": {
+                "description": "",
+                "type": "string"
+              },
+              "notional-value": {
+                "description": "",
+                "type": "number",
+                "format": "double"
+              },
+              "display-factor": {
+                "description": "",
+                "type": "number",
+                "format": "double"
+              },
+              "strike-factor": {
+                "description": "",
+                "type": "number",
+                "format": "double"
+              },
+              "stops-trading-at": {
+                "description": "",
+                "type": "string",
+                "format": "date-time"
+              },
+              "expires-at": {
+                "description": "",
+                "type": "string",
+                "format": "date-time"
+              },
+              "tick-sizes": {
+                "description": "",
+                "type": "object",
+                "properties": {
+                  "symbol": {
+                    "description": "",
+                    "type": "string"
+                  },
+                  "threshold": {
+                    "description": "",
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "value": {
+                    "description": "",
+                    "type": "number",
+                    "format": "double"
+                  }
+                }
+              },
+              "strikes": {
+                "description": "",
+                "type": "object",
+                "properties": {
+                  "strike-price": {
+                    "description": "",
+                    "type": "number",
+                    "format": "double"
+                  },
+                  "call": {
+                    "description": "",
+                    "type": "string"
+                  },
+                  "call-streamer-symbol": {
+                    "description": "",
+                    "type": "string"
+                  },
+                  "put": {
+                    "description": "",
+                    "type": "string"
+                  },
+                  "put-streamer-symbol": {
+                    "description": "",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "description": "FuturesNestedOptionChainSerializer model"
+  }
+}

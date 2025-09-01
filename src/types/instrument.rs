@@ -259,6 +259,157 @@ pub struct NestedOptionChain {
     pub expirations: Vec<Expiration>,
 }
 
+/// Represents a futures nested option chain response.
+///
+/// This structure matches the FuturesNestedOptionChainSerializer from the API,
+/// containing both futures information and option chains data.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesNestedOptionChain {
+    /// Array of futures contracts information.
+    pub futures: Vec<FuturesInfo>,
+    
+    /// Array of option chains data for the futures contracts.
+    pub option_chains: Vec<FuturesOptionChains>,
+}
+
+/// Represents futures contract information.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesInfo {
+    /// The symbol of the futures contract.
+    pub symbol: String,
+    
+    /// The root symbol of the futures contract.
+    pub root_symbol: String,
+    
+    /// The expiration date of the futures contract.
+    pub expiration_date: String,
+    
+    /// Days to expiration of the futures contract.
+    pub days_to_expiration: i32,
+    
+    /// Whether this is an active month contract.
+    pub active_month: bool,
+    
+    /// Whether this is the next active month contract.
+    pub next_active_month: bool,
+    
+    /// When the futures contract stops trading.
+    pub stops_trading_at: String,
+    
+    /// When the futures contract expires.
+    pub expires_at: String,
+}
+
+/// Represents the option chains section of futures nested option chain.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesOptionChains {
+    /// The underlying symbol for the options.
+    pub underlying_symbol: String,
+    
+    /// The root symbol for the options.
+    pub root_symbol: String,
+    
+    /// The exercise style of the options.
+    pub exercise_style: String,
+    
+    /// The expirations data for the option chain.
+    pub expirations: Vec<FuturesExpiration>,
+}
+
+/// Represents an expiration in a futures option chain.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesExpiration {
+    /// The underlying symbol.
+    pub underlying_symbol: String,
+    
+    /// The root symbol.
+    pub root_symbol: String,
+    
+    /// The option root symbol.
+    pub option_root_symbol: String,
+    
+    /// The option contract symbol.
+    pub option_contract_symbol: String,
+    
+    /// The asset identifier.
+    pub asset: String,
+    
+    /// The expiration date.
+    pub expiration_date: String,
+    
+    /// Days to expiration.
+    pub days_to_expiration: i32,
+    
+    /// The expiration type.
+    pub expiration_type: String,
+    
+    /// The settlement type.
+    pub settlement_type: String,
+    
+    /// The notional value.
+    #[serde(with = "rust_decimal::serde::arbitrary_precision")]
+    pub notional_value: Decimal,
+    
+    /// The display factor.
+    #[serde(with = "rust_decimal::serde::arbitrary_precision")]
+    pub display_factor: Decimal,
+    
+    /// The strike factor.
+    #[serde(with = "rust_decimal::serde::arbitrary_precision")]
+    pub strike_factor: Decimal,
+    
+    /// When trading stops.
+    pub stops_trading_at: String,
+    
+    /// When the option expires.
+    pub expires_at: String,
+    
+    /// Tick sizes information.
+    pub tick_sizes: Vec<FuturesTickSize>,
+    
+    /// Strike prices and option symbols.
+    pub strikes: Vec<FuturesStrike>,
+}
+
+/// Represents tick size information for futures options.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesTickSize {
+    /// The threshold value (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<String>,
+    
+    /// The tick size value.
+    pub value: String,
+}
+
+/// Represents a strike price and associated option symbols for futures.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FuturesStrike {
+    /// The strike price.
+    #[serde(with = "rust_decimal::serde::arbitrary_precision")]
+    pub strike_price: Decimal,
+    
+    /// The call option symbol.
+    pub call: String,
+    
+    /// The call option streamer symbol (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_streamer_symbol: Option<String>,
+    
+    /// The put option symbol.
+    pub put: String,
+    
+    /// The put option streamer symbol (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub put_streamer_symbol: Option<String>,
+}
+
 /// Represents an equity option.
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -703,5 +854,148 @@ impl std::hash::Hash for SymbolEntry {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.symbol.hash(state);
         self.epic.hash(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn test_equity_option_deserialization() {
+        let json = r#"{
+            "active": true,
+            "strike-price": "150.00",
+            "root-symbol": "AAPL",
+            "underlying-symbol": "AAPL",
+            "expiration-date": "2024-01-19",
+            "exercise-style": "American",
+            "shares-per-contract": 100,
+            "option-type": "C",
+            "option-chain-type": "Standard",
+            "symbol": "AAPL  240119C00150000",
+            "exchange": "CBOE",
+            "exchange-symbol": "AAPL   240119C00150000",
+            "is-closing-only": false,
+            "days-to-expiration": 30,
+            "expires-at": "2024-01-19T21:00:00.000+00:00",
+            "is-confirmed": true,
+            "stops-trading-at": "2024-01-19T21:00:00.000+00:00",
+            "streamer-symbol": "AAPL_011924C150"
+        }"#;
+
+        let option: EquityOption = serde_json::from_str(json).unwrap();
+        assert_eq!(option.symbol.0, "AAPL  240119C00150000");
+        assert_eq!(option.underlying_symbol.0, "AAPL");
+        assert_eq!(option.strike_price, Decimal::from_str("150.00").unwrap());
+        assert_eq!(option.option_type, "C");
+        assert_eq!(option.shares_per_contract, 100);
+    }
+
+    #[test]
+    fn test_futures_nested_option_chain_deserialization() {
+        // Test with a simplified version of the real JSON structure
+        let json = r#"{
+            "futures": [
+                {
+                    "symbol": "/ESU5",
+                    "root-symbol": "/ES",
+                    "expiration-date": "2025-09-19",
+                    "days-to-expiration": 18,
+                    "active-month": true,
+                    "next-active-month": false,
+                    "stops-trading-at": "2025-09-19T13:30:00.000+00:00",
+                    "expires-at": "2025-09-19T13:30:00.000+00:00"
+                }
+            ],
+            "option-chains": [
+                {
+                    "underlying-symbol": "/ES",
+                    "root-symbol": "/ES",
+                    "exercise-style": "American",
+                    "expirations": [
+                        {
+                            "underlying-symbol": "/ESZ5",
+                            "root-symbol": "/ES",
+                            "option-root-symbol": "ES",
+                            "option-contract-symbol": "ESZ5",
+                            "asset": "ES",
+                            "expiration-date": "2025-12-19",
+                            "days-to-expiration": 109,
+                            "expiration-type": "Regular",
+                            "settlement-type": "AM",
+                            "notional-value": "0.5",
+                            "display-factor": "0.01",
+                            "strike-factor": "1.0",
+                            "stops-trading-at": "2025-12-19T14:30:00.000+00:00",
+                            "expires-at": "2025-12-19T14:30:00.000+00:00",
+                            "tick-sizes": [
+                                {
+                                    "threshold": "10.0",
+                                    "value": "0.05"
+                                },
+                                {
+                                    "value": "0.25"
+                                }
+                            ],
+                            "strikes": [
+                                {
+                                    "strike-price": "800.0",
+                                    "call": "./ESZ5 ESZ5  251219C800",
+                                    "call-streamer-symbol": "./ESZ25C800:XCME",
+                                    "put": "./ESZ5 ESZ5  251219P800",
+                                    "put-streamer-symbol": "./ESZ25P800:XCME"
+                                },
+                                {
+                                    "strike-price": "4300.0",
+                                    "call": "./ESZ5 ESZ5  251219C4300",
+                                    "put": "./ESZ5 ESZ5  251219P4300"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }"#;
+
+        let chain: FuturesNestedOptionChain = serde_json::from_str(json).unwrap();
+        
+        // Verify futures array
+        assert_eq!(chain.futures.len(), 1);
+        assert_eq!(chain.futures[0].symbol, "/ESU5");
+        assert_eq!(chain.futures[0].root_symbol, "/ES");
+        assert_eq!(chain.futures[0].days_to_expiration, 18);
+        assert!(chain.futures[0].active_month);
+        assert!(!chain.futures[0].next_active_month);
+        
+        // Verify option chains array
+        assert_eq!(chain.option_chains.len(), 1);
+        assert_eq!(chain.option_chains[0].underlying_symbol, "/ES");
+        assert_eq!(chain.option_chains[0].exercise_style, "American");
+        
+        // Verify expirations
+        assert_eq!(chain.option_chains[0].expirations.len(), 1);
+        let expiration = &chain.option_chains[0].expirations[0];
+        assert_eq!(expiration.underlying_symbol, "/ESZ5");
+        assert_eq!(expiration.days_to_expiration, 109);
+        
+        // Verify tick sizes
+        assert_eq!(expiration.tick_sizes.len(), 2);
+        assert_eq!(expiration.tick_sizes[0].threshold, Some("10.0".to_string()));
+        assert_eq!(expiration.tick_sizes[0].value, "0.05");
+        assert_eq!(expiration.tick_sizes[1].threshold, None);
+        assert_eq!(expiration.tick_sizes[1].value, "0.25");
+        
+        // Verify strikes
+        assert_eq!(expiration.strikes.len(), 2);
+        assert_eq!(expiration.strikes[0].strike_price, Decimal::from_str("800.0").unwrap());
+        assert_eq!(expiration.strikes[0].call, "./ESZ5 ESZ5  251219C800");
+        assert_eq!(expiration.strikes[0].call_streamer_symbol, Some("./ESZ25C800:XCME".to_string()));
+        
+        // Second strike without streamer symbols
+        assert_eq!(expiration.strikes[1].strike_price, Decimal::from_str("4300.0").unwrap());
+        assert_eq!(expiration.strikes[1].call_streamer_symbol, None);
+        assert_eq!(expiration.strikes[1].put_streamer_symbol, None);
     }
 }

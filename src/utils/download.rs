@@ -310,48 +310,51 @@ async fn download_future_options(
                     product.code
                 );
                 for chain in option_chains {
-                    // Process each expiration in the chain
-                    for expiration in &chain.expirations {
-                        // Parse expiration date
-                        let expiry =
-                            parse_expiration_date(&expiration.expiration_date, last_update);
+                    // Process each option chain in the nested structure
+                    for option_chain in &chain.option_chains {
+                        // Process each expiration in the chain
+                        for expiration in &option_chain.expirations {
+                            // Parse expiration date
+                            let expiry =
+                                parse_expiration_date(&expiration.expiration_date, last_update);
 
-                        // Process each strike in the expiration
-                        for strike in &expiration.strikes {
-                            // Add call option
-                            symbols.push(SymbolEntry {
-                                symbol: strike.call.0.clone(),
-                                epic: strike.call.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!(
-                                    "{} Future Call ${} {}",
-                                    chain.underlying_symbol.0,
-                                    strike.strike_price,
-                                    expiration.expiration_date
-                                ),
-                                instrument_type: InstrumentType::FutureOption,
-                                exchange: "TASTYTRADE".to_string(),
-                                expiry,
-                                last_update,
-                            });
+                            // Process each strike in the expiration
+                            for strike in &expiration.strikes {
+                                // Add call option
+                                symbols.push(SymbolEntry {
+                                    symbol: strike.call.clone(),
+                                    epic: strike.call.clone(), // Using symbol as epic for TastyTrade
+                                    name: format!(
+                                        "{} Future Call ${} {}",
+                                        option_chain.underlying_symbol,
+                                        strike.strike_price,
+                                        expiration.expiration_date
+                                    ),
+                                    instrument_type: InstrumentType::FutureOption,
+                                    exchange: "TASTYTRADE".to_string(),
+                                    expiry,
+                                    last_update,
+                                });
 
-                            // Add put option
-                            symbols.push(SymbolEntry {
-                                symbol: strike.put.0.clone(),
-                                epic: strike.put.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!(
-                                    "{} Future Put ${} {}",
-                                    chain.underlying_symbol.0,
-                                    strike.strike_price,
-                                    expiration.expiration_date
-                                ),
-                                instrument_type: InstrumentType::FutureOption,
-                                exchange: "TASTYTRADE".to_string(),
-                                expiry,
-                                last_update,
-                            });
-                        }
-                    }
-                }
+                                // Add put option
+                                 symbols.push(SymbolEntry {
+                                     symbol: strike.put.clone(),
+                                     epic: strike.put.clone(), // Using symbol as epic for TastyTrade
+                                     name: format!(
+                                         "{} Future Put ${} {}",
+                                         option_chain.underlying_symbol,
+                                         strike.strike_price,
+                                         expiration.expiration_date
+                                     ),
+                                     instrument_type: InstrumentType::FutureOption,
+                                     exchange: "TASTYTRADE".to_string(),
+                                     expiry,
+                                     last_update,
+                                 });
+                             }
+                         }
+                     }
+                 }
             }
             Err(e) => {
                 // Check if it's a decoding error specifically

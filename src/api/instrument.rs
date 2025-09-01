@@ -4,7 +4,7 @@
    Date: 9/3/25
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
-use crate::types::instrument::{CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct, NestedOptionChain, QuantityDecimalPrecision, Warrant};
+use crate::types::instrument::{CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct, FuturesNestedOptionChain, NestedOptionChain, QuantityDecimalPrecision, Warrant};
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
@@ -261,11 +261,14 @@ impl TastyTrade {
     pub async fn list_nested_futures_option_chains(
         &self,
         product_code: &str,
-    ) -> TastyResult<Vec<NestedOptionChain>> {
-        let resp: Items<NestedOptionChain> = self
+    ) -> TastyResult<Vec<FuturesNestedOptionChain>> {
+        // This endpoint returns data in standard TastyApiResponse format with FuturesNestedOptionChain in data field
+        let nested_chain: FuturesNestedOptionChain = self
             .get(format!("/futures-option-chains/{}/nested", product_code))
             .await?;
-        Ok(resp.items)
+        
+        // Return as a vector with single item to match the expected return type
+        Ok(vec![nested_chain])
     }
 
     pub async fn list_future_options(

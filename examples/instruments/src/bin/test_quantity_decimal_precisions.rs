@@ -7,7 +7,7 @@
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
-use tracing::{info, debug, error};
+use tracing::{info, error};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !precisions.is_empty() {
                 // Show all precisions (usually not too many)
                 for (i, precision) in precisions.iter().enumerate() {
-                    debug!("   {}. Instrument Type: {:?} | Value: {} | Min Increment Precision: {}", 
+                    info!("   {}. Instrument Type: {:?} | Value: {} | Min Increment Precision: {}", 
                         i + 1, 
                         precision.instrument_type,
                         precision.value,
@@ -47,9 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     
                     if let Some(symbol) = &precision.symbol {
-                        debug!("      - Symbol: {}", symbol.0);
+                        info!("      - Symbol: {}", symbol.0);
                     } else {
-                        debug!("      - Symbol: None (applies to all symbols of this type)");
+                        info!("      - Symbol: None (applies to all symbols of this type)");
                     }
                 }
                 
@@ -68,11 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 
                 info!("   📈 Analysis by instrument type:");
                 for (inst_type, count) in type_count.iter() {
-                    debug!("      - {}: {} precision rules", inst_type, count);
+                    info!("      - {}: {} precision rules", inst_type, count);
                     
                     if let Some(values) = type_values.get(inst_type) {
                         let unique_values: std::collections::HashSet<_> = values.iter().collect();
-                        debug!("        Values: {:?}", unique_values.iter().collect::<Vec<_>>());
+                        info!("        Values: {:?}", unique_values.iter().collect::<Vec<_>>());
                     }
                 }
                 
@@ -82,12 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *value_count.entry(precision.value).or_insert(0) += 1;
                 }
                 
-                debug!("   📊 Precision values distribution:");
+                info!("   📊 Precision values distribution:");
                 let mut sorted_values: Vec<_> = value_count.iter().collect();
                 sorted_values.sort_by(|a, b| a.0.cmp(b.0));
                 
                 for (value, count) in sorted_values.iter() {
-                    debug!("      - {} decimal places: {} instrument types", value, count);
+                    info!("      - {} decimal places: {} instrument types", value, count);
                 }
                 
                 // Analyze minimum increment precision
@@ -96,12 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *min_increment_count.entry(precision.minimum_increment_precision).or_insert(0) += 1;
                 }
                 
-                debug!("   📊 Minimum increment precision distribution:");
+                info!("   📊 Minimum increment precision distribution:");
                 let mut sorted_min_increments: Vec<_> = min_increment_count.iter().collect();
                 sorted_min_increments.sort_by(|a, b| a.0.cmp(b.0));
                 
                 for (min_increment, count) in sorted_min_increments.iter() {
-                    debug!("      - {} minimum increment precision: {} instrument types", min_increment, count);
+                    info!("      - {} minimum increment precision: {} instrument types", min_increment, count);
                 }
                 
                 // Find symbol-specific precisions
@@ -114,20 +114,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect();
                 
                 info!("   📊 Rule specificity:");
-                debug!("      - General rules (no specific symbol): {}", general_rules.len());
-                debug!("      - Symbol-specific rules: {}", symbol_specific.len());
+                info!("      - General rules (no specific symbol): {}", general_rules.len());
+                info!("      - Symbol-specific rules: {}", symbol_specific.len());
                 
                 if !symbol_specific.is_empty() {
-                    debug!("   📊 Symbol-specific precision rules:");
+                    info!("   📊 Symbol-specific precision rules:");
                     for precision in symbol_specific.iter().take(5) {
                         if let Some(symbol) = &precision.symbol {
-                            debug!("      - {}: {} decimal places (type: {:?})", 
+                            info!("      - {}: {} decimal places (type: {:?})", 
                                 symbol.0, precision.value, precision.instrument_type);
                         }
                     }
                     
                     if symbol_specific.len() > 5 {
-                        debug!("      ... and {} more symbol-specific rules", symbol_specific.len() - 5);
+                        info!("      ... and {} more symbol-specific rules", symbol_specific.len() - 5);
                     }
                 }
                 
@@ -140,9 +140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "for all symbols of this type".to_string()
                     };
                     
-                    debug!("      - {:?} {} can have up to {} decimal places", 
+                    info!("      - {:?} {} can have up to {} decimal places", 
                         precision.instrument_type, symbol_info, precision.value);
-                    debug!("        Minimum increment precision: {} decimal places", 
+                    info!("        Minimum increment precision: {} decimal places", 
                         precision.minimum_increment_precision);
                 }
                 
