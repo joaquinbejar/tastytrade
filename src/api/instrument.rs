@@ -5,8 +5,9 @@
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
 use crate::types::instrument::{
-    Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption, FutureOption,
-    FutureProduct, NestedOptionChain, QuantityDecimalPrecision, Warrant,
+    CompactOptionChain, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption,
+    FutureOption, FutureOptionProduct, FutureProduct, NestedOptionChain, QuantityDecimalPrecision,
+    Warrant,
 };
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
@@ -54,6 +55,30 @@ impl TastyTrade {
     pub async fn get_equity(&self, symbol: impl AsSymbol) -> TastyResult<EquityInstrument> {
         self.get(format!("/instruments/equities/{}", symbol.as_symbol().0))
             .await
+    }
+
+    pub async fn list_option_chains(
+        &self,
+        underlying_symbol: impl AsSymbol,
+    ) -> TastyResult<Vec<EquityOption>> {
+        let resp: Items<EquityOption> = self
+            .get(format!(
+                "/option-chains/{}",
+                underlying_symbol.as_symbol().0
+            ))
+            .await?;
+        Ok(resp.items)
+    }
+
+    pub async fn get_compact_option_chain(
+        &self,
+        underlying_symbol: impl AsSymbol,
+    ) -> TastyResult<CompactOptionChain> {
+        self.get(format!(
+            "/option-chains/{}/compact",
+            underlying_symbol.as_symbol().0
+        ))
+        .await
     }
 
     pub async fn list_nested_option_chains(
@@ -173,6 +198,35 @@ impl TastyTrade {
         self.get(format!(
             "/instruments/future-products/{}/{}",
             exchange, code
+        ))
+        .await
+    }
+
+    pub async fn list_future_option_products(&self) -> TastyResult<Vec<FutureOptionProduct>> {
+        let resp: Items<FutureOptionProduct> =
+            self.get("/instruments/future-option-products").await?;
+        Ok(resp.items)
+    }
+
+    pub async fn get_future_option_product_by_exchange(
+        &self,
+        exchange: &str,
+        root_symbol: &str,
+    ) -> TastyResult<FutureOptionProduct> {
+        self.get(format!(
+            "/instruments/future-option-products/{}/{}",
+            exchange, root_symbol
+        ))
+        .await
+    }
+
+    pub async fn get_future_option_product(
+        &self,
+        root_symbol: &str,
+    ) -> TastyResult<FutureOptionProduct> {
+        self.get(format!(
+            "/instruments/future-option-products/{}",
+            root_symbol
         ))
         .await
     }

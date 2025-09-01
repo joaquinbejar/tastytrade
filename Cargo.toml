@@ -57,7 +57,7 @@ members = [
     "examples/quote-streaming",
     "cli",
     "examples/miscellaneous",
-    "examples/instruments",
+    "examples/Instruments",
 ]
 
 [workspace.dependencies]

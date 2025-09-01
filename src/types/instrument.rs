@@ -7,6 +7,39 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
 
+/// Represents a compact option chain with simplified strike information.
+///
+/// This structure provides a more streamlined representation of an option chain
+/// compared to the full `NestedOptionChain`, focusing on essential information
+/// for quick access and reduced memory usage.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CompactOptionChain {
+    /// The symbol of the underlying asset (e.g., "AAPL").
+    pub underlying_symbol: Symbol,
+
+    /// The root symbol of the option chain (e.g., "AAPL").
+    pub root_symbol: Symbol,
+
+    /// The type of the option chain (e.g., "equity", "future").
+    pub option_chain_type: String,
+
+    /// The settlement type of the option chain.
+    pub settlement_type: Option<String>,
+
+    /// The number of shares represented by each option contract.
+    pub shares_per_contract: u64,
+
+    /// The expiration type of the option chain.
+    pub expiration_type: Option<String>,
+
+    /// Compact representation of symbols as a string.
+    pub symbols: Option<String>,
+
+    /// Compact representation of streamer symbols as a string.
+    pub streamer_symbols: Option<String>,
+}
+
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum InstrumentType {
@@ -559,9 +592,9 @@ pub struct DestinationVenueSymbol {
     /// The name of the destination venue where the symbol is traded.
     pub destination_venue: String,
     /// The maximum precision allowed for quantity values.
-    pub max_quantity_precision: u32,
+    pub max_quantity_precision: Option<u32>,
     /// The maximum precision allowed for price values.
-    pub max_price_precision: u32,
+    pub max_price_precision: Option<u32>,
     /// Indicates whether the symbol is routable.
     pub routable: bool,
 }
