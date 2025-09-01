@@ -1,11 +1,11 @@
 use super::order::Symbol;
 use crate::api::quote_streaming::DxFeedSymbol;
+use chrono::{DateTime, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
-use chrono::{DateTime, Utc};
 
 /// Represents the different types of financial instruments.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -102,11 +102,16 @@ pub struct EquityInstrument {
     /// Indicates whether the instrument is active.
     pub active: bool,
     /// Indicates whether the instrument is eligible for fractional quantity trading.
+    #[serde(default)]
     pub is_fractional_quantity_eligible: bool,
     /// Indicates whether the instrument is illiquid.
     pub is_illiquid: bool,
     /// Indicates whether the instrument is an ETF (Exchange Traded Fund).
     pub is_etf: bool,
+    /// Indicates whether the instrument bypasses manual review.
+    pub bypass_manual_review: bool,
+    /// Indicates whether the instrument is a fraud risk.
+    pub is_fraud_risk: bool,
     /// The symbol used by the DxFeed data stream.
     pub streamer_symbol: DxFeedSymbol,
     /// A vector of tick sizes for the instrument.
@@ -269,7 +274,7 @@ pub struct Future {
     /// The expiration date of the future.
     pub expiration_date: String,
     /// The closing only date of the future.
-    pub closing_only_date: String,
+    pub closing_only_date: Option<String>,
     /// Whether the future is active.
     pub active: bool,
     /// Whether the future is in the active month.
@@ -299,8 +304,10 @@ pub struct Future {
     /// The future product.
     pub future_product: FutureProduct,
     /// The tick sizes of the future.
+    #[serde(default)]
     pub tick_sizes: Vec<TickSize>,
     /// The option tick sizes of the future.
+    #[serde(default)]
     pub option_tick_sizes: Vec<TickSize>,
     /// The spread tick sizes of the future.
     pub spread_tick_sizes: Option<Vec<HashMap<String, String>>>,
@@ -325,14 +332,14 @@ pub struct FutureProduct {
     pub clearing_code: String,
     /// The clearing exchange code of the future product.
     pub clearing_exchange_code: String,
-    /// The ClearPort code of the future product.
-    pub clearport_code: String,
+    /// The clearport code of the future product.
+    pub clearport_code: Option<String>,
     /// The legacy code of the future product.
-    pub legacy_code: String,
+    pub legacy_code: Option<String>,
     /// The exchange where the future product is traded.
     pub exchange: String,
     /// The legacy exchange code of the future product.
-    pub legacy_exchange_code: String,
+    pub legacy_exchange_code: Option<String>,
     /// The type of the future product.
     pub product_type: String,
     /// A list of strings representing the listed months for the future product.

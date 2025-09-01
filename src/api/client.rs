@@ -44,9 +44,18 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
     for Paginated<T>
 {
     fn from_tasty(resp: Response<Items<T>>) -> Self {
+        // Debug logging to understand the conversion
+        debug!("🔍 FromTastyResponse conversion:");
+        debug!("🔍 resp.data.items.len(): {}", resp.data.items.len());
+        debug!("🔍 resp.pagination: {:?}", resp.pagination);
+        
+        let pagination = resp.pagination.expect("Pagination should be present for paginated responses");
+        debug!("🔍 pagination.current_item_count: {}", pagination.current_item_count);
+        debug!("🔍 pagination.total_items: {}", pagination.total_items);
+        
         Paginated {
             items: resp.data.items,
-            pagination: resp.pagination.unwrap(),
+            pagination,
         }
     }
 }

@@ -72,5 +72,5 @@ pub mod config;
 pub mod logger;
 
 pub mod download;
-pub mod parse;
 pub mod file;
+pub mod parse;

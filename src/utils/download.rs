@@ -1,22 +1,24 @@
 /******************************************************************************
-    Author: Joaquín Béjar García
-    Email: jb@taunais.com 
-    Date: 31/8/25
- ******************************************************************************/
-use std::collections::HashSet;
+   Author: Joaquín Béjar García
+   Email: jb@taunais.com
+   Date: 31/8/25
+******************************************************************************/
+use crate::prelude::{SymbolEntry, TastyTradeConfig, parse_expiration_date};
+use crate::{InstrumentType, TastyTrade};
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
 use tracing::{error, info};
-use crate::prelude::{parse_expiration_date, SymbolEntry, TastyTradeConfig};
-use crate::{InstrumentType, Symbol, TastyTrade};
 
 /// Downloads all FutureOption and EquityOption symbols from TastyTrade
 pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
     // Load configuration from environment
-    let config = TastyTradeConfig::from_env();
+    let config = TastyTradeConfig::new();
 
     // Check if we have valid credentials
     if !config.has_valid_credentials() {
-        error!("❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables.");
+        error!(
+            "❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables."
+        );
         return Err("Missing credentials".into());
     }
 
@@ -31,7 +33,10 @@ pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std:
     info!("📈 Downloading EquityOption symbols...");
     match download_equity_options(&tasty, now).await {
         Ok(mut equity_options) => {
-            info!("✅ Downloaded {} EquityOption symbols", equity_options.len());
+            info!(
+                "✅ Downloaded {} EquityOption symbols",
+                equity_options.len()
+            );
             all_symbols.append(&mut equity_options);
         }
         Err(e) => {
@@ -43,7 +48,10 @@ pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std:
     info!("🔮 Downloading FutureOption symbols...");
     match download_future_options(&tasty, now).await {
         Ok(mut future_options) => {
-            info!("✅ Downloaded {} FutureOption symbols", future_options.len());
+            info!(
+                "✅ Downloaded {} FutureOption symbols",
+                future_options.len()
+            );
             all_symbols.append(&mut future_options);
         }
         Err(e) => {
@@ -55,7 +63,10 @@ pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std:
     let unique_symbols: HashSet<SymbolEntry> = all_symbols.into_iter().collect();
     let final_symbols: Vec<SymbolEntry> = unique_symbols.into_iter().collect();
 
-    info!("🎯 Total unique symbols downloaded: {}", final_symbols.len());
+    info!(
+        "🎯 Total unique symbols downloaded: {}",
+        final_symbols.len()
+    );
 
     Ok(final_symbols)
 }
@@ -67,22 +78,105 @@ async fn download_equity_options(
 ) -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
     let mut symbols = Vec::new();
 
-    // Get a sample of equity symbols first to find their options
-    // Note: In a real implementation, you might want to get all equities
-    // or use a predefined list of popular symbols
-    let sample_symbols = vec!["AAPL", "MSFT", "GOOGL", "TSLA", "AMZN", "NVDA", "META", "NFLX"];
+    // Try different approaches to get equity symbols
+    info!("  📊 Getting equity symbols using multiple approaches...");
+    let mut all_equities = Vec::new();
 
-    for equity_symbol in sample_symbols {
-        info!("  📊 Processing options for {}", equity_symbol);
+    // Approach 1: Try to get active equities with pagination
+    info!("  📊 Trying list_active_equities...");
+    let max_pages = 5; // Limit to avoid infinite loops
+
+    for page in 0..max_pages {
+        match tasty.list_active_equities(page).await {
+            Ok(paginated_equities) => {
+                let current_count = paginated_equities.items.len();
+                info!("    📄 Page {}: {} items found", page, current_count);
+                
+                // Check pagination info first
+                let pagination = &paginated_equities.pagination;
+                
+                // Debug: Print full response structure
+                info!("    🔍 DEBUG - Full response for page {}:", page);
+                info!("    🔍 Items count: {}", current_count);
+                
+                // Print ALL items in this page
+                for (i, item) in paginated_equities.items.iter().enumerate() {
+                    info!("    🔍 Item {}: symbol={}, id={}, active={}, description={}", 
+                        i, item.symbol.0, item.id, item.active, item.description);
+                }
+                
+                if current_count == 0 {
+                    info!("    🔍 ⚠️  PAGE {} IS EMPTY - but API says there are {} total items", page, pagination.total_items);
+                }
+                info!("    📊 Pagination: page {}/{}, total items: {}", 
+                    pagination.page_offset, pagination.total_pages, pagination.total_items);
+                info!("    🔍 DEBUG - Pagination details: per_page={}, item_offset={}, current_item_count={}", 
+                    pagination.per_page, pagination.item_offset, pagination.current_item_count);
+                
+                if current_count > 0 {
+                    all_equities.extend(paginated_equities.items);
+                }
+
+                // Break if we've reached the last page
+                if pagination.page_offset + 1 >= pagination.total_pages {
+                    break;
+                }
+                
+                // If we have total_items but no items on this page, continue to next page
+                if current_count == 0 && pagination.total_items > 0 {
+                    info!("    📄 Empty page but {} total items exist, continuing...", pagination.total_items);
+                    continue;
+                }
+                
+                // If no items and no total items, we're done
+                if current_count == 0 && pagination.total_items == 0 {
+                    break;
+                }
+            }
+            Err(e) => {
+                error!("Error fetching active equities at page {}: {}", page, e);
+                break;
+            }
+        }
+    }
+
+    // If we didn't get any equities, there's a problem that needs investigation
+    if all_equities.is_empty() {
+        error!("  ❌ No equity instruments found via list_active_equities API");
+        error!("  🔍 This indicates a potential API issue or authentication problem");
+        return Err("No equity instruments found - check API connectivity and credentials".into());
+    }
+
+    info!("  📊 Found {} total equity instruments", all_equities.len());
+
+    // Process options for each equity (limit to avoid overwhelming API)
+    let max_equities = std::env::var("MAX_EQUITIES")
+        .unwrap_or_else(|_| "100".to_string())
+        .parse::<usize>()
+        .unwrap_or(100);
+
+    let equities_to_process = if all_equities.len() > max_equities {
+        info!(
+            "  ⚠️  Limiting to {} equities (set MAX_EQUITIES env var to change)",
+            max_equities
+        );
+        &all_equities[..max_equities]
+    } else {
+        &all_equities
+    };
+
+    for equity in equities_to_process {
+        info!("  📊 Processing options for {}", equity.symbol.0);
 
         // Get nested option chains for this equity
-        match tasty.list_nested_option_chains(Symbol(equity_symbol.to_string())).await {
+        match tasty.list_nested_option_chains(equity.symbol.clone()).await {
             Ok(option_chains) => {
                 for chain in option_chains {
                     // Process each expiration in the chain
                     for expiration in &chain.expirations {
                         // Parse expiration date
-                        let expiry = parse_expiration_date(&expiration.expiration_date, last_update);
+                        let expiry =
+                            parse_expiration_date(&expiration.expiration_date, last_update);
 
                         // Process each strike in the expiration
                         for strike in &expiration.strikes {
@@ -90,10 +184,11 @@ async fn download_equity_options(
                             symbols.push(SymbolEntry {
                                 symbol: strike.call.0.clone(),
                                 epic: strike.call.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!("{} Call ${} {}",
-                                              chain.underlying_symbol.0,
-                                              strike.strike_price,
-                                              expiration.expiration_date
+                                name: format!(
+                                    "{} Call ${} {}",
+                                    chain.underlying_symbol.0,
+                                    strike.strike_price,
+                                    expiration.expiration_date
                                 ),
                                 instrument_type: InstrumentType::EquityOption,
                                 exchange: "TASTYTRADE".to_string(),
@@ -105,10 +200,11 @@ async fn download_equity_options(
                             symbols.push(SymbolEntry {
                                 symbol: strike.put.0.clone(),
                                 epic: strike.put.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!("{} Put ${} {}",
-                                              chain.underlying_symbol.0,
-                                              strike.strike_price,
-                                              expiration.expiration_date
+                                name: format!(
+                                    "{} Put ${} {}",
+                                    chain.underlying_symbol.0,
+                                    strike.strike_price,
+                                    expiration.expiration_date
                                 ),
                                 instrument_type: InstrumentType::EquityOption,
                                 exchange: "TASTYTRADE".to_string(),
@@ -120,7 +216,10 @@ async fn download_equity_options(
                 }
             }
             Err(e) => {
-                error!("    ⚠️  Error getting option chain for {}: {}", equity_symbol, e);
+                error!(
+                    "    ⚠️  Error getting option chain for {}: {}",
+                    equity.symbol.0, e
+                );
             }
         }
     }
@@ -135,24 +234,72 @@ async fn download_future_options(
 ) -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
     let mut symbols = Vec::new();
 
-    // Get future products first
-    info!("  📈 Getting future products...");
+    // Get ALL future products
+    info!("  📈 Getting all future products...");
     let future_products = tasty.list_future_products().await?;
 
-    // Process a sample of future products (limit to avoid too many API calls)
-    let sample_products: Vec<_> = future_products.into_iter().take(5).collect();
+    info!("  📈 Found {} total future products", future_products.len());
 
-    for product in sample_products {
-        info!("  🔮 Processing future options for product: {}", product.code);
+    // Process all future products (with optional limit via env var)
+    let max_products = std::env::var("MAX_FUTURE_PRODUCTS")
+        .unwrap_or_else(|_| "50".to_string())
+        .parse::<usize>()
+        .unwrap_or(50);
+
+    let products_to_process = if future_products.len() > max_products {
+        info!(
+            "  ⚠️  Limiting to {} future products (set MAX_FUTURE_PRODUCTS env var to change)",
+            max_products
+        );
+        &future_products[..max_products]
+    } else {
+        &future_products
+    };
+
+    // Products that typically don't have option chains
+    let products_without_options = vec![
+        "GE",   // Eurodollar
+        "ZQ",   // 30 Day Fed Fund
+        "ZT",   // 2-Year Note
+        "ZF",   // 5-Year Note
+        "ZN",   // 10-Year Note
+        "ZB",   // 30-Year Bond
+        "UB",   // Ultra Bond
+    ];
+
+    for product in products_to_process {
+        info!(
+            "  🔮 Processing future options for product: {} ({})",
+            product.code, product.description
+        );
+        
+        // Skip products that typically don't have option chains
+        if products_without_options.contains(&product.code.as_str()) {
+            info!("    📝 {} ({}) typically has no option chains - skipping", product.code, product.description);
+            continue;
+        }
 
         // Get nested option chains for this future product
         match tasty.list_nested_futures_option_chains(&product.code).await {
             Ok(option_chains) => {
+                if option_chains.is_empty() {
+                    info!(
+                        "    📭 No option chains found for {} ({})",
+                        product.code, product.description
+                    );
+                    continue;
+                }
+                info!(
+                    "    ✅ Found {} option chains for {}",
+                    option_chains.len(),
+                    product.code
+                );
                 for chain in option_chains {
                     // Process each expiration in the chain
                     for expiration in &chain.expirations {
                         // Parse expiration date
-                        let expiry = parse_expiration_date(&expiration.expiration_date, last_update);
+                        let expiry =
+                            parse_expiration_date(&expiration.expiration_date, last_update);
 
                         // Process each strike in the expiration
                         for strike in &expiration.strikes {
@@ -160,10 +307,11 @@ async fn download_future_options(
                             symbols.push(SymbolEntry {
                                 symbol: strike.call.0.clone(),
                                 epic: strike.call.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!("{} Future Call ${} {}",
-                                              chain.underlying_symbol.0,
-                                              strike.strike_price,
-                                              expiration.expiration_date
+                                name: format!(
+                                    "{} Future Call ${} {}",
+                                    chain.underlying_symbol.0,
+                                    strike.strike_price,
+                                    expiration.expiration_date
                                 ),
                                 instrument_type: InstrumentType::FutureOption,
                                 exchange: "TASTYTRADE".to_string(),
@@ -175,10 +323,11 @@ async fn download_future_options(
                             symbols.push(SymbolEntry {
                                 symbol: strike.put.0.clone(),
                                 epic: strike.put.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!("{} Future Put ${} {}",
-                                              chain.underlying_symbol.0,
-                                              strike.strike_price,
-                                              expiration.expiration_date
+                                name: format!(
+                                    "{} Future Put ${} {}",
+                                    chain.underlying_symbol.0,
+                                    strike.strike_price,
+                                    expiration.expiration_date
                                 ),
                                 instrument_type: InstrumentType::FutureOption,
                                 exchange: "TASTYTRADE".to_string(),
@@ -190,7 +339,19 @@ async fn download_future_options(
                 }
             }
             Err(e) => {
-                error!("    ⚠️  Error getting future option chain for {}: {}", product.code, e);
+                // Check if it's a decoding error specifically
+                let error_msg = format!("{}", e);
+                if error_msg.contains("error decoding response body") {
+                    info!(
+                        "    📝 {} ({}) has no option chains or unsupported format - skipping",
+                        product.code, product.description
+                    );
+                } else {
+                    error!(
+                        "    ⚠️  API error for {} ({}): {}",
+                        product.code, product.description, e
+                    );
+                }
             }
         }
     }

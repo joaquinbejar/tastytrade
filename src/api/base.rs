@@ -2,8 +2,8 @@ use crate::{ApiError, TastyTradeError};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_with::VecSkipError;
-use serde_with::serde_as;
+
+use tracing::warn;
 use std::fmt::Display;
 
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
@@ -43,11 +43,46 @@ pub struct Pagination {
     pub paging_link_template: Option<String>,
 }
 
-#[serde_as]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct Items<T: DeserializeOwned + Serialize + std::fmt::Debug> {
-    #[serde_as(as = "VecSkipError<_>")]
     pub items: Vec<T>,
+}
+
+impl<'de, T> Deserialize<'de> for Items<T>
+where
+    T: DeserializeOwned + Serialize + std::fmt::Debug,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+         struct ItemsHelper {
+             items: Vec<serde_json::Value>,
+         }
+         
+         let helper = ItemsHelper::deserialize(deserializer)?;
+        let mut items = Vec::new();
+        let mut error_count = 0;
+        
+        for (index, value) in helper.items.into_iter().enumerate() {
+            match serde_json::from_value::<T>(value.clone()) {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    error_count += 1;
+                    warn!("🔍 Failed to deserialize item {} in Items<T>: {}", index, e);
+                    warn!("🔍 Raw value: {}", serde_json::to_string_pretty(&value).unwrap_or_else(|_| "<invalid json>".to_string()));
+                    if error_count <= 3 { // Only log first 3 errors to avoid spam
+                        warn!("🔍 Deserialization error details: {:?}", e);
+                    }
+                }
+            }
+        }
+        
+        warn!("🔍 Items<T> deserialization summary: {} successful, {} failed", items.len(), error_count);
+        
+        Ok(Items { items })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -96,6 +96,26 @@ impl TastyTrade {
         Ok(resp.items)
     }
 
+    /// List all equity options with pagination support
+    pub async fn list_all_equity_options(
+        &self,
+        page_offset: usize,
+        active: Option<bool>,
+    ) -> TastyResult<Paginated<EquityOption>> {
+        let page_offset_str = page_offset.to_string();
+        let mut query = vec![
+            ("per-page", "1000"),
+            ("page-offset", page_offset_str.as_str()),
+        ];
+
+        if let Some(active_val) = active {
+            query.push(("active", if active_val { "true" } else { "false" }));
+        }
+
+        self.get_with_query::<Items<EquityOption>, _, _>("/instruments/equity-options", &query)
+            .await
+    }
+
     pub async fn get_equity_option(&self, symbol: impl AsSymbol) -> TastyResult<EquityOption> {
         self.get(format!(
             "/instruments/equity-options/{}",
