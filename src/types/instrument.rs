@@ -45,10 +45,10 @@ pub struct CompactOptionChain {
     pub expiration_type: Option<String>,
 
     /// Compact representation of symbols as a string.
-    pub symbols: Option<String>,
+    pub symbols: Option<Vec<String>>,
 
     /// Compact representation of streamer symbols as a string.
-    pub streamer_symbols: Option<String>,
+    pub streamer_symbols: Option<Vec<String>>,
 }
 
 /// Represents the different types of financial instruments.
