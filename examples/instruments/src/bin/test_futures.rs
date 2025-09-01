@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 1: List all futures without filters
     info!("\n📊 Test 1: Listing all futures (no filters)...");
     
-    match tasty.list_futures(None::<&[&str]>, None).await {
+    match tasty.list_futures(None::<&[&str]>, None, None, None, None).await {
         Ok(futures) => {
             info!("✅ Found {} futures total", futures.len());
             
@@ -134,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let popular_products = vec!["ES", "NQ", "YM", "RTY", "CL", "GC", "SI"];
     
     for product_code in popular_products {
-        match tasty.list_futures(None::<&[&str]>, Some(product_code)).await {
+        match tasty.list_futures(None::<&[&str]>, Some(product_code), None, None, None).await {
             Ok(futures) => {
                 info!("✅ Found {} futures for product {}", futures.len(), product_code);
                 
@@ -164,12 +164,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n📊 Test 3: Getting specific futures by symbols...");
     
     // First get some ES futures to test with
-    match tasty.list_futures(None::<&[&str]>, Some("ES")).await {
+    match tasty.list_futures(None::<&[&str]>, Some("ES"), None, None, None).await {
         Ok(es_futures) => {
             if !es_futures.is_empty() {
                 let test_symbols: Vec<_> = es_futures.iter().take(3).map(|f| &f.symbol).collect();
                 
-                match tasty.list_futures(Some(&test_symbols), None).await {
+                match tasty.list_futures(Some(&test_symbols), None, None, None, None).await {
                     Ok(specific_futures) => {
                         info!("✅ Retrieved {} specific futures by symbols", specific_futures.len());
                         
