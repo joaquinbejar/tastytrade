@@ -9,6 +9,7 @@ use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
 use tracing::{info, debug, error};
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
@@ -29,11 +30,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tasty = TastyTrade::login(&config).await?;
     info!("✅ Successfully logged in!");
     
-    // Test 1: List all cryptocurrencies
-    info!("\n📊 Test 1: Listing all cryptocurrencies...");
-    match tasty.list_cryptocurrencies().await {
+    // Test 1: List specific cryptocurrencies
+    info!("\n📊 Test 1: Listing specific cryptocurrencies...");
+    // Using official TastyTrade cryptocurrency symbols
+    let crypto_symbols = vec!["BTC/USD", "ETH/USD", "LTC/USD", "BCH/USD", "DOGE/USD", "ADA/USD", "SOL/USD"];
+    
+    match tasty.list_cryptocurrencies(&crypto_symbols).await {
         Ok(cryptos) => {
-            info!("✅ Found {} cryptocurrencies", cryptos.len());
+            info!("✅ Found {} cryptocurrencies from {} requested symbols", cryptos.len(), crypto_symbols.len());
             
             if !cryptos.is_empty() {
                 // Show first few cryptocurrencies
@@ -75,19 +79,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 debug!("      - Closing Only: {}", closing_only);
                 debug!("      - Inactive: {}", cryptos.len() - active);
                 
-                // Test 2: Get specific cryptocurrencies
-                info!("\n📊 Test 2: Getting specific cryptocurrencies...");
+                // Test 2: Get individual cryptocurrencies
+                info!("\n📊 Test 2: Getting individual cryptocurrencies...");
                 
-                // Test with first few cryptocurrencies
+                // Test with first few cryptocurrencies from the list
                 for crypto in cryptos.iter().take(3) {
                     match tasty.get_cryptocurrency(&crypto.symbol.0).await {
                         Ok(specific_crypto) => {
                             info!("✅ Retrieved cryptocurrency: {}", specific_crypto.symbol.0);
-                            debug!("   📊 Details:");
-                            debug!("      - Description: {}", specific_crypto.description);
-                            debug!("      - Active: {}", specific_crypto.active);
-                            debug!("      - Tick Size: {}", specific_crypto.tick_size);
-                            debug!("      - Venues: {} destination venues", specific_crypto.destination_venue_symbols.len());
+                            info!("   📊 Details:");
+                            info!("      - Description: {}", specific_crypto.description);
+                            info!("      - Active: {}", specific_crypto.active);
+                            info!("      - Tick Size: {}", specific_crypto.tick_size);
+                            info!("      - Streamer Symbol: {}", specific_crypto.streamer_symbol.0);
+                            info!("      - Venues: {} destination venues", specific_crypto.destination_venue_symbols.len());
+                            
+                            // Show first few venues
+                            for (i, venue) in specific_crypto.destination_venue_symbols.iter().take(3).enumerate() {
+                                info!("         {}. {}: {} (routable: {})", 
+                                     i + 1, venue.destination_venue, venue.symbol.0, venue.routable);
+                            }
                         }
                         Err(e) => {
                             error!("❌ Error getting cryptocurrency {}: {}", crypto.symbol.0, e);
@@ -119,11 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 
             } else {
-                info!("   ℹ️ No cryptocurrencies found");
+                info!("   ℹ️ No cryptocurrencies found for the specified symbols");
+                info!("   📝 Note: The cryptocurrency endpoint requires specific symbols.");
+                info!("   📝 Tried symbols: {:?}", crypto_symbols);
             }
         }
         Err(e) => {
             error!("❌ Error listing cryptocurrencies: {}", e);
+            info!("   📝 Note: Make sure the symbols are in the correct format (e.g., BTC/USD)");
         }
     }
     

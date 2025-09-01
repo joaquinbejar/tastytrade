@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n🪙 Demo 7: Cryptocurrencies");
     info!("============================");
 
-    match tasty.list_cryptocurrencies().await {
+    match tasty.list_cryptocurrencies(&["BTC/USD"]).await {
         Ok(cryptos) => {
             info!("✅ Retrieved {} cryptocurrencies", cryptos.len());
             if let Some(first_crypto) = cryptos.first() {

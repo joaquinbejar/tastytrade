@@ -279,15 +279,32 @@ impl TastyTrade {
         .await
     }
 
-    pub async fn list_cryptocurrencies(&self) -> TastyResult<Vec<Cryptocurrency>> {
-        let resp: Items<Cryptocurrency> = self.get("/instruments/cryptocurrencies").await?;
+    pub async fn list_cryptocurrencies(
+        &self,
+        symbols: &[impl AsSymbol],
+    ) -> TastyResult<Vec<Cryptocurrency>> {
+        let mut query = Vec::new();
+        let mut symbol_strings = Vec::new();
+
+        for symbol in symbols {
+            symbol_strings.push(symbol.as_symbol().0.clone());
+        }
+
+        for symbol_str in &symbol_strings {
+            query.push(("symbol[]", symbol_str.as_str()));
+        }
+
+        let resp: Items<Cryptocurrency> = self
+            .get_with_query("/instruments/cryptocurrencies", &query)
+            .await?;
         Ok(resp.items)
     }
 
     pub async fn get_cryptocurrency(&self, symbol: impl AsSymbol) -> TastyResult<Cryptocurrency> {
+        let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
         self.get(format!(
             "/instruments/cryptocurrencies/{}",
-            symbol.as_symbol().0
+            encoded_symbol
         ))
         .await
     }

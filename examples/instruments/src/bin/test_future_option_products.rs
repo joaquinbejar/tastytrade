@@ -9,8 +9,6 @@ use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
 use tracing::{debug, error, info};
 
-
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
