@@ -8,6 +8,16 @@ use serde_json;
 use std::collections::HashMap;
 use std::fmt::Display;
 
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+pub struct CompactOptionChainResponse {
+    pub data: CompactOptionChainData,
+}
+
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+pub struct CompactOptionChainData {
+    pub items: Vec<CompactOptionChain>,
+}
+
 /// Represents a compact option chain with simplified strike information.
 ///
 /// This structure provides a more streamlined representation of an option chain

@@ -4,11 +4,7 @@
    Date: 9/3/25
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
-use crate::types::instrument::{
-    CompactOptionChain, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption,
-    FutureOption, FutureOptionProduct, FutureProduct, NestedOptionChain, QuantityDecimalPrecision,
-    Warrant,
-};
+use crate::types::instrument::{CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct, NestedOptionChain, QuantityDecimalPrecision, Warrant};
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
@@ -74,11 +70,22 @@ impl TastyTrade {
         &self,
         underlying_symbol: impl AsSymbol,
     ) -> TastyResult<CompactOptionChain> {
-        self.get(format!(
-            "/option-chains/{}/compact",
-            underlying_symbol.as_symbol().0
-        ))
-        .await
+        
+        let url = format!("/option-chains/{}/compact", underlying_symbol.as_symbol().0);
+        let full_url = format!("{}{}", self.config.base_url, url);
+        
+        let response = self.client.get(&full_url).send().await?;
+        let text = response.text().await?;
+        
+        let parsed: CompactOptionChainResponse = serde_json::from_str(&text)
+            .map_err(|e| crate::TastyTradeError::Unknown(
+                format!("Failed to parse compact option chain response for {}: {}. Full response: {}", full_url, e, text)
+            ))?;
+            
+        parsed.data.items.into_iter().next()
+            .ok_or_else(|| crate::TastyTradeError::Unknown(
+                "No compact option chain data found in response".to_string()
+            ))
     }
 
     pub async fn list_nested_option_chains(
