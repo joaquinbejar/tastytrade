@@ -137,7 +137,7 @@ impl TastyTrade {
             query.push(("active", if active_val { "true" } else { "false" }));
         }
 
-        self.get_with_query::<Items<EquityOption>, _, _>("/instruments/equity-options", &query)
+        self.get_with_query::<Paginated<EquityOption>, _, _>("/instruments/equity-options", &query)
             .await
     }
 

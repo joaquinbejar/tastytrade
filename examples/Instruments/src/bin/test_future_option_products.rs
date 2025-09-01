@@ -137,12 +137,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 );
                                 debug!("   📊 Root product details:");
                                 debug!("      - Exchange: {}", root_product.exchange);
-                                debug!("      - Legacy Code: {}", root_product.legacy_code);
+                                if let Some(legacy_code) = &root_product.legacy_code {
+                                    debug!("      - Legacy Code: {}", legacy_code);
+                                }
                                 debug!("      - Clearing Code: {}", root_product.clearing_code);
                                 debug!(
                                     "      - Clearing Exchange: {}",
                                     root_product.clearing_exchange_code
                                 );
+                                if let Some(clearport_code) = &root_product.clearport_code {
+                                    debug!("      - Clearport Code: {}", clearport_code);
+                                }
+                                if let Some(supported) = root_product.supported {
+                                    debug!("      - Supported: {}", supported);
+                                }
                             }
                             Err(e) => {
                                 error!(

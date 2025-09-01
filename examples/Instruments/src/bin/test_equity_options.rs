@@ -111,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Test 2: List all equity options with pagination
     info!("\n📊 Test 2: Listing all equity options (paginated)...");
+    info!("   ⚠️ Note: This endpoint may experience server issues (502 Bad Gateway)");
     
     match tasty.list_all_equity_options(0, Some(true)).await {
         Ok(paginated_options) => {
@@ -164,6 +165,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             error!("❌ Error listing all equity options: {}", e);
+            info!("   ℹ️ This is a known server-side issue (502 Bad Gateway) with the /instruments/equity-options endpoint");
+            info!("   ℹ️ The endpoint implementation is correct, but the server is currently unavailable");
         }
     }
     

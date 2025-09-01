@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fmt::Display;
 
@@ -58,6 +59,16 @@ pub enum InstrumentType {
     FutureOption,
     /// Represents a cryptocurrency instrument.
     Cryptocurrency,
+    /// Represents a bond instrument.
+    Bond,
+    /// Represents a fixed income security instrument.
+    #[serde(rename = "Fixed Income Security")]
+    FixedIncomeSecurity,
+    /// Represents a liquidity pool instrument.
+    #[serde(rename = "Liquidity Pool")]
+    LiquidityPool,
+    /// Represents a warrant instrument.
+    Warrant,
 }
 
 impl Display for InstrumentType {
@@ -69,6 +80,10 @@ impl Display for InstrumentType {
             InstrumentType::Future => write!(f, "Future"),
             InstrumentType::FutureOption => write!(f, "Future Option"),
             InstrumentType::Cryptocurrency => write!(f, "Cryptocurrency"),
+            InstrumentType::Bond => write!(f, "Bond"),
+            InstrumentType::FixedIncomeSecurity => write!(f, "Fixed Income Security"),
+            InstrumentType::LiquidityPool => write!(f, "Liquidity Pool"),
+            InstrumentType::Warrant => write!(f, "Warrant"),
         }
     }
 }
@@ -275,8 +290,8 @@ pub struct EquityOption {
     pub expires_at: String,
     /// Whether the option is closing only.
     pub is_closing_only: bool,
-    /// The streamer symbol for the option.
-    pub streamer_symbol: DxFeedSymbol,
+    /// The streamer symbol for the future option.
+    pub streamer_symbol: Option<DxFeedSymbol>,
 }
 
 /// Represents a future contract.
@@ -396,7 +411,7 @@ pub struct FutureProduct {
     /// A boolean indicating whether the future product is cash settled.
     pub cash_settled: bool,
     /// The security group of the future product.
-    pub security_group: String,
+    pub security_group: Option<String>,
     /// The market sector of the future product.
     pub market_sector: String,
     /// Information about the roll of the future product.
@@ -454,8 +469,8 @@ pub struct FutureOption {
     pub exchange: String,
     /// The exchange symbol of the future option.
     pub exchange_symbol: String,
-    /// The streamer symbol for the future option (DxFeed).
-    pub streamer_symbol: DxFeedSymbol,
+    /// The streamer symbol for the future option.
+    pub streamer_symbol: Option<DxFeedSymbol>,
     /// The type of the option (e.g., "call", "put").
     pub option_type: String,
     /// The exercise style of the option (e.g., "american", "european").
@@ -521,9 +536,9 @@ pub struct FutureOptionProduct {
     /// The code of the future option.
     pub code: String,
     /// The legacy code of the future option.
-    pub legacy_code: String,
+    pub legacy_code: Option<String>,
     /// The ClearPort code of the future option.
-    pub clearport_code: String,
+    pub clearport_code: Option<String>,
     /// The clearing code of the future option.
     pub clearing_code: String,
     /// The clearing exchange code of the future option.
@@ -544,6 +559,10 @@ pub struct FutureOptionProduct {
     pub is_rollover: bool,
     /// The market sector of the future option.
     pub market_sector: String,
+    /// Whether the future option product is supported.
+    pub supported: Option<bool>,
+    /// Trading cutoff times for futures.
+    pub futures_trading_cutoff_times: Option<Vec<serde_json::Value>>,
 }
 
 /// Represents a cryptocurrency instrument.
