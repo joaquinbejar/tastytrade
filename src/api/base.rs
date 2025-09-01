@@ -83,12 +83,14 @@ where
                 }
             }
         }
-
-        warn!(
-            "🔍 Items<T> deserialization summary: {} successful, {} failed",
-            items.len(),
-            error_count
-        );
+        
+        if error_count > 0 {
+            warn!(
+                "🔍 Items<T> deserialization summary: {} successful, {} failed",
+                items.len(),
+                error_count
+            );
+        }
 
         Ok(Items { items })
     }

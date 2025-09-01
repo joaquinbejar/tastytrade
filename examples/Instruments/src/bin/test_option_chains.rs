@@ -119,10 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if let Some(symbols) = &compact_chain.symbols {
-                    let symbol_count = symbols.split(',').count();
                     debug!(
                         "      - Symbols: {} symbols in compact format",
-                        symbol_count
+                        symbols.len()
                     );
                 }
             }
