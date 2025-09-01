@@ -294,8 +294,8 @@ pub struct EquityOption {
     pub stops_trading_at: String,
     /// The market time instrument collection.
     pub market_time_instrument_collection: String,
-    /// The number of days to expiration.
-    pub days_to_expiration: u64,
+    /// The number of days to expiration (can be negative for expired options).
+    pub days_to_expiration: i64,
     /// The date and time when the option expires, formatted as a string.
     pub expires_at: String,
     /// Whether the option is closing only.

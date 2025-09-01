@@ -57,15 +57,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    info!("\n🔍 Testing list_all_equity_options (the problematic one)...");
-    match tasty.list_all_equity_options(0, Some(true)).await {
-        Ok(paginated_options) => {
-            info!("✅ list_all_equity_options works! Found {} options", paginated_options.items.len());
+    info!("\n🔍 Testing list_option_chains (recommended alternative)...");
+    match tasty.list_option_chains("AAPL").await {
+        Ok(options) => {
+            info!("✅ list_option_chains works! Found {} AAPL options", options.len());
         }
         Err(e) => {
-            error!("❌ list_all_equity_options failed: {}", e);
+            error!("❌ list_option_chains failed: {}", e);
         }
     }
+    
+    info!("\n🔍 Testing get_equity_option (individual lookup)...");
+    match tasty.get_equity_option("AAPL  241220C00200000").await {
+        Ok(option) => {
+            info!("✅ get_equity_option works! Retrieved option: {}", option.symbol.0);
+        }
+        Err(e) => {
+            error!("❌ get_equity_option failed: {}", e);
+        }
+    }
+    
+    info!("\n📝 Note: The deprecated list_all_equity_options method has been removed.");
+    info!("   It was using a deprecated API endpoint that returned 502 Bad Gateway errors.");
+    info!("   The above alternatives provide the same functionality with working endpoints.");
     
     Ok(())
 }

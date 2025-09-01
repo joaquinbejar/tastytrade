@@ -109,64 +109,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // Test 2: List all equity options with pagination
-    info!("\n📊 Test 2: Listing all equity options (paginated)...");
-    info!("   ⚠️ Note: This endpoint may experience server issues (502 Bad Gateway)");
+    // Test 2: List option chains for multiple underlyings
+    info!("\n📊 Test 2: Listing option chains for multiple underlyings...");
+    info!("   📝 Note: The deprecated list_all_equity_options has been removed.");
+    info!("   📝 Using list_option_chains as the recommended alternative.");
     
-    match tasty.list_all_equity_options(0, Some(true)).await {
-        Ok(paginated_options) => {
-            info!("✅ Retrieved {} active equity options from page 1", paginated_options.items.len());
-            debug!("   📊 Pagination info:");
-            debug!("      - Current page: {}", paginated_options.pagination.page_offset);
-            debug!("      - Items per page: {}", paginated_options.pagination.per_page);
-            debug!("      - Total pages: {}", paginated_options.pagination.total_pages);
-            debug!("      - Total items: {}", paginated_options.pagination.total_items);
-            
-            if !paginated_options.items.is_empty() {
-                // Analyze option chain types
-                let mut chain_types = std::collections::HashMap::new();
-                let mut exercise_styles = std::collections::HashMap::new();
+    let underlyings = vec!["AAPL", "SPY", "QQQ"];
+    let mut total_options = 0;
+    let mut all_chain_types = std::collections::HashMap::new();
+    let mut all_exercise_styles = std::collections::HashMap::new();
+    
+    for underlying in &underlyings {
+        match tasty.list_option_chains(underlying).await {
+            Ok(options) => {
+                info!("✅ Retrieved {} options for {}", options.len(), underlying);
+                total_options += options.len();
                 
-                for option in &paginated_options.items {
-                    *chain_types.entry(option.option_chain_type.clone()).or_insert(0) += 1;
-                    *exercise_styles.entry(option.exercise_style.clone()).or_insert(0) += 1;
-                }
-                
-                debug!("   📊 Option chain types:");
-                for (chain_type, count) in chain_types.iter() {
-                    debug!("      - {}: {} options", chain_type, count);
-                }
-                
-                debug!("   📊 Exercise styles:");
-                for (style, count) in exercise_styles.iter() {
-                    debug!("      - {}: {} options", style, count);
-                }
-                
-                // Show sample options from different underlyings
-                let mut seen_underlyings = std::collections::HashSet::new();
-                debug!("   📊 Sample options from different underlyings:");
-                
-                for option in paginated_options.items.iter().take(10) {
-                    if seen_underlyings.insert(option.underlying_symbol.0.clone()) {
-                        debug!("      - {} {} ${} {} (exp: {})", 
-                            option.underlying_symbol.0,
+                if !options.is_empty() {
+                    // Analyze option chain types and exercise styles
+                    for option in &options {
+                        *all_chain_types.entry(option.option_chain_type.clone()).or_insert(0) += 1;
+                        *all_exercise_styles.entry(option.exercise_style.clone()).or_insert(0) += 1;
+                    }
+                    
+                    // Show sample from this underlying
+                    let calls = options.iter().filter(|o| o.option_type == "C").count();
+                    let puts = options.iter().filter(|o| o.option_type == "P").count();
+                    let active = options.iter().filter(|o| o.active).count();
+                    
+                    debug!("   📊 {} analysis: {} calls, {} puts, {} active", underlying, calls, puts, active);
+                    
+                    // Show a few sample options
+                    for (i, option) in options.iter().take(3).enumerate() {
+                        debug!("      {}. {} ${} {} (exp: {}, active: {})", 
+                            i + 1,
                             option.option_type,
                             option.strike_price,
                             option.symbol.0,
-                            option.expiration_date
+                            option.expiration_date,
+                            option.active
                         );
-                        
-                        if seen_underlyings.len() >= 5 {
-                            break;
-                        }
                     }
                 }
             }
+            Err(e) => {
+                error!("❌ Error getting {} option chain: {}", underlying, e);
+            }
         }
-        Err(e) => {
-            error!("❌ Error listing all equity options: {}", e);
-            info!("   ℹ️ This is a known server-side issue (502 Bad Gateway) with the /instruments/equity-options endpoint");
-            info!("   ℹ️ The endpoint implementation is correct, but the server is currently unavailable");
+    }
+    
+    if total_options > 0 {
+        info!("📊 Combined analysis across all underlyings ({} total options):", total_options);
+        
+        debug!("   📊 Option chain types:");
+        for (chain_type, count) in all_chain_types.iter() {
+            debug!("      - {}: {} options", chain_type, count);
+        }
+        
+        debug!("   📊 Exercise styles:");
+        for (style, count) in all_exercise_styles.iter() {
+            debug!("      - {}: {} options", style, count);
         }
     }
     
