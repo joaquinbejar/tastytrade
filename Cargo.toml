@@ -1,6 +1,6 @@
 [package]
 name = "tastytrade"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 description = "Library for trading through tastytrade's API"
@@ -63,17 +63,17 @@ members = [
 [workspace.dependencies]
 tastytrade = { path = "." }
 derive_builder = "0.20"
-reqwest = { version = "0.12", features = ["json"] }
-rust_decimal = { version = "1.37", features = [
+reqwest = { version = "0.13", features = ["json"] }
+rust_decimal = { version = "1.40", features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-flume = "0.11"
-tokio-tungstenite = { version = "0.27", features = ["native-tls"] }
-tokio = { version = "1.47", features = ["full"] }
+flume = "0.12"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio = { version = "1.49", features = ["full"] }
 futures-util = "0.3"
 erased-serde = "0.4"
 dxlink = "0.1"
