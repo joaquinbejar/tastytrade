@@ -36,15 +36,7 @@ pub struct TastyTradeConfig {
 
 impl Default for TastyTradeConfig {
     fn default() -> Self {
-        Self {
-            username: String::new(),
-            password: String::new(),
-            use_demo: false,
-            log_level: "INFO".to_string(),
-            remember_me: false,
-            base_url: BASE_URL.to_string(),
-            websocket_url: WEBSOCKET_URL.to_string(),
-        }
+        Self::from_env()
     }
 }
 
@@ -65,6 +57,7 @@ impl TastyTradeConfig {
 
     /// Initialize a new configuration from environment variables
     pub fn from_env() -> Self {
+        #[cfg(not(test))]
         dotenv::dotenv().ok();
         let username = env::var("TASTYTRADE_USERNAME").unwrap_or_default();
         let password = env::var("TASTYTRADE_PASSWORD").unwrap_or_default();
@@ -142,7 +135,16 @@ mod tests {
     use std::env;
 
     #[test]
+    #[serial]
     fn test_default_config() {
+        // Ensure environment variables don't interfere with the test
+        unsafe {
+            env::remove_var("TASTYTRADE_USERNAME");
+            env::remove_var("TASTYTRADE_PASSWORD");
+            env::remove_var("TASTYTRADE_USE_DEMO");
+            env::remove_var("LOGLEVEL");
+            env::remove_var("TASTYTRADE_REMEMBER_ME");
+        }
         let config = TastyTradeConfig::default();
         assert!(config.username.is_empty());
         assert!(config.password.is_empty());
@@ -181,7 +183,13 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_has_valid_credentials() {
+        // Ensure environment variables don't interfere with the test
+        unsafe {
+            env::remove_var("TASTYTRADE_USERNAME");
+            env::remove_var("TASTYTRADE_PASSWORD");
+        }
         let mut config = TastyTradeConfig::default();
         assert!(!config.has_valid_credentials());
 

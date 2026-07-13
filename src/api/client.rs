@@ -66,6 +66,11 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
 }
 
 impl TastyTrade {
+    pub async fn default() -> TastyResult<Self> {
+        let config = TastyTradeConfig::default();
+        Self::login(&config).await
+    }
+
     pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
         let creds = Self::do_login_request(
             &config.username,
@@ -157,7 +162,20 @@ impl TastyTrade {
             format!("{}?{}", full_url, query_string)
         };
 
-        let response = self.client.get(&full_url).query(query).send().await?;
+        let response: reqwest::Response = if query.is_empty() {
+            self.client.get(&full_url).send().await?
+        } else {
+            let mut url_with_query = reqwest::Url::parse(&full_url).map_err(|e| {
+                crate::TastyTradeError::Unknown(format!("Failed to parse URL: {}", e))
+            })?;
+            {
+                let mut query_pairs = url_with_query.query_pairs_mut();
+                for (k, v) in query {
+                    query_pairs.append_pair(k, v);
+                }
+            }
+            self.client.get(url_with_query).send().await?
+        };
 
         let status = response.status();
 
@@ -177,7 +195,7 @@ impl TastyTrade {
 
         let text = response.text().await?;
         debug!("🔍 Full response for {}: {}", request_info, text);
-        let result = serde_json::from_str::<TastyApiResponse<T>>(&text).map_err(|e| {
+        let result = serde_json::from_str::<TastyApiResponse<T>>(text.as_str()).map_err(|e| {
             crate::TastyTradeError::Unknown(format!(
                 "Failed to parse JSON response for request {}: {}. Full response: {}",
                 request_info, e, text
