@@ -20,18 +20,17 @@ impl TastyTrade {
         debug!("Response status: {}", status);
 
         if !status.is_success() {
+            // Never propagate the response body: it may echo credentials.
             error!("Failed to get quote streamer tokens: HTTP {}", status);
-            let text = response.text().await?;
-            error!("Response body: {}", text);
             return Err(crate::TastyTradeError::Connection(format!(
-                "Failed to get quote streamer tokens: HTTP {}, Body: {}",
-                status, text
+                "Failed to get quote streamer tokens: HTTP {}",
+                status
             )));
         }
 
-        // Intentar decodificar la respuesta como JSON
+        // Intentar decodificar la respuesta como JSON.
+        // The body contains the DXLink token, so it must never be logged.
         let text = response.text().await?;
-        debug!("Response body: {}", text);
 
         match serde_json::from_str::<TastyApiResponse<QuoteStreamerTokens>>(&text) {
             Ok(TastyApiResponse::Success(s)) => Ok(s.data),
@@ -44,13 +43,33 @@ impl TastyTrade {
     }
 }
 
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+/// DXLink quote streamer credentials.
+///
+/// `Debug` and `Display` are implemented manually so the token is never
+/// written to logs.
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct QuoteStreamerTokens {
     pub token: String,
     #[serde(rename = "dxlink-url")]
     pub streamer_url: String,
     pub level: String,
+}
+
+impl std::fmt::Debug for QuoteStreamerTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuoteStreamerTokens")
+            .field("token", &"***")
+            .field("streamer_url", &self.streamer_url)
+            .field("level", &self.level)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for QuoteStreamerTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 
 #[derive(
@@ -118,17 +137,19 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_streamer_tokens_debug() {
+    fn test_quote_streamer_tokens_debug_redacts_token() {
         let tokens = QuoteStreamerTokens {
             token: "test_token".to_string(),
             streamer_url: "wss://test.com".to_string(),
             level: "realtime".to_string(),
         };
 
-        let debug_str = format!("{:?}", tokens);
-        assert!(debug_str.contains("test_token"));
-        assert!(debug_str.contains("wss://test.com"));
-        assert!(debug_str.contains("realtime"));
+        for output in [format!("{:?}", tokens), format!("{}", tokens)] {
+            assert!(!output.contains("test_token"));
+            assert!(output.contains("***"));
+            assert!(output.contains("wss://test.com"));
+            assert!(output.contains("realtime"));
+        }
     }
 
     #[test]

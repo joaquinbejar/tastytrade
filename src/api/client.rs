@@ -17,11 +17,20 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::debug;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
     pub(crate) session_token: String,
     pub(crate) config: TastyTradeConfig,
+}
+
+impl std::fmt::Debug for TastyTrade {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TastyTrade")
+            .field("session_token", &"***")
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 impl Display for TastyTrade {
@@ -80,7 +89,7 @@ impl TastyTrade {
         )
         .await?;
 
-        debug!("{creds:?}");
+        debug!("Login successful for user: {}", creds.user.email);
         let client = Self::create_client(&creds);
 
         Ok(Self {
@@ -284,7 +293,6 @@ impl TastyTrade {
     }
 
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
-        debug!("Session token: {}", self.session_token);
         QuoteStreamer::connect(self).await
     }
 }
