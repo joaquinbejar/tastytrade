@@ -6,6 +6,7 @@ use crate::api::base::Paginated;
 use crate::api::base::Response;
 use crate::api::base::TastyApiResponse;
 use crate::api::base::TastyResult;
+use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::login::{LoginCredentials, LoginResponse};
 use crate::utils::config::TastyTradeConfig;
@@ -63,6 +64,32 @@ fn redact_account_path(url: &str) -> String {
     }
 
     out
+}
+
+/// Strips the parts of a broker error document that can carry account data.
+///
+/// The top-level code and message are the broker's summary of what went wrong
+/// and are what a caller acts on. The nested entries are per-field detail, and
+/// that detail is where balances, buying power and account references show up
+/// ("needs 1234567.89 buying power"). Their codes identify the failing rule
+/// perfectly well without the numbers.
+///
+/// `ApiError` renders itself as JSON in both `Display` and `Debug`, so
+/// anything left in the value is reachable from either.
+fn sanitize_api_error(error: ApiError) -> ApiError {
+    ApiError {
+        code: error.code,
+        message: error.message,
+        errors: error.errors.map(|inner| {
+            inner
+                .into_iter()
+                .map(|entry| InnerApiError {
+                    code: entry.code,
+                    message: "<redacted: enable DEBUG on the caller side>".to_string(),
+                })
+                .collect()
+        }),
+    }
 }
 
 pub trait FromTastyResponse<T: DeserializeOwned + Serialize + std::fmt::Debug> {
@@ -231,25 +258,35 @@ impl TastyTrade {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
 
-            // The body is venue data. It may describe the account the request
-            // was about, and an error value travels wherever the caller sends
-            // it, so it stays at DEBUG rather than riding inside the error.
-            debug!("error body for {}: {}", full_request, body);
+            // The body is not logged at any level. An error response comes
+            // from an endpoint this code does not control, /sessions included,
+            // so it can echo a credential; the secrecy invariant has no DEBUG
+            // exemption. What is safe is the shape of it.
+            let parsed = serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body);
+            debug!(
+                "GET {} -> {} ({} bytes, {})",
+                request_info,
+                status.as_u16(),
+                body.len(),
+                match &parsed {
+                    Ok(TastyApiResponse::Error { .. }) => "broker error document",
+                    Ok(TastyApiResponse::Success(_)) => "success envelope on a failure status",
+                    Err(_) => "unrecognised body",
+                }
+            );
 
             // A tastytrade error document is the useful case: it carries the
-            // broker's own code and message, which is what a caller can act
-            // on. Anything else degrades to the status and the endpoint.
-            return Err(
-                match serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body) {
-                    Ok(TastyApiResponse::Error { error }) => error.into(),
-                    _ => crate::TastyTradeError::Unknown(format!(
-                        "HTTP {} {} for request {}",
-                        status.as_u16(),
-                        status.canonical_reason().unwrap_or("Unknown"),
-                        request_info
-                    )),
-                },
-            );
+            // broker's own codes, which are what a caller can act on. Anything
+            // else degrades to the status and the endpoint.
+            return Err(match parsed {
+                Ok(TastyApiResponse::Error { error }) => sanitize_api_error(error).into(),
+                _ => crate::TastyTradeError::Unknown(format!(
+                    "HTTP {} {} for request {}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown"),
+                    request_info
+                )),
+            });
         }
 
         let text = response.text().await?;

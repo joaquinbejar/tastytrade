@@ -282,13 +282,29 @@ async fn a_broker_error_document_becomes_a_typed_error() {
         matches!(error, TastyTradeError::Api(_)),
         "expected a typed API error, got {error:?}"
     );
-    let rendered = format!("{error}");
+    let displayed = format!("{error}");
+    let debugged = format!("{error:?}");
     assert!(
-        rendered.contains("buying power exceeded"),
-        "the broker message must survive: {rendered}"
+        displayed.contains("buying power exceeded"),
+        "the broker summary must survive: {displayed}"
+    );
+    assert!(
+        displayed.contains("bp"),
+        "the failing rule's code must survive: {displayed}"
     );
 
-    // The raw document must not have been logged on the way through.
+    // The nested detail is where balances and account references live, and
+    // ApiError renders as JSON in both Display and Debug, so both are checked.
+    assert!(
+        !displayed.contains(sentinel::BALANCE),
+        "the nested balance is reachable through Display: {displayed}"
+    );
+    assert!(
+        !debugged.contains(sentinel::BALANCE),
+        "the nested balance is reachable through Debug: {debugged}"
+    );
+
+    // And it must not have been logged on the way through either.
     logs.assert_absent(sentinel::BALANCE, "the balance from the error document");
     logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
 }
@@ -327,5 +343,9 @@ async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
     assert!(
         !rendered.contains(sentinel::BALANCE) && !rendered.contains(sentinel::ACCOUNT_NUMBER),
         "the body reached the error text: {rendered}"
+    );
+    assert!(
+        !format!("{error:?}").contains(sentinel::BALANCE),
+        "the body reached Debug"
     );
 }
