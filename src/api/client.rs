@@ -203,11 +203,14 @@ impl TastyTrade {
         }
 
         let text = response.text().await?;
-        debug!("🔍 Full response for {}: {}", request_info, text);
+        debug!("full response for {}: {}", request_info, text);
         let result = serde_json::from_str::<TastyApiResponse<T>>(text.as_str()).map_err(|e| {
+            // The body is already available at DEBUG above. Keeping it out of the
+            // error means a caller that logs or reports the error cannot leak
+            // account data it never asked to handle.
             crate::TastyTradeError::Unknown(format!(
-                "Failed to parse JSON response for request {}: {}. Full response: {}",
-                request_info, e, text
+                "failed to parse JSON response for request {}: {}",
+                request_info, e
             ))
         })?;
 
