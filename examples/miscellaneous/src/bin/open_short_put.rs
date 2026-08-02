@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Streamer symbol obtained: {}", streamer_symbol.0);
 
     // Add symbol to subscription
-    quote_sub.add_symbols(&[streamer_symbol.clone()]);
+    quote_sub.add_symbols(std::slice::from_ref(&streamer_symbol));
 
     // Wait for a quote
     info!("Waiting for quote data...");
@@ -116,19 +116,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = tokio::time::Instant::now() + Duration::from_secs(10);
 
     while current_price.is_none() && tokio::time::Instant::now() < timeout {
-        if let Ok(Event { data, .. }) = quote_sub.get_event().await {
-            if let EventData::Quote(quote) = data {
-                // Use mid price
-                let mid_price = Decimal::from_f64((quote.bid_price + quote.ask_price) / 2.0)
-                    .unwrap_or_default();
-                current_price = Some(mid_price);
-                info!(
-                    "Current price for {}: ${}",
-                    symbol.0,
-                    current_price.unwrap()
-                );
-                break;
-            }
+        if let Ok(Event { data, .. }) = quote_sub.get_event().await
+            && let EventData::Quote(quote) = data
+        {
+            // Use mid price
+            let mid_price =
+                Decimal::from_f64((quote.bid_price + quote.ask_price) / 2.0).unwrap_or_default();
+            current_price = Some(mid_price);
+            info!(
+                "Current price for {}: ${}",
+                symbol.0,
+                current_price.unwrap()
+            );
+            break;
         }
 
         // Brief pause before trying again

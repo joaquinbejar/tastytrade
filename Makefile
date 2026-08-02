@@ -7,18 +7,21 @@ CURRENT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 all: test fmt lint build
 
 # Build the project
+# Every gate covers the whole workspace: the library, the CLI and the example
+# crates all ship from this repository, so a gate that only sees the root
+# package validates something the repository does not publish.
 .PHONY: build
 build:
-	cargo build
+	cargo build --workspace --all-targets --all-features
 
 .PHONY: release
 release:
-	cargo build --release
+	cargo build --workspace --release
 
 # Run tests
 .PHONY: test
 test:
-	LOGLEVEL=WARN cargo test
+	LOGLEVEL=WARN cargo test --workspace --all-features
 
 # Build wasm target
 .PHONY: wasm-build
@@ -35,23 +38,23 @@ wasm-test:
 fmt:
 	cargo +stable fmt --all
 
-# Check formatting
+# Check formatting. Read-only: it reports a dirty diff, it never rewrites.
 .PHONY: fmt-check
 fmt-check:
-	cargo +stable fmt --check
+	cargo +stable fmt --all --check
 
 # Run Clippy for linting
 .PHONY: lint
 lint:
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 .PHONY: lint-wasm
 lint-wasm:
 	cargo +nightly clippy --target wasm32-unknown-unknown --release --all-features -- -D warnings
 
 .PHONY: lint-fix
-lint-fix: 
-	cargo clippy --fix --all-targets --all-features --allow-dirty --allow-staged -- -D warnings
+lint-fix:
+	cargo clippy --fix --workspace --all-targets --all-features --allow-dirty --allow-staged -- -D warnings
 
 .PHONY: lint-wasm-fix
 lint-wasm-fix:
@@ -62,9 +65,10 @@ lint-wasm-fix:
 clean:
 	cargo clean
 
-# Pre-push checks
+# Pre-push checks. Every target here is read-only, so CI and a developer see
+# the same verdict and neither of them rewrites the tree to reach it.
 .PHONY: check
-check: test fmt-check lint
+check: fmt-check lint test check-spanish
 
 # Run the project
 .PHONY: run
@@ -135,9 +139,24 @@ readme: check-cargo-readme create-doc
 check-cargo-readme:
 	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme)
 
+# Code and comments are English. This replaces the old scripts/spanish.py,
+# which was referenced by the Makefile but never existed in the repository.
+# Two conservative signals over comment lines only: Spanish-only punctuation
+# and accents, and a word list with no English collisions. The author header
+# is the one legitimate accented line.
+SPANISH_WORDS := que|los|las|una|unos|unas|para|con|pero|desde|hasta|cuando|donde|tambien|ademas|aqui|puede|debe|este|esta|esto|estos|estas|del|por|como|mas|asi|solo|cada|sobre|entre|hacer|tiene|ser|codigo|respuesta|solicitud|ejemplo|advertencia|cuenta|error de
+
 .PHONY: check-spanish
 check-spanish:
-	cd scripts && python3 spanish.py ../src && cd ..
+	@comments=$$(grep -rn --include='*.rs' -E '^[[:space:]]*//' src/ | grep -vE 'Joaqu|Author:|Email:'); \
+	hits=$$( { printf '%s\n' "$$comments" | grep -iE '[áéíóúñ¿¡]'; \
+	           printf '%s\n' "$$comments" | grep -iwE '($(SPANISH_WORDS))'; } | sort -u | grep -v '^$$' ); \
+	if [ -n "$$hits" ]; then \
+		echo "check-spanish: Spanish found in src/ comments:"; \
+		printf '%s\n' "$$hits"; \
+		exit 1; \
+	fi; \
+	echo "check-spanish: clean"
 
 .PHONY: zip
 zip:
