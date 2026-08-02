@@ -349,3 +349,44 @@ async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
         "the body reached Debug"
     );
 }
+
+#[tokio::test]
+async fn a_successful_body_is_never_written_to_the_logs() {
+    let account_body = format!(
+        r#"{{"data":{{"items":[{{"account":{{"account-number":"{}","nickname":"Main","account-type-name":"Individual","margin-or-cash":"Margin","opened-at":"2025-01-14T10:22:41.000+00:00","is-closed":false}},"authority-level":"owner"}}]}},"context":"/customers/me/accounts"}}"#,
+        sentinel::ACCOUNT_NUMBER
+    );
+
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /sessions".to_string(),
+        Route::ok(login_response_body()),
+    );
+    routes.insert(
+        "GET /customers/me/accounts".to_string(),
+        Route::ok(account_body),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    // TRACE: if a body survives anywhere, it survives here.
+    let (count, logs) = capture_logs_at(Level::TRACE, async {
+        let client = TastyTrade::login(&config)
+            .await
+            .expect("login must succeed");
+        client.accounts().await.map(|accounts| accounts.len())
+    })
+    .await;
+
+    assert_eq!(
+        count.expect("the account must deserialize"),
+        1,
+        "the fixture is only meaningful if the body actually parsed"
+    );
+
+    // The exchange is still observable, just not its contents.
+    logs.assert_present("bytes in", "the response metadata");
+    logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
+    logs.assert_absent("nickname", "a field name from the response body");
+    assert_no_secret_leaked(&logs);
+}
