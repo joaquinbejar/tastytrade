@@ -1,11 +1,13 @@
 // For quote_streamer.rs
 use crate::TastyTrade;
+use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 use crate::types::dxfeed;
 use crate::{AsSymbol, Symbol, TastyResult, TastyTradeError};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
@@ -24,7 +26,6 @@ pub struct SubscriptionId(usize);
 #[derive(Clone)]
 struct StreamerHandle {
     commands: Option<mpsc::Sender<DXLinkCommand>>,
-    channel_id: Option<u32>,
 }
 
 /// A set of symbols and event types, and the events they produce.
@@ -84,45 +85,7 @@ impl QuoteSubscription {
                 .collect()
         };
 
-        // Prepare subscription requests for DXLink
-        let subscriptions = symbols
-            .iter()
-            .flat_map(|sym| {
-                let mut requests = Vec::new();
-
-                // Transform dxfeed flags to DXLink event types
-                let event_flags = self.event_types;
-
-                if (event_flags & dxfeed::DXF_ET_QUOTE) != 0 {
-                    requests.push(FeedSubscription {
-                        event_type: "Quote".to_string(),
-                        symbol: sym.0.clone(),
-                        from_time: None,
-                        source: None,
-                    });
-                }
-
-                if (event_flags & dxfeed::DXF_ET_TRADE) != 0 {
-                    requests.push(FeedSubscription {
-                        event_type: "Trade".to_string(),
-                        symbol: sym.0.clone(),
-                        from_time: None,
-                        source: None,
-                    });
-                }
-
-                if (event_flags & dxfeed::DXF_ET_GREEKS) != 0 {
-                    requests.push(FeedSubscription {
-                        event_type: "Greeks".to_string(),
-                        symbol: sym.0.clone(),
-                        from_time: None,
-                        source: None,
-                    });
-                }
-
-                requests
-            })
-            .collect::<Vec<FeedSubscription>>();
+        let subscriptions = feed_subscriptions(&symbols, self.event_types);
 
         if subscriptions.is_empty() {
             return Ok(());
@@ -133,21 +96,16 @@ impl QuoteSubscription {
         // tell a subscription that worked from one that never left, and it
         // panicked outright when called without a Tokio runtime.
         let sub_id = self.id.0 as u32;
-        let (Some(channel_id), Some(tx)) = (self.streamer.channel_id, &self.streamer.commands)
-        else {
+        let Some(tx) = &self.streamer.commands else {
             return Err(TastyTradeError::Streaming(
-                "the quote streamer has no open channel; reconnect before subscribing".to_string(),
+                "the quote streamer has no command channel; reconnect before subscribing"
+                    .to_string(),
             ));
         };
 
         let (ack, answered) = oneshot::channel();
         let queued = tx
-            .send(DXLinkCommand::Subscribe(
-                channel_id,
-                subscriptions,
-                sub_id,
-                Some(ack),
-            ))
+            .send(DXLinkCommand::Subscribe(subscriptions, sub_id, Some(ack)))
             .await
             .map_err(|_| {
                 TastyTradeError::Streaming(
@@ -300,6 +258,34 @@ fn answer(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()
     }
 }
 
+/// The DXLink subscription requests for `symbols` under `event_types`.
+///
+/// One request per symbol per event type the flags ask for. Shared by
+/// subscribing, unsubscribing and the reconnect replay, so a symbol is
+/// restored under exactly the event types it was subscribed with.
+fn feed_subscriptions(symbols: &[Symbol], event_types: i32) -> Vec<FeedSubscription> {
+    const FLAGS: [(i32, &str); 3] = [
+        (dxfeed::DXF_ET_QUOTE, "Quote"),
+        (dxfeed::DXF_ET_TRADE, "Trade"),
+        (dxfeed::DXF_ET_GREEKS, "Greeks"),
+    ];
+
+    symbols
+        .iter()
+        .flat_map(|symbol| {
+            FLAGS
+                .iter()
+                .filter(move |(flag, _)| event_types & flag != 0)
+                .map(move |(_, name)| FeedSubscription {
+                    event_type: (*name).to_string(),
+                    symbol: symbol.0.clone(),
+                    from_time: None,
+                    source: None,
+                })
+        })
+        .collect()
+}
+
 /// Recovers a poisoned lock rather than panicking.
 ///
 /// The value behind it is a set of symbol strings. A thread panicking while
@@ -311,19 +297,18 @@ fn symbols_of(set: &Mutex<BTreeSet<Symbol>>) -> std::sync::MutexGuard<'_, BTreeS
 }
 
 enum DXLinkCommand {
+    // No channel id: the caller's copy is a snapshot from connect time, and a
+    // reconnect opens a new channel. The supervisor addresses the live one.
     Subscribe(
-        u32,
         Vec<FeedSubscription>,
         u32,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
     Unsubscribe(
-        u32,
         Vec<FeedSubscription>,
         u32,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
-    CreateEventStream,
     AddEventSender(u32, mpsc::Sender<MarketEvent>),
     RemoveEventSender(u32),
 }
@@ -341,246 +326,122 @@ struct EventRouting {
 /// Deliberately not `Clone`: exactly one value owns the connection, and
 /// dropping it disconnects. Subscriptions get a handle instead.
 pub struct QuoteStreamer {
-    #[allow(dead_code)]
-    dxlink_client: Option<DXLinkClient>,
-    /// Signals the command loop to disconnect.
+    /// Signals the supervisor to disconnect.
     ///
     /// Held only by the owner, never by a handle, so it is dropped exactly when
     /// the streamer is. A oneshot cannot be refused for lack of room the way a
-    /// `try_send` into the bounded command queue could.
+    /// `try_send` into the bounded command queue could, and the supervisor
+    /// selects on it during a backoff so a dropped streamer does not leave a
+    /// task waiting out thirty seconds for nobody.
     shutdown: Option<oneshot::Sender<()>>,
-    channel_id: Option<u32>,
     next_sub_id: usize,
     subscription_map: HashMap<SubscriptionId, QuoteSubscription>,
     dxlink_command_tx: Option<mpsc::Sender<DXLinkCommand>>,
+    /// What a reconnect has to restore, shared with the supervisor.
+    registry: Registry,
+    state: Arc<RwLock<ConnectionState>>,
 }
+
+/// What each subscription is subscribed to, as the supervisor needs it.
+///
+/// The symbol set is the same `Arc` the subscription and the streamer share,
+/// so a replay sends exactly what the venue confirmed — never a symbol whose
+/// subscribe was refused, and never one that was already unsubscribed.
+#[derive(Clone)]
+struct SubscriptionRecord {
+    event_types: i32,
+    symbols: Arc<Mutex<BTreeSet<Symbol>>>,
+}
+
+/// Subscription id to what it is subscribed to.
+type Registry = Arc<Mutex<HashMap<u32, SubscriptionRecord>>>;
 
 impl QuoteStreamer {
     /// Opens a DXLink connection and its market-data channel.
+    ///
+    /// Reconnects under [`BackoffPolicy::default`]; see
+    /// [`QuoteStreamer::connect_with_policy`] to choose your own.
     ///
     /// # Errors
     ///
     /// Fails when the streamer token cannot be obtained, the connection
     /// cannot be established, or the channel cannot be configured.
     pub async fn connect(tasty: &TastyTrade) -> TastyResult<Self> {
-        let tokens = tasty.quote_streamer_tokens().await?;
-        debug!(
-            "Obtained tokens for DXLink (token len={})",
-            tokens.token.len()
-        );
+        Self::connect_with_policy(tasty, BackoffPolicy::default()).await
+    }
 
-        // Create DXLink client
-        let mut client = DXLinkClient::new(&tokens.streamer_url, &tokens.token);
+    /// Opens a DXLink connection with an explicit reconnection policy.
+    ///
+    /// The first connection is established before returning, so a caller who
+    /// cannot reach the venue at all learns immediately rather than through a
+    /// stream that never produces anything. After that a supervisor owns the
+    /// connection: when it is lost, the supervisor waits out the backoff,
+    /// fetches a fresh streamer token, reconnects, and resubscribes every
+    /// symbol the subscriptions were subscribed to. Subscriptions keep working
+    /// across that — they hold a handle to the command loop, not to the
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer token cannot be obtained, the connection
+    /// cannot be established, or the channel cannot be configured.
+    pub async fn connect_with_policy(
+        tasty: &TastyTrade,
+        policy: BackoffPolicy,
+    ) -> TastyResult<Self> {
+        // Prove the venue is reachable before handing back a streamer.
+        let connection = connect_dxlink(tasty).await?;
 
-        // Connect to server
-        info!("Connecting to DXLink server: {}", tokens.streamer_url);
-        if let Err(e) = client.connect().await {
-            return Err(TastyTradeError::Streaming(format!(
-                "Error connecting to DXLink: {}",
-                e
-            )));
-        }
-
-        // Create channel for market data
-        let channel_id = match client.create_feed_channel("AUTO").await {
-            Ok(id) => id,
-            Err(e) => {
-                return Err(TastyTradeError::Streaming(format!(
-                    "Error creating DXLink channel: {}",
-                    e
-                )));
-            }
-        };
-        info!("DXLink channel created: {}", channel_id);
-
-        // Configure feed for different event types
-        if let Err(e) = client
-            .setup_feed(
-                channel_id,
-                &[EventType::Quote, EventType::Trade, EventType::Greeks],
-            )
-            .await
-        {
-            return Err(TastyTradeError::Streaming(format!(
-                "Error configuring DXLink feed: {}",
-                e
-            )));
-        }
-
-        // Create command channel
-        let (command_tx, mut command_rx) = mpsc::channel::<DXLinkCommand>(100);
+        let (command_tx, command_rx) = mpsc::channel::<DXLinkCommand>(100);
 
         // Shutdown travels on its own channel. Routing it through the bounded
         // command queue meant a full queue could discard it, and the loop
         // cannot simply exit when the command sender dies either, because
         // every subscription handle holds a clone of that sender.
-        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        // Spawn task to handle DXLink commands
-        tokio::spawn(async move {
-            // Routing registry shared with the event forwarding task, so
-            // subscriptions registered after stream creation still receive events
-            let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-            let mut stream_created = false;
+        // Owned out here, so it survives a reconnect. A subscription's route
+        // is registered once; rebuilding the map per connection would drop the
+        // first events of every reconnect, and re-registering is not something
+        // a caller can be asked to do.
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+        let state = Arc::new(RwLock::new(ConnectionState::Connected));
 
-            loop {
-                let cmd = tokio::select! {
-                    biased;
-                    _ = &mut shutdown_rx => {
-                        debug!("Quote streamer owner dropped, disconnecting");
-                        if let Err(e) = client.disconnect().await {
-                            warn!("Error disconnecting from DXLink: {}", e);
-                        }
-                        break;
-                    }
-                    cmd = command_rx.recv() => match cmd {
-                        Some(cmd) => cmd,
-                        None => break,
-                    },
-                };
-
-                match cmd {
-                    DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id, ack) => {
-                        // Record symbol routing before subscribing, so no event
-                        // can arrive for a symbol that has no route yet
-                        {
-                            let mut routing = routing.write().await;
-                            for sub in &subscriptions {
-                                routing
-                                    .symbol_subs
-                                    .entry(sub.symbol.clone())
-                                    .or_default()
-                                    .insert(sub_id);
-                            }
-                        }
-                        match client.subscribe(channel_id, subscriptions).await {
-                            Ok(()) => answer(ack, Ok(())),
-                            Err(e) => {
-                                error!("Error subscribing to symbols: {}", e);
-                                answer(
-                                    ack,
-                                    Err(TastyTradeError::Streaming(format!(
-                                        "the venue refused the subscription: {e}"
-                                    ))),
-                                );
-                            }
-                        }
-                    }
-                    DXLinkCommand::Unsubscribe(channel_id, subscriptions, sub_id, ack) => {
-                        // The venue is told first. Dropping the route before
-                        // knowing the unsubscribe landed leaves a subscription
-                        // running with nowhere to deliver, and the local state
-                        // that could have retried it already gone.
-                        let outcome = client.unsubscribe(channel_id, subscriptions.clone()).await;
-
-                        if outcome.is_ok() {
-                            let mut routing = routing.write().await;
-                            for sub in &subscriptions {
-                                if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
-                                    subs.remove(&sub_id);
-                                    if subs.is_empty() {
-                                        routing.symbol_subs.remove(&sub.symbol);
-                                    }
-                                }
-                            }
-                        }
-
-                        match outcome {
-                            Ok(()) => answer(ack, Ok(())),
-                            Err(e) => {
-                                error!("Error unsubscribing from symbols: {}", e);
-                                answer(
-                                    ack,
-                                    Err(TastyTradeError::Streaming(format!(
-                                        "the venue refused the unsubscribe: {e}"
-                                    ))),
-                                );
-                            }
-                        }
-                    }
-                    DXLinkCommand::CreateEventStream => {
-                        if stream_created {
-                            debug!("Event stream already created, ignoring request");
-                            continue;
-                        }
-                        match client.event_stream() {
-                            Ok(mut rx) => {
-                                debug!("Successfully created event stream");
-                                stream_created = true;
-                                let routing = routing.clone();
-
-                                tokio::spawn(async move {
-                                    while let Some(event) = rx.recv().await {
-                                        // Determine which symbol this event is for
-                                        let symbol = match &event {
-                                            MarketEvent::Quote(quote) => &quote.event_symbol,
-                                            MarketEvent::Trade(trade) => &trade.event_symbol,
-                                            MarketEvent::Greeks(greeks) => &greeks.event_symbol,
-                                        };
-
-                                        // Forward only to subscriptions registered for this symbol
-                                        let routing = routing.read().await;
-                                        let Some(sub_ids) = routing.symbol_subs.get(symbol) else {
-                                            debug!(
-                                                "No subscription registered for symbol {}",
-                                                symbol
-                                            );
-                                            continue;
-                                        };
-                                        for sub_id in sub_ids {
-                                            if let Some(sender_list) = routing.senders.get(sub_id) {
-                                                for sender in sender_list {
-                                                    // Try to send, but don't block if receiver is full
-                                                    let _ = sender.try_send(event.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                            Err(e) => {
-                                error!("Failed to create event stream: {}", e);
-                            }
-                        }
-                    }
-                    DXLinkCommand::AddEventSender(subscription_id, sender) => {
-                        let mut routing = routing.write().await;
-                        routing
-                            .senders
-                            .entry(subscription_id)
-                            .or_default()
-                            .push(sender);
-                        debug!("Added event sender for subscription {}", subscription_id);
-                    }
-                    DXLinkCommand::RemoveEventSender(subscription_id) => {
-                        let mut routing = routing.write().await;
-                        routing.senders.remove(&subscription_id);
-                        routing.symbol_subs.retain(|_, subs| {
-                            subs.remove(&subscription_id);
-                            !subs.is_empty()
-                        });
-                        debug!("Removed event senders for subscription {}", subscription_id);
-                    }
-                }
-            }
-            debug!("DXLink command handler terminated");
-        });
+        tokio::spawn(supervise(
+            tasty.clone(),
+            policy,
+            connection,
+            command_rx,
+            shutdown_rx,
+            routing,
+            registry.clone(),
+            state.clone(),
+        ));
 
         Ok(Self {
-            dxlink_client: None,
-            shutdown: Some(shutdown_tx), // We moved client into the command handler task
-            channel_id: Some(channel_id),
+            shutdown: Some(shutdown_tx),
             next_sub_id: 0,
             subscription_map: HashMap::new(),
             dxlink_command_tx: Some(command_tx),
+            registry,
+            state,
         })
+    }
+
+    /// Where the connection is in its lifecycle.
+    ///
+    /// Carries no token, credential or account identifier, so it is safe to
+    /// log or show. A reconnect that happens silently is indistinguishable
+    /// from one that is not happening, which is what this exists to answer.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.read().await.clone()
     }
 
     /// A handle a subscription can hold without owning the connection.
     fn handle(&self) -> StreamerHandle {
         StreamerHandle {
             commands: self.dxlink_command_tx.clone(),
-            channel_id: self.channel_id,
         }
     }
 
@@ -593,41 +454,47 @@ impl QuoteStreamer {
         let (dxlink_tx, dxlink_rx) = mpsc::channel(100);
         let (_event_sender, event_receiver) = flume::unbounded();
 
-        // Register event sender if we have a command channel
+        // Register the event sender. There is no stream to ask for any more:
+        // the supervisor forwards from the receiver `connect` returns, from
+        // the moment each connection is established.
         if let Some(client_tx) = &self.dxlink_command_tx {
             let client_tx_clone = client_tx.clone();
             let sub_id = id.0 as u32;
-            let needs_stream = self.subscription_map.is_empty() && self.channel_id.is_some();
 
-            // Send both commands from a single task so the sender is always
-            // registered before the event stream is created (the command loop
-            // processes them in order)
             tokio::spawn(async move {
                 if let Err(e) = client_tx_clone
                     .send(DXLinkCommand::AddEventSender(sub_id, dxlink_tx))
                     .await
                 {
                     error!("Failed to register event sender: {}", e);
-                    return;
-                }
-
-                if needs_stream {
-                    match client_tx_clone.send(DXLinkCommand::CreateEventStream).await {
-                        Ok(_) => debug!("Successfully requested event stream"),
-                        Err(e) => error!("Failed to request event stream: {}", e),
-                    }
                 }
             });
         }
 
         // Create subscription
+        let symbols = Arc::new(Mutex::new(BTreeSet::new()));
+
+        // The supervisor replays from this. Registering the shared set rather
+        // than a copy is what makes the replay send exactly what the venue
+        // confirmed, including symbols added long after this call.
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                id.0 as u32,
+                SubscriptionRecord {
+                    event_types: flags,
+                    symbols: symbols.clone(),
+                },
+            );
+
         let subscription = QuoteSubscription {
             id,
             streamer: self.handle(),
             event_types: flags,
             event_receiver,
             dxlink_receiver: dxlink_rx,
-            symbols: Arc::new(Mutex::new(BTreeSet::new())),
+            symbols,
         };
 
         // Store subscription in map and return a boxed clone
@@ -656,48 +523,12 @@ impl QuoteStreamer {
         if let Some(subscription) = self.subscription_map.get(&id) {
             let symbols: Vec<Symbol> = symbols_of(&subscription.symbols).iter().cloned().collect();
 
-            // Prepare unsubscribe requests
-            let unsubscribe_requests = symbols
-                .iter()
-                .flat_map(|sym| {
-                    let mut requests = Vec::new();
-                    let event_flags = subscription.event_types;
-
-                    if (event_flags & dxfeed::DXF_ET_QUOTE) != 0 {
-                        requests.push(FeedSubscription {
-                            event_type: "Quote".to_string(),
-                            symbol: sym.0.clone(),
-                            from_time: None,
-                            source: None,
-                        });
-                    }
-
-                    if (event_flags & dxfeed::DXF_ET_TRADE) != 0 {
-                        requests.push(FeedSubscription {
-                            event_type: "Trade".to_string(),
-                            symbol: sym.0.clone(),
-                            from_time: None,
-                            source: None,
-                        });
-                    }
-
-                    if (event_flags & dxfeed::DXF_ET_GREEKS) != 0 {
-                        requests.push(FeedSubscription {
-                            event_type: "Greeks".to_string(),
-                            symbol: sym.0.clone(),
-                            from_time: None,
-                            source: None,
-                        });
-                    }
-
-                    requests
-                })
-                .collect::<Vec<FeedSubscription>>();
+            let unsubscribe_requests = feed_subscriptions(&symbols, subscription.event_types);
 
             // Awaited, and the local state is only discarded once the venue
             // has confirmed. Clearing it on a queued-but-unconfirmed command
             // threw away the one record of what still needs unsubscribing.
-            if let (Some(tx), Some(channel_id)) = (&self.dxlink_command_tx, self.channel_id) {
+            if let Some(tx) = &self.dxlink_command_tx {
                 let sub_id = id.0 as u32;
 
                 let closed = |_| {
@@ -710,7 +541,6 @@ impl QuoteStreamer {
                 if !unsubscribe_requests.is_empty() {
                     let (ack, answered) = oneshot::channel();
                     tx.send(DXLinkCommand::Unsubscribe(
-                        channel_id,
                         unsubscribe_requests,
                         sub_id,
                         Some(ack),
@@ -741,8 +571,13 @@ impl QuoteStreamer {
             }
         }
 
-        // Remove subscription from map
+        // Remove subscription from map, and from what a reconnect restores:
+        // a closed subscription must not come back on the next connection.
         self.subscription_map.remove(&id);
+        self.registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(id.0 as u32));
 
         Ok(())
     }
@@ -769,6 +604,424 @@ impl QuoteStreamer {
         // This method is deprecated - use QuoteSubscription::get_event() instead
         // Return an error indicating this method should not be used
         Err(flume::RecvError::Disconnected)
+    }
+}
+
+/// One live DXLink connection and everything the supervisor needs from it.
+struct LiveConnection {
+    client: DXLinkClient,
+    channel_id: u32,
+    /// The receiver `DXLinkClient::connect` hands back.
+    ///
+    /// It is the *only* path market events take out of dxlink: the client's
+    /// event sender is created inside `connect`, so a later `event_stream()`
+    /// call is refused with "Event stream already created". Dropping this
+    /// receiver therefore does not merely lose a convenience — it disconnects
+    /// the feed from its consumer permanently, which is what used to happen
+    /// here.
+    events: mpsc::Receiver<MarketEvent>,
+}
+
+/// Opens a connection, its feed channel, and configures the event types.
+async fn connect_dxlink(tasty: &TastyTrade) -> TastyResult<LiveConnection> {
+    let tokens = tasty.quote_streamer_tokens().await?;
+    // The token itself is never logged, here or anywhere: the streamer-token
+    // response is a credential.
+    debug!(
+        "Obtained DXLink streamer token ({} bytes)",
+        tokens.token.len()
+    );
+
+    let mut client = DXLinkClient::new(&tokens.streamer_url, &tokens.token);
+
+    info!("Connecting to DXLink server: {}", tokens.streamer_url);
+    let events = client.connect().await.map_err(|e| {
+        // Through From, so an authentication refusal arrives as Auth and the
+        // policy can tell it apart from a socket that dropped.
+        let error: TastyTradeError = e.into();
+        error
+    })?;
+
+    let channel_id = client
+        .create_feed_channel("AUTO")
+        .await
+        .map_err(TastyTradeError::from)?;
+    info!("DXLink channel created: {}", channel_id);
+
+    client
+        .setup_feed(
+            channel_id,
+            &[EventType::Quote, EventType::Trade, EventType::Greeks],
+        )
+        .await
+        .map_err(TastyTradeError::from)?;
+
+    Ok(LiveConnection {
+        client,
+        channel_id,
+        events,
+    })
+}
+
+/// Why a connection stopped being used.
+enum Ended {
+    /// The owner dropped the streamer, or the command channel closed.
+    Owner,
+    /// A write failed in a way that says the socket is gone.
+    ConnectionLost,
+}
+
+/// Forwards market events to the subscriptions registered for their symbol.
+///
+/// `saw_event` is the reconnect milestone: an event that actually arrived is
+/// evidence the feed works, which a successful handshake is not. dxlink's
+/// `subscribe` returns as soon as the write succeeds — the venue does not
+/// acknowledge it — so resetting the attempt budget on a subscribe would reset
+/// it on a connection that accepts the socket and then sends nothing, which is
+/// the accept-then-reject loop the policy exists to bound.
+async fn forward_events(
+    mut events: mpsc::Receiver<MarketEvent>,
+    routing: Arc<RwLock<EventRouting>>,
+    saw_event: Arc<AtomicBool>,
+) {
+    while let Some(event) = events.recv().await {
+        saw_event.store(true, Ordering::Relaxed);
+
+        let symbol = match &event {
+            MarketEvent::Quote(quote) => &quote.event_symbol,
+            MarketEvent::Trade(trade) => &trade.event_symbol,
+            MarketEvent::Greeks(greeks) => &greeks.event_symbol,
+        };
+
+        let routing = routing.read().await;
+        let Some(sub_ids) = routing.symbol_subs.get(symbol) else {
+            debug!("No subscription registered for symbol {}", symbol);
+            continue;
+        };
+        for sub_id in sub_ids {
+            if let Some(sender_list) = routing.senders.get(sub_id) {
+                for sender in sender_list {
+                    // A consumer that is not keeping up loses events rather
+                    // than stalling everyone else's.
+                    let _ = sender.try_send(event.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Re-subscribes every symbol the subscriptions still hold.
+///
+/// Returns whether all of them landed. A partial replay is reported as a
+/// failure, because a subscription silently missing half its symbols is worse
+/// than one more reconnect.
+async fn replay(client: &mut DXLinkClient, channel_id: u32, registry: &Registry) -> bool {
+    let pending = pending_replay(registry);
+
+    if pending.is_empty() {
+        return true;
+    }
+
+    debug!(
+        "Restoring {} subscription(s) after a reconnect",
+        pending.len()
+    );
+    for (sub_id, requests) in pending {
+        if let Err(e) = client.subscribe(channel_id, requests).await {
+            warn!("Could not restore subscription {sub_id}: {e}");
+            return false;
+        }
+    }
+    true
+}
+
+/// What a replay would send, per subscription.
+///
+/// Separate from sending it because this is the part worth pinning: a
+/// subscription that was closed, or one whose subscribe the venue refused,
+/// must not come back on the next connection.
+///
+/// The lock is released before the caller awaits anything — a
+/// `std::sync::Mutex` guard must not be held across an await.
+fn pending_replay(registry: &Registry) -> Vec<(u32, Vec<FeedSubscription>)> {
+    let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
+    registry
+        .iter()
+        .map(|(sub_id, record)| {
+            let symbols: Vec<Symbol> = symbols_of(&record.symbols).iter().cloned().collect();
+            (*sub_id, feed_subscriptions(&symbols, record.event_types))
+        })
+        .filter(|(_, requests)| !requests.is_empty())
+        .collect()
+}
+
+/// Runs one connection until it is lost or the owner goes away.
+async fn run_connection(
+    client: &mut DXLinkClient,
+    channel_id: u32,
+    commands: &mut mpsc::Receiver<DXLinkCommand>,
+    shutdown: &mut oneshot::Receiver<()>,
+    routing: &Arc<RwLock<EventRouting>>,
+) -> Ended {
+    loop {
+        let cmd = tokio::select! {
+            biased;
+            _ = &mut *shutdown => {
+                debug!("Quote streamer owner dropped, disconnecting");
+                return Ended::Owner;
+            }
+            cmd = commands.recv() => match cmd {
+                Some(cmd) => cmd,
+                None => return Ended::Owner,
+            },
+        };
+
+        match cmd {
+            // The channel id in the command is the one the handle was built
+            // with. After a reconnect that number is stale, and only this loop
+            // knows the live one.
+            DXLinkCommand::Subscribe(subscriptions, sub_id, ack) => {
+                // Record symbol routing before subscribing, so no event can
+                // arrive for a symbol that has no route yet.
+                {
+                    let mut routing = routing.write().await;
+                    for sub in &subscriptions {
+                        routing
+                            .symbol_subs
+                            .entry(sub.symbol.clone())
+                            .or_default()
+                            .insert(sub_id);
+                    }
+                }
+                match client.subscribe(channel_id, subscriptions).await {
+                    Ok(()) => answer(ack, Ok(())),
+                    Err(e) => {
+                        let lost = is_connection_lost(&e);
+                        error!("Error subscribing to symbols: {}", e);
+                        answer(
+                            ack,
+                            Err(TastyTradeError::Streaming(format!(
+                                "the venue refused the subscription: {e}"
+                            ))),
+                        );
+                        if lost {
+                            return Ended::ConnectionLost;
+                        }
+                    }
+                }
+            }
+            DXLinkCommand::Unsubscribe(subscriptions, sub_id, ack) => {
+                // The venue is told first. Dropping the route before knowing
+                // the unsubscribe landed leaves a subscription running with
+                // nowhere to deliver, and the local state that could have
+                // retried it already gone.
+                let outcome = client.unsubscribe(channel_id, subscriptions.clone()).await;
+
+                if outcome.is_ok() {
+                    let mut routing = routing.write().await;
+                    for sub in &subscriptions {
+                        if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
+                            subs.remove(&sub_id);
+                            if subs.is_empty() {
+                                routing.symbol_subs.remove(&sub.symbol);
+                            }
+                        }
+                    }
+                }
+
+                match outcome {
+                    Ok(()) => answer(ack, Ok(())),
+                    Err(e) => {
+                        let lost = is_connection_lost(&e);
+                        error!("Error unsubscribing from symbols: {}", e);
+                        answer(
+                            ack,
+                            Err(TastyTradeError::Streaming(format!(
+                                "the venue refused the unsubscribe: {e}"
+                            ))),
+                        );
+                        if lost {
+                            return Ended::ConnectionLost;
+                        }
+                    }
+                }
+            }
+            DXLinkCommand::AddEventSender(subscription_id, sender) => {
+                let mut routing = routing.write().await;
+                routing
+                    .senders
+                    .entry(subscription_id)
+                    .or_default()
+                    .push(sender);
+                debug!("Added event sender for subscription {}", subscription_id);
+            }
+            DXLinkCommand::RemoveEventSender(subscription_id) => {
+                let mut routing = routing.write().await;
+                routing.senders.remove(&subscription_id);
+                routing.symbol_subs.retain(|_, subs| {
+                    subs.remove(&subscription_id);
+                    !subs.is_empty()
+                });
+                debug!("Removed event senders for subscription {}", subscription_id);
+            }
+        }
+    }
+}
+
+/// Whether a dxlink failure means the socket is gone rather than the request
+/// being wrong.
+///
+/// A refused subscription is the venue disagreeing with one request; a dead
+/// socket makes every later request pointless. Only the second is worth
+/// reconnecting for.
+fn is_connection_lost(error: &dxlink::DXLinkError) -> bool {
+    matches!(
+        error,
+        dxlink::DXLinkError::Connection(_) | dxlink::DXLinkError::WebSocket(_)
+    )
+}
+
+/// Records why no further attempts will be made.
+async fn terminal(state: &Arc<RwLock<ConnectionState>>, reason: String) {
+    warn!("Quote stream gave up: {reason}");
+    *state.write().await = ConnectionState::Disconnected { reason };
+}
+
+/// Waits out the backoff for the next attempt.
+///
+/// Returns false when the policy says to stop, or when the streamer was
+/// dropped while waiting.
+async fn schedule(
+    policy: &BackoffPolicy,
+    attempt: &mut u32,
+    state: &Arc<RwLock<ConnectionState>>,
+    shutdown: &mut oneshot::Receiver<()>,
+) -> bool {
+    *attempt = attempt.saturating_add(1);
+
+    // Jitter source. A clock read is enough entropy to stop a fleet of clients
+    // synchronising on the same venue restart, and it costs no dependency.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+
+    let Some(delay) = policy.delay_for(*attempt, nanos) else {
+        terminal(state, format!("gave up after {} attempts", *attempt - 1)).await;
+        return false;
+    };
+
+    debug!("Quote stream reconnecting, attempt {attempt} in {delay:?}");
+    *state.write().await = ConnectionState::Reconnecting {
+        attempt: *attempt,
+        delay,
+    };
+
+    // Cancellable: a caller who drops the streamer should not wait out a
+    // thirty-second backoff for a task nobody is listening to.
+    tokio::select! {
+        _ = &mut *shutdown => false,
+        _ = tokio::time::sleep(delay) => true,
+    }
+}
+
+/// Owns the connection for the streamer's whole life, replacing it when lost.
+#[allow(clippy::too_many_arguments)]
+async fn supervise(
+    tasty: TastyTrade,
+    policy: BackoffPolicy,
+    first: LiveConnection,
+    mut commands: mpsc::Receiver<DXLinkCommand>,
+    mut shutdown: oneshot::Receiver<()>,
+    routing: Arc<RwLock<EventRouting>>,
+    registry: Registry,
+    state: Arc<RwLock<ConnectionState>>,
+) {
+    let mut attempt = 0u32;
+    let mut next = Some(first);
+
+    loop {
+        let LiveConnection {
+            mut client,
+            channel_id,
+            events,
+        } = match next.take() {
+            Some(connection) => connection,
+            None => match connect_dxlink(&tasty).await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    // A rejected session is not a dropped socket: presenting
+                    // the same credentials again will be refused again.
+                    if !policy.should_retry(&e) {
+                        terminal(&state, format!("reconnect refused: {e}")).await;
+                        return;
+                    }
+                    if !schedule(&policy, &mut attempt, &state, &mut shutdown).await {
+                        return;
+                    }
+                    continue;
+                }
+            },
+        };
+
+        // Forwarding starts before anything is subscribed, and `routing` is
+        // the one that survived the reconnect, so an event that arrives the
+        // instant the replay lands already has somewhere to go.
+        let saw_event = Arc::new(AtomicBool::new(false));
+        let forwarder = tokio::spawn(forward_events(events, routing.clone(), saw_event.clone()));
+
+        let restored = replay(&mut client, channel_id, &registry).await;
+        if restored {
+            // Connected is claimed only once what was being watched is watched
+            // again. Reporting it before restoration leaves a caller believing
+            // they are receiving events they are not.
+            *state.write().await = ConnectionState::Connected;
+        }
+
+        let ended = if restored {
+            run_connection(
+                &mut client,
+                channel_id,
+                &mut commands,
+                &mut shutdown,
+                &routing,
+            )
+            .await
+        } else {
+            warn!("Could not restore every subscription; reconnecting");
+            Ended::ConnectionLost
+        };
+
+        forwarder.abort();
+        // dxlink's message pump never exits on its own — on a read error it
+        // logs, sleeps 100ms and loops — so a client that is not disconnected
+        // leaves a task spinning for the life of the process, once per
+        // reconnect.
+        if let Err(e) = client.disconnect().await {
+            debug!("Error disconnecting the previous DXLink client: {e}");
+        }
+
+        match ended {
+            Ended::Owner => {
+                *state.write().await = ConnectionState::Disconnected {
+                    reason: "the streamer was dropped".to_string(),
+                };
+                debug!("DXLink supervisor terminated");
+                return;
+            }
+            Ended::ConnectionLost => {
+                // Reset only for a connection that actually delivered. A
+                // handshake proves the venue accepts sockets, not that it
+                // sends data; resetting on one lets an accepting-but-silent
+                // venue loop forever at attempt one.
+                if saw_event.load(Ordering::Relaxed) {
+                    attempt = 0;
+                }
+                if !schedule(&policy, &mut attempt, &state, &mut shutdown).await {
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -914,7 +1167,6 @@ mod lifecycle_tests {
 
         let handle = StreamerHandle {
             commands: Some(tx.clone()),
-            channel_id: Some(1),
         };
         let second = handle.clone();
 
@@ -926,12 +1178,12 @@ mod lifecycle_tests {
             rx.try_recv().is_err(),
             "dropping a handle must not send a command"
         );
-        tx.send(DXLinkCommand::CreateEventStream)
+        tx.send(DXLinkCommand::RemoveEventSender(9))
             .await
             .expect("the owner's channel is still alive after handles are dropped");
         assert!(matches!(
             rx.recv().await,
-            Some(DXLinkCommand::CreateEventStream)
+            Some(DXLinkCommand::RemoveEventSender(9))
         ));
     }
 
@@ -942,7 +1194,7 @@ mod lifecycle_tests {
     /// `outcome`, and hands back what it saw. Without it `add_symbols` waits
     /// forever, which is the point — a subscription is not confirmed until
     /// something confirms it.
-    fn spawn_command_loop(
+    pub(super) fn spawn_command_loop(
         mut rx: mpsc::Receiver<DXLinkCommand>,
         outcome: fn() -> TastyResult<()>,
     ) -> tokio::task::JoinHandle<Vec<String>> {
@@ -950,11 +1202,11 @@ mod lifecycle_tests {
             let mut seen = Vec::new();
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    DXLinkCommand::Subscribe(_, requests, _, ack) => {
+                    DXLinkCommand::Subscribe(requests, _, ack) => {
                         seen.extend(requests.into_iter().map(|r| r.symbol));
                         answer(ack, outcome());
                     }
-                    DXLinkCommand::Unsubscribe(_, _, _, ack) => answer(ack, outcome()),
+                    DXLinkCommand::Unsubscribe(_, _, ack) => answer(ack, outcome()),
                     _ => {}
                 }
             }
@@ -962,17 +1214,17 @@ mod lifecycle_tests {
         })
     }
 
-    fn streamer_with(
+    pub(super) fn streamer_with(
         commands: mpsc::Sender<DXLinkCommand>,
         shutdown: oneshot::Sender<()>,
     ) -> QuoteStreamer {
         QuoteStreamer {
-            dxlink_client: None,
             shutdown: Some(shutdown),
-            channel_id: Some(1),
             next_sub_id: 0,
             subscription_map: HashMap::new(),
             dxlink_command_tx: Some(commands),
+            registry: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(RwLock::new(ConnectionState::Connected)),
         }
     }
 
@@ -999,10 +1251,10 @@ mod lifecycle_tests {
         let (tx, _rx) = mpsc::channel::<DXLinkCommand>(1);
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
-        tx.try_send(DXLinkCommand::CreateEventStream)
+        tx.try_send(DXLinkCommand::RemoveEventSender(9))
             .expect("the first command fits");
         assert!(
-            tx.try_send(DXLinkCommand::CreateEventStream).is_err(),
+            tx.try_send(DXLinkCommand::RemoveEventSender(9)).is_err(),
             "the queue must actually be full for this test to mean anything"
         );
 
@@ -1012,5 +1264,230 @@ mod lifecycle_tests {
             shutdown_rx.try_recv().is_ok(),
             "a full command queue must not be able to swallow the shutdown"
         );
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::lifecycle_tests::{spawn_command_loop, streamer_with};
+    use super::*;
+    use dxlink::events::QuoteEvent;
+    use std::time::Duration;
+
+    fn quote(symbol: &str) -> MarketEvent {
+        MarketEvent::Quote(QuoteEvent {
+            event_type: "Quote".to_string(),
+            event_symbol: symbol.to_string(),
+            bid_price: 1.0,
+            ask_price: 2.0,
+            bid_size: 1.0,
+            ask_size: 1.0,
+        })
+    }
+
+    fn policy() -> BackoffPolicy {
+        BackoffPolicy {
+            initial: Duration::from_millis(10),
+            max_delay: Duration::from_millis(40),
+            max_attempts: Some(2),
+            jitter: 0.0,
+        }
+    }
+
+    /// A symbol is restored under exactly the event types it was subscribed
+    /// with. Replaying a Quote-only subscription as Quote+Trade would start a
+    /// stream the caller never asked for and cannot see.
+    #[test]
+    fn a_replay_asks_for_the_event_types_the_subscription_had() {
+        let requests = feed_subscriptions(
+            &[Symbol::from("AAPL"), Symbol::from("MSFT")],
+            dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS,
+        );
+
+        assert_eq!(requests.len(), 4, "two symbols by two event types");
+        let types: BTreeSet<&str> = requests.iter().map(|r| r.event_type.as_str()).collect();
+        assert_eq!(
+            types,
+            BTreeSet::from(["Greeks", "Quote"]),
+            "Trade was not asked for: {types:?}"
+        );
+    }
+
+    /// The replay is derived from the confirmed symbols, so a subscription
+    /// that never got any contributes nothing.
+    #[test]
+    fn a_subscription_with_no_confirmed_symbols_is_not_replayed() {
+        let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+        registry.lock().unwrap().insert(
+            7,
+            SubscriptionRecord {
+                event_types: dxfeed::DXF_ET_QUOTE,
+                symbols: Arc::new(Mutex::new(BTreeSet::new())),
+            },
+        );
+
+        assert!(
+            pending_replay(&registry).is_empty(),
+            "a refused subscribe records nothing, so there is nothing to restore"
+        );
+    }
+
+    /// A closed subscription must not come back on the next connection: the
+    /// caller unsubscribed it, and a reconnect is not a reason to overrule
+    /// that.
+    #[tokio::test]
+    async fn a_closed_subscription_is_not_replayed() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let _loop_handle = spawn_command_loop(rx, || Ok(()));
+
+        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        sub.add_symbols(&[Symbol::from("AAPL")])
+            .await
+            .expect("subscribing succeeds");
+
+        let pending = pending_replay(&streamer.registry);
+        assert_eq!(pending.len(), 1, "a live subscription is restored");
+        assert_eq!(pending[0].1[0].symbol, "AAPL");
+
+        streamer.close_sub(sub.id).await.expect("closing succeeds");
+
+        assert!(
+            pending_replay(&streamer.registry).is_empty(),
+            "a closed subscription must not be resubscribed by a reconnect"
+        );
+    }
+
+    /// The routing registry outlives a connection, so an event arriving right
+    /// after a reconnect already has somewhere to go. This drives the
+    /// forwarding side of that: a route registered before the connection
+    /// existed still delivers.
+    #[tokio::test]
+    async fn a_forwarded_event_reaches_the_subscription_registered_for_it() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (sub_tx, mut sub_rx) = mpsc::channel::<MarketEvent>(4);
+        {
+            let mut routing = routing.write().await;
+            routing.senders.insert(1, vec![sub_tx]);
+            routing
+                .symbol_subs
+                .insert("AAPL".to_string(), HashSet::from([1]));
+        }
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
+        let saw_event = Arc::new(AtomicBool::new(false));
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            saw_event.clone(),
+        ));
+
+        events_tx
+            .send(quote("AAPL"))
+            .await
+            .expect("the feed accepts");
+        let received = sub_rx
+            .recv()
+            .await
+            .expect("the subscription is delivered to");
+        assert!(matches!(received, MarketEvent::Quote(q) if q.event_symbol == "AAPL"));
+
+        // A symbol nobody is subscribed to is dropped rather than panicking or
+        // being broadcast to everyone.
+        events_tx
+            .send(quote("TSLA"))
+            .await
+            .expect("the feed accepts");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), sub_rx.recv())
+                .await
+                .is_err(),
+            "an unrouted symbol must not be delivered"
+        );
+
+        assert!(
+            saw_event.load(Ordering::Relaxed),
+            "an event that arrived is the milestone the backoff resets on"
+        );
+        forwarder.abort();
+    }
+
+    /// The budget is bounded, and running out is reported rather than
+    /// retried silently forever.
+    #[tokio::test]
+    async fn the_backoff_gives_up_and_says_why() {
+        let state = Arc::new(RwLock::new(ConnectionState::Connected));
+        let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let mut attempt = 0u32;
+
+        assert!(schedule(&policy(), &mut attempt, &state, &mut shutdown_rx).await);
+        assert_eq!(
+            *state.read().await,
+            ConnectionState::Reconnecting {
+                attempt: 1,
+                delay: Duration::from_millis(10)
+            }
+        );
+
+        assert!(schedule(&policy(), &mut attempt, &state, &mut shutdown_rx).await);
+        assert!(
+            !schedule(&policy(), &mut attempt, &state, &mut shutdown_rx).await,
+            "one past the limit must stop"
+        );
+
+        let ConnectionState::Disconnected { reason } = state.read().await.clone() else {
+            panic!("giving up must be terminal, not another retry");
+        };
+        assert!(reason.contains("2 attempts"), "{reason}");
+    }
+
+    /// Dropping the streamer during a backoff must end the supervisor then,
+    /// not after the full delay: a caller who let go should not keep a task
+    /// waiting thirty seconds for nobody.
+    #[tokio::test]
+    async fn a_backoff_is_interrupted_by_the_owner_going_away() {
+        let state = Arc::new(RwLock::new(ConnectionState::Connected));
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let slow = BackoffPolicy {
+            initial: Duration::from_secs(30),
+            max_attempts: None,
+            ..policy()
+        };
+        let mut attempt = 0u32;
+
+        drop(shutdown_tx);
+
+        assert!(
+            !schedule(&slow, &mut attempt, &state, &mut shutdown_rx).await,
+            "a dropped owner ends the wait"
+        );
+    }
+
+    /// A refused subscription is the venue disagreeing with one request; a
+    /// dead socket makes every later request pointless. Reconnecting on the
+    /// first would turn a bad symbol into a reconnect loop.
+    #[test]
+    fn only_a_dead_socket_counts_as_a_lost_connection() {
+        assert!(is_connection_lost(&dxlink::DXLinkError::Connection(
+            "closed".to_string()
+        )));
+        assert!(!is_connection_lost(&dxlink::DXLinkError::Protocol(
+            "unknown symbol".to_string()
+        )));
+        assert!(!is_connection_lost(&dxlink::DXLinkError::Authentication(
+            "token expired".to_string()
+        )));
+    }
+
+    /// An authentication failure is not retried: the same token will be
+    /// refused again, and the policy is what says so.
+    #[test]
+    fn a_rejected_session_is_not_worth_retrying() {
+        let policy = BackoffPolicy::default();
+        let refused: TastyTradeError = dxlink::DXLinkError::Authentication("nope".into()).into();
+
+        assert!(!policy.should_retry(&refused), "{refused:?}");
+        assert!(policy.should_retry(&TastyTradeError::Connection("dropped".into())));
     }
 }
