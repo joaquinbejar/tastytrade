@@ -422,3 +422,49 @@ async fn a_listing_without_pagination_is_an_error_not_a_panic() {
         "the error must say what was missing: {rendered}"
     );
 }
+
+/// `context` comes from the venue and mirrors the request path, so on an
+/// account-scoped endpoint it carries the account number straight into the
+/// error text unless it goes through the same redaction as everything else.
+#[tokio::test]
+async fn the_pagination_error_redacts_the_venue_supplied_context() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /sessions".to_string(),
+        Route::ok(login_response_body()),
+    );
+    routes.insert(
+        format!(
+            "GET /accounts/{}/balance-snapshots",
+            sentinel::ACCOUNT_NUMBER
+        ),
+        Route::ok(format!(
+            r#"{{"data":{{"items":[]}},"context":"/accounts/{}/balance-snapshots"}}"#,
+            sentinel::ACCOUNT_NUMBER
+        )),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let client = TastyTrade::login(&config)
+        .await
+        .expect("login must succeed");
+
+    let error = client
+        .get_with_query::<tastytrade::api::base::Items<serde_json::Value>, tastytrade::api::base::Paginated<serde_json::Value>, _>(
+            &format!("/accounts/{}/balance-snapshots", sentinel::ACCOUNT_NUMBER),
+            &[],
+        )
+        .await
+        .expect_err("a missing pagination block must not panic");
+
+    let rendered = format!("{error}");
+    assert!(
+        !rendered.contains(sentinel::ACCOUNT_NUMBER),
+        "the venue-supplied context carried the account number: {rendered}"
+    );
+    assert!(
+        rendered.contains("{account}"),
+        "the redacted context should still identify the endpoint: {rendered}"
+    );
+}
