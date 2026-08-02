@@ -58,7 +58,7 @@
 //!     let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
 //!
 //!     // Add symbols to subscribe to
-//!     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]);
+//!     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]).await?;
 //!
 //!     // Listen for events
 //!     if let Ok(dxfeed::Event { sym, data }) = quote_sub.get_event().await {

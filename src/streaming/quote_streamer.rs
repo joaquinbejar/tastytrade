@@ -7,7 +7,7 @@ use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 #[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
@@ -37,7 +37,7 @@ pub struct QuoteSubscription {
 
 impl QuoteSubscription {
     /// Add symbols to subscription. See the "Note on symbology" section in [`QuoteSubscription`]
-    pub fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) {
+    pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
         let symbols: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
 
         // Update subscribed symbols internally
@@ -86,28 +86,31 @@ impl QuoteSubscription {
             })
             .collect::<Vec<FeedSubscription>>();
 
-        // Execute the subscription in a new async task
-        let handle = self.streamer.clone();
-        let subscriptions_clone = subscriptions.clone();
-        let sub_id = self.id.0 as u32;
+        if subscriptions.is_empty() {
+            return Ok(());
+        }
 
-        tokio::spawn(async move {
-            let (channel_id, tx) = (handle.channel_id, handle.commands.clone());
-            if let (Some(channel_id), Some(tx)) = (channel_id, tx) {
-                // Send subscribe command through the channel
-                if !subscriptions_clone.is_empty()
-                    && let Err(e) = tx
-                        .send(DXLinkCommand::Subscribe(
-                            channel_id,
-                            subscriptions_clone,
-                            sub_id,
-                        ))
-                        .await
-                {
-                    error!("Failed to send subscription command: {}", e);
-                }
-            }
-        });
+        // Awaited rather than spawned. A detached task meant this returned
+        // success before the command was even accepted, so a caller could not
+        // tell a subscription that worked from one that never left, and it
+        // panicked outright when called without a Tokio runtime.
+        let sub_id = self.id.0 as u32;
+        let (Some(channel_id), Some(tx)) = (self.streamer.channel_id, &self.streamer.commands)
+        else {
+            return Err(TastyTradeError::Streaming(
+                "the quote streamer has no open channel; reconnect before subscribing".to_string(),
+            ));
+        };
+
+        tx.send(DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id))
+            .await
+            .map_err(|_| {
+                TastyTradeError::Streaming(
+                    "the quote streamer is closed; reconnect before subscribing".to_string(),
+                )
+            })?;
+
+        Ok(())
     }
 
     /// Receive one event from feed. Yields if there are no events.
@@ -227,7 +230,6 @@ enum DXLinkCommand {
     CreateEventStream,
     AddEventSender(u32, mpsc::Sender<MarketEvent>),
     RemoveEventSender(u32),
-    Disconnect,
 }
 
 // Live routing registry shared between the command loop and the event
@@ -241,6 +243,12 @@ struct EventRouting {
 pub struct QuoteStreamer {
     #[allow(dead_code)]
     dxlink_client: Option<DXLinkClient>,
+    /// Signals the command loop to disconnect.
+    ///
+    /// Held only by the owner, never by a handle, so it is dropped exactly when
+    /// the streamer is. A oneshot cannot be refused for lack of room the way a
+    /// `try_send` into the bounded command queue could.
+    shutdown: Option<oneshot::Sender<()>>,
     channel_id: Option<u32>,
     next_sub_id: usize,
     subscription_map: HashMap<SubscriptionId, QuoteSubscription>,
@@ -296,6 +304,12 @@ impl QuoteStreamer {
         // Create command channel
         let (command_tx, mut command_rx) = mpsc::channel::<DXLinkCommand>(100);
 
+        // Shutdown travels on its own channel. Routing it through the bounded
+        // command queue meant a full queue could discard it, and the loop
+        // cannot simply exit when the command sender dies either, because
+        // every subscription handle holds a clone of that sender.
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
         // Spawn task to handle DXLink commands
         tokio::spawn(async move {
             // Routing registry shared with the event forwarding task, so
@@ -303,7 +317,22 @@ impl QuoteStreamer {
             let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
             let mut stream_created = false;
 
-            while let Some(cmd) = command_rx.recv().await {
+            loop {
+                let cmd = tokio::select! {
+                    biased;
+                    _ = &mut shutdown_rx => {
+                        debug!("Quote streamer owner dropped, disconnecting");
+                        if let Err(e) = client.disconnect().await {
+                            warn!("Error disconnecting from DXLink: {}", e);
+                        }
+                        break;
+                    }
+                    cmd = command_rx.recv() => match cmd {
+                        Some(cmd) => cmd,
+                        None => break,
+                    },
+                };
+
                 match cmd {
                     DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id) => {
                         // Record symbol routing before subscribing, so no event
@@ -383,12 +412,6 @@ impl QuoteStreamer {
                             }
                         }
                     }
-                    DXLinkCommand::Disconnect => {
-                        if let Err(e) = client.disconnect().await {
-                            warn!("Error disconnecting from DXLink: {}", e);
-                        }
-                        break; // Exit the loop after disconnecting
-                    }
                     DXLinkCommand::AddEventSender(subscription_id, sender) => {
                         let mut routing = routing.write().await;
                         routing
@@ -413,7 +436,8 @@ impl QuoteStreamer {
         });
 
         Ok(Self {
-            dxlink_client: None, // We moved client into the command handler task
+            dxlink_client: None,
+            shutdown: Some(shutdown_tx), // We moved client into the command handler task
             channel_id: Some(channel_id),
             next_sub_id: 0,
             subscription_map: HashMap::new(),
@@ -585,14 +609,11 @@ impl Drop for QuoteStreamer {
         // subscription, which is both redundant and a panic waiting to happen
         // when a streamer is dropped outside a Tokio runtime.
 
-        // try_send rather than spawning: Drop can run outside a Tokio runtime,
-        // where tokio::spawn panics, and a disconnect that panics while
-        // unwinding is worse than one that is dropped. The command loop exits
-        // on its own when this sender is the last one and goes away.
-        if let Some(tx) = &self.dxlink_command_tx
-            && let Err(e) = tx.try_send(DXLinkCommand::Disconnect)
-        {
-            warn!("Could not signal disconnect on drop: {}", e);
+        // A oneshot send is synchronous, so this works outside a Tokio runtime
+        // where tokio::spawn would panic, and it cannot be discarded by a full
+        // command queue. Only the owner holds it, so nobody else can send it.
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
     }
 }
@@ -626,34 +647,67 @@ mod lifecycle_tests {
             rx.try_recv().is_err(),
             "dropping a handle must not send a command"
         );
-        tx.send(DXLinkCommand::Disconnect)
+        tx.send(DXLinkCommand::CreateEventStream)
             .await
             .expect("the owner's channel is still alive after handles are dropped");
-        assert!(matches!(rx.recv().await, Some(DXLinkCommand::Disconnect)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(DXLinkCommand::CreateEventStream)
+        ));
     }
 
     /// `Drop` must not need a Tokio runtime. `try_send` is synchronous;
     /// `tokio::spawn` would panic here, which is what this asserts by simply
     /// not panicking.
-    #[test]
-    fn dropping_the_owner_outside_a_runtime_does_not_panic() {
-        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
-
-        let streamer = QuoteStreamer {
+    fn streamer_with(
+        commands: mpsc::Sender<DXLinkCommand>,
+        shutdown: oneshot::Sender<()>,
+    ) -> QuoteStreamer {
+        QuoteStreamer {
             dxlink_client: None,
+            shutdown: Some(shutdown),
             channel_id: Some(1),
             next_sub_id: 0,
             subscription_map: HashMap::new(),
-            dxlink_command_tx: Some(tx),
-        };
+            dxlink_command_tx: Some(commands),
+        }
+    }
 
-        drop(streamer);
+    #[test]
+    fn dropping_the_owner_outside_a_runtime_does_not_panic() {
+        let (tx, _rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
 
-        // The disconnect was queued synchronously rather than spawned.
-        let mut rx = rx;
+        drop(streamer_with(tx, shutdown_tx));
+
+        // Signalled synchronously rather than spawned, which is what a plain
+        // #[test] proves by not panicking without a runtime.
         assert!(
-            matches!(rx.try_recv(), Ok(DXLinkCommand::Disconnect)),
-            "the owner must signal disconnect on drop"
+            shutdown_rx.try_recv().is_ok(),
+            "the owner must signal shutdown on drop"
+        );
+    }
+
+    /// The command queue is bounded, so shutdown must not travel on it: a full
+    /// queue would discard the disconnect and leave the client connected while
+    /// its owner is gone.
+    #[test]
+    fn shutdown_survives_a_full_command_queue() {
+        let (tx, _rx) = mpsc::channel::<DXLinkCommand>(1);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        tx.try_send(DXLinkCommand::CreateEventStream)
+            .expect("the first command fits");
+        assert!(
+            tx.try_send(DXLinkCommand::CreateEventStream).is_err(),
+            "the queue must actually be full for this test to mean anything"
+        );
+
+        drop(streamer_with(tx, shutdown_tx));
+
+        assert!(
+            shutdown_rx.try_recv().is_ok(),
+            "a full command queue must not be able to swallow the shutdown"
         );
     }
 }

@@ -51,7 +51,10 @@ async fn main() {
 
     // Subscribe to SPX symbol
     let symbols = [Symbol::from("SPX")];
-    quote_sub.add_symbols(&symbols);
+    if let Err(e) = quote_sub.add_symbols(&symbols).await {
+        eprintln!("Could not subscribe to SPX: {e}");
+        std::process::exit(1);
+    }
 
     println!("📈 Streaming quotes for SPX...");
     println!("Press Ctrl+C to stop\n");
