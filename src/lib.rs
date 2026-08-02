@@ -3,6 +3,9 @@
 // Makefile target, so it fails at the same moment as any other compile
 // error and cannot be forgotten by running a different command.
 #![deny(missing_docs)]
+// A doc link that points nowhere is documentation that lies about where to
+// look next, which is worse than not linking at all.
+#![deny(rustdoc::broken_intra_doc_links)]
 
 //! # tastytrade
 //!
