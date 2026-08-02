@@ -1,5 +1,6 @@
 use super::order::Symbol;
 use crate::api::quote_streaming::DxFeedSymbol;
+use crate::types::wire::{ExerciseStyle, ExpirationType, SettlementType};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
@@ -34,13 +35,13 @@ pub struct CompactOptionChain {
     pub option_chain_type: String,
 
     /// The settlement type of the option chain.
-    pub settlement_type: Option<String>,
+    pub settlement_type: Option<SettlementType>,
 
     /// The number of shares represented by each option contract.
     pub shares_per_contract: u64,
 
     /// The expiration type of the option chain.
-    pub expiration_type: Option<String>,
+    pub expiration_type: Option<ExpirationType>,
 
     /// Compact representation of symbols as a string.
     pub symbols: Option<Vec<String>>,
@@ -216,7 +217,7 @@ pub struct Strike {
 #[serde(rename_all = "kebab-case")]
 pub struct Expiration {
     /// The type of expiration (e.g., "weekly", "monthly").
-    pub expiration_type: String,
+    pub expiration_type: ExpirationType,
 
     /// The date of expiration in string format (e.g., "2024-12-20").
     #[serde(with = "crate::types::wire::date")]
@@ -226,7 +227,7 @@ pub struct Expiration {
     pub days_to_expiration: u64,
 
     /// The settlement type for the options (e.g., "cash", "physical").
-    pub settlement_type: String,
+    pub settlement_type: SettlementType,
 
     /// A vector of `Strike` structs, each representing a different strike price
     /// available for this expiration date.
@@ -318,7 +319,7 @@ pub struct FuturesOptionChains {
     pub root_symbol: String,
 
     /// The exercise style of the options.
-    pub exercise_style: String,
+    pub exercise_style: ExerciseStyle,
 
     /// The expirations data for the option chain.
     pub expirations: Vec<FuturesExpiration>,
@@ -351,10 +352,10 @@ pub struct FuturesExpiration {
     pub days_to_expiration: i32,
 
     /// The expiration type.
-    pub expiration_type: String,
+    pub expiration_type: ExpirationType,
 
     /// The settlement type.
-    pub settlement_type: String,
+    pub settlement_type: SettlementType,
 
     /// The notional value.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
@@ -444,7 +445,7 @@ pub struct EquityOption {
     #[serde(with = "crate::types::wire::date")]
     pub expiration_date: NaiveDate,
     /// The exercise style of the option (e.g., "American").
-    pub exercise_style: String,
+    pub exercise_style: ExerciseStyle,
     /// The number of shares per contract.
     pub shares_per_contract: u64,
     /// The type of the option (e.g., "CALL", "PUT").
@@ -452,9 +453,9 @@ pub struct EquityOption {
     /// The type of the option chain.
     pub option_chain_type: String,
     /// The type of expiration.
-    pub expiration_type: String,
+    pub expiration_type: ExpirationType,
     /// The settlement type.
-    pub settlement_type: String,
+    pub settlement_type: SettlementType,
     /// The date and time when the option stops trading, formatted as a string.
     #[serde(with = "crate::types::wire::datetime")]
     pub stops_trading_at: DateTime<FixedOffset>,
@@ -671,7 +672,7 @@ pub struct FutureOption {
     /// The type of the option (e.g., "call", "put").
     pub option_type: String,
     /// The exercise style of the option (e.g., "american", "european").
-    pub exercise_style: String,
+    pub exercise_style: ExerciseStyle,
     /// Indicates whether the option is vanilla.
     pub is_vanilla: bool,
     /// Indicates whether the option is the primary deliverable.
@@ -698,7 +699,7 @@ pub struct FutureOption {
     /// The SX ID of the future option.
     pub sx_id: String,
     /// The settlement type of the future option.
-    pub settlement_type: String,
+    pub settlement_type: SettlementType,
     /// The strike factor for the future option.
     #[serde(with = "crate::types::wire::decimal")]
     pub strike_factor: Decimal,
@@ -760,7 +761,7 @@ pub struct FutureOptionProduct {
     /// The type of the product (e.g., "future option").
     pub product_type: String,
     /// The type of expiration for the future option.
-    pub expiration_type: String,
+    pub expiration_type: ExpirationType,
     /// The number of days for settlement delay.
     pub settlement_delay_days: u32,
     /// Indicates whether the future option is a rollover.
@@ -1021,7 +1022,10 @@ mod tests {
         // Verify option chains array
         assert_eq!(chain.option_chains.len(), 1);
         assert_eq!(chain.option_chains[0].underlying_symbol, "/ES");
-        assert_eq!(chain.option_chains[0].exercise_style, "American");
+        assert_eq!(
+            chain.option_chains[0].exercise_style,
+            ExerciseStyle::American
+        );
 
         // Verify expirations
         assert_eq!(chain.option_chains[0].expirations.len(), 1);

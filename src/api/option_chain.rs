@@ -1,5 +1,6 @@
 use super::{base::Items, quote_streaming::DxFeedSymbol};
 use crate::api::base::TastyResult;
+use crate::types::wire::{ExpirationType, SettlementType};
 use crate::{AsSymbol, Symbol, TastyTrade};
 use chrono::NaiveDate;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
@@ -63,11 +64,11 @@ pub struct NestedOptionChain {
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Expiration {
-    pub expiration_type: String,
+    pub expiration_type: ExpirationType,
     #[serde(with = "crate::types::wire::date")]
     pub expiration_date: NaiveDate,
     pub days_to_expiration: u64,
-    pub settlement_type: String,
+    pub settlement_type: SettlementType,
     pub strikes: Vec<Strike>,
 }
 
@@ -137,13 +138,13 @@ mod tests {
         }"#;
 
         let expiration: Expiration = serde_json::from_str(json).unwrap();
-        assert_eq!(expiration.expiration_type, "Regular");
+        assert_eq!(expiration.expiration_type.to_string(), "Regular");
         assert_eq!(
             expiration.expiration_date,
             NaiveDate::from_ymd_opt(2024, 9, 20).unwrap()
         );
         assert_eq!(expiration.days_to_expiration, 30);
-        assert_eq!(expiration.settlement_type, "PM");
+        assert_eq!(expiration.settlement_type.to_string(), "PM");
         assert_eq!(expiration.strikes.len(), 1);
         assert_eq!(
             expiration.strikes[0].strike_price,
@@ -244,7 +245,7 @@ mod tests {
         }"#;
 
         let expiration: Expiration = serde_json::from_str(json).unwrap();
-        assert_eq!(expiration.expiration_type, "Weekly");
+        assert_eq!(expiration.expiration_type.to_string(), "Weekly");
         assert_eq!(expiration.strikes.len(), 3);
 
         // Test first strike

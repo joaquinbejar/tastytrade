@@ -362,3 +362,213 @@ mod time_tests {
         assert!(error.to_string().contains("YYYY-MM-DD"), "{error}");
     }
 }
+
+/// Declares a closed set the venue owns, with an escape hatch it cannot break.
+///
+/// The broker adds values without notice, and this crate must not fail a whole
+/// listing over one it has not seen — `Items<T>` would drop the instrument and
+/// the caller would get a short list instead of an error. Every generated enum
+/// therefore has an `Unknown(String)` arm that round-trips the original text
+/// unchanged, so an unrecognised value is visible, matchable and preserved on
+/// the way back out.
+macro_rules! wire_enum {
+    (
+        $(#[$meta:meta])*
+        $name:ident { $($variant:ident => $wire:literal),+ $(,)? }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $(
+                #[doc = concat!("The venue's `", $wire, "`.")]
+                $variant,
+            )+
+            /// A value this crate has not seen, kept verbatim.
+            ///
+            /// Matching on it is how you find out the broker added something.
+            Unknown(String),
+        }
+
+        impl $name {
+            /// The text the venue uses for this value.
+            pub fn as_wire(&self) -> &str {
+                match self {
+                    $( $name::$variant => $wire, )+
+                    $name::Unknown(text) => text,
+                }
+            }
+
+            /// Whether this is a value the crate recognises.
+            pub fn is_known(&self) -> bool {
+                !matches!(self, $name::Unknown(_))
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_wire())
+            }
+        }
+
+        impl From<String> for $name {
+            fn from(text: String) -> Self {
+                // Trimmed for matching, like every other helper here, so a
+                // stray space does not turn a known value into an unknown one.
+                // A known value is then canonical: "PM " serialises back as
+                // "PM". An unknown keeps the venue's text byte for byte,
+                // since that is the only record of what arrived.
+                match text.trim() {
+                    $( $wire => $name::$variant, )+
+                    _ => $name::Unknown(text),
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                Ok(Self::from(String::deserialize(deserializer)?))
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(self.as_wire())
+            }
+        }
+    };
+}
+
+wire_enum! {
+    /// How an option series expires.
+    ///
+    /// Observed values come from a captured futures option chain.
+    ExpirationType {
+        Regular => "Regular",
+        Weekly => "Weekly",
+        Quarterly => "Quarterly",
+        EndOfMonth => "End-Of-Month",
+    }
+}
+
+wire_enum! {
+    /// When an option settles.
+    SettlementType {
+        Am => "AM",
+        Pm => "PM",
+    }
+}
+
+wire_enum! {
+    /// When an option may be exercised.
+    ///
+    /// Only `American` appears in the captured payloads; `European` is listed
+    /// because it is the other half of a two-value domain, and being wrong
+    /// about it costs nothing — an unseen value round-trips through `Unknown`.
+    ExerciseStyle {
+        American => "American",
+        European => "European",
+    }
+}
+
+#[cfg(test)]
+mod wire_enum_tests {
+    use super::*;
+
+    #[test]
+    fn a_known_value_maps_to_its_variant() {
+        let parsed: ExpirationType = serde_json::from_str(r#""End-Of-Month""#).expect("parses");
+        assert_eq!(parsed, ExpirationType::EndOfMonth);
+        assert!(parsed.is_known());
+        assert_eq!(parsed.to_string(), "End-Of-Month");
+    }
+
+    /// The whole point: the broker adds values, and one unseen value must not
+    /// cost the caller the instrument it was attached to.
+    #[test]
+    fn an_unseen_value_is_preserved_rather_than_fatal() {
+        let parsed: ExpirationType = serde_json::from_str(r#""Fortnightly""#)
+            .expect("an unrecognised value must not fail the response");
+
+        assert_eq!(parsed, ExpirationType::Unknown("Fortnightly".to_string()));
+        assert!(!parsed.is_known(), "a caller can see this is new");
+        assert_eq!(parsed.as_wire(), "Fortnightly");
+    }
+
+    /// Each enum is exercised with its own values. Round-tripping every
+    /// string through one type would have "AM" and "American" taking the
+    /// Unknown path, which proves nothing about the other two enums.
+    #[test]
+    fn every_value_round_trips_unchanged() {
+        macro_rules! round_trip {
+            ($ty:ty, $($text:literal),+) => {
+                $(
+                    let parsed: $ty = serde_json::from_str($text).expect("parses");
+                    assert_eq!(
+                        serde_json::to_string(&parsed).expect("serializes"),
+                        $text,
+                        concat!("the venue's own text must survive for ", stringify!($ty))
+                    );
+                )+
+            };
+        }
+
+        round_trip!(
+            ExpirationType,
+            "\"Regular\"",
+            "\"Weekly\"",
+            "\"End-Of-Month\"",
+            "\"Fortnightly\""
+        );
+        round_trip!(SettlementType, "\"AM\"", "\"PM\"", "\"Overnight\"");
+        round_trip!(
+            ExerciseStyle,
+            "\"American\"",
+            "\"European\"",
+            "\"Bermudan\""
+        );
+    }
+
+    /// Known values are recognised through incidental whitespace and come back
+    /// canonical; unknown ones keep the venue's text exactly as it arrived.
+    #[test]
+    fn whitespace_does_not_hide_a_known_value() {
+        let padded: SettlementType = serde_json::from_str(r#"" PM ""#).expect("parses");
+        assert_eq!(padded, SettlementType::Pm);
+        assert!(padded.is_known());
+        assert_eq!(
+            serde_json::to_string(&padded).expect("serializes"),
+            r#""PM""#,
+            "a known value normalises"
+        );
+
+        let unknown: SettlementType = serde_json::from_str(r#"" Overnight ""#).expect("parses");
+        assert_eq!(
+            unknown.as_wire(),
+            " Overnight ",
+            "an unknown value keeps exactly what arrived"
+        );
+    }
+
+    #[test]
+    fn matching_is_exhaustive_without_a_wildcard_on_known_values() {
+        let settlement = SettlementType::from("PM".to_string());
+        let described = match settlement {
+            SettlementType::Am => "morning",
+            SettlementType::Pm => "afternoon",
+            SettlementType::Unknown(_) => "unrecognised",
+        };
+        assert_eq!(described, "afternoon");
+
+        assert_eq!(
+            ExerciseStyle::from("American".to_string()),
+            ExerciseStyle::American
+        );
+        assert!(!ExerciseStyle::from("Bermudan".to_string()).is_known());
+    }
+}
