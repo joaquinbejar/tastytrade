@@ -467,11 +467,15 @@ pub struct FeeCalculation {
     pub total_fees_effect: PriceEffect,
 }
 
-/// Represents a warning message.  This struct is currently empty, potentially
-/// serving as a placeholder for future warning information. The `#[serde(rename_all = "kebab-case")]`
-/// attribute indicates that during deserialization, the field names in the incoming data should be
-/// converted from kebab-case to snake_case. For example, a field named "warning-message" in the
-/// incoming data would be mapped to `warning_message` in the struct.
+/// A warning the venue attached to a dry run or a placement.
+///
+/// Warnings are the reason to dry-run at all: they are how the broker says
+/// "this will work, but not the way you probably meant". A caller is expected
+/// to read them before placing.
+///
+/// The prose in `message` is venue-supplied and can name the account, the
+/// order or a buying-power figure, so it belongs in front of a person who
+/// asked for it, not in a log.
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Warning {

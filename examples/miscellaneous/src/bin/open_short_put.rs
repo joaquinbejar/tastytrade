@@ -227,11 +227,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if there are any warnings
     if !dry_run_result.warnings.is_empty() {
-        warn!("Order has {} warnings:", dry_run_result.warnings.len());
+        // The log gets the count and the stable codes. The prose is
+        // venue-supplied and can name the account, the order or a
+        // buying-power figure, so it goes to the operator who asked for it
+        // rather than into tracing.
+        let codes: Vec<&str> = dry_run_result
+            .warnings
+            .iter()
+            .map(|w| w.code.as_deref().unwrap_or("uncoded"))
+            .collect();
+        warn!(
+            "Order has {} warning(s): {}",
+            dry_run_result.warnings.len(),
+            codes.join(", ")
+        );
+
+        println!("\nBroker warnings for this order:");
         for warning in &dry_run_result.warnings {
             match &warning.code {
-                Some(code) => warn!("  [{}] {}", code, warning.message),
-                None => warn!("  {}", warning.message),
+                Some(code) => println!("  [{code}] {}", warning.message),
+                None => println!("  {}", warning.message),
             }
         }
         // A real application would decide from these whether to continue.
