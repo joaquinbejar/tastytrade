@@ -207,7 +207,7 @@ impl AccountStreamer {
     /// * `tasty` - A reference to the `TastyTrade` client, containing
     ///   authentication and configuration details.
     pub async fn connect(tasty: &TastyTrade) -> TastyResult<AccountStreamer> {
-        let token = tasty.session_token.clone();
+        let writer_token = tasty.session_token.clone();
         let (event_sender, event_receiver) = flume::unbounded();
         let (action_sender, action_receiver): (
             flume::Sender<HandlerAction>,
@@ -227,7 +227,6 @@ impl AccountStreamer {
             }
         });
 
-        let writer_token = token.clone();
         tokio::spawn(async move {
             while let Ok(action) = action_receiver.recv_async().await {
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
