@@ -12,8 +12,8 @@ use tastytrade::utils::config::TastyTradeConfig;
 use tracing::Level;
 
 use crate::support::{
-    CapturedLogs, MockVenue, Route, capture_logs_at, login_response_body, sentinel,
-    unparseable_accounts_body,
+    CapturedLogs, MockVenue, Route, capture_logs_at, login_response_body,
+    partially_unparseable_accounts_body, sentinel, wholly_unparseable_accounts_body,
 };
 
 /// A config pointed at `venue`, with credentials that are never real.
@@ -104,7 +104,7 @@ async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
-        Route::ok(unparseable_accounts_body()),
+        Route::ok(partially_unparseable_accounts_body()),
     );
     let venue = MockVenue::start(routes).await;
     let config = config_for(&venue);
@@ -120,10 +120,10 @@ async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
     .await;
 
     let count = accounts.expect("a skipped item is not a transport failure");
-    assert_eq!(count, 0, "the only item cannot deserialize");
+    assert_eq!(count, 1, "the healthy account survives the broken one");
 
     // The whole point: the failure is reported without the data that failed.
-    logs.assert_present("failed to deserialize item 0", "the failing item");
+    logs.assert_present("failed to deserialize item 1", "the failing item");
     logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
     logs.assert_absent(sentinel::NICKNAME, "the account nickname");
     logs.assert_absent(sentinel::BALANCE, "the cash balance");
@@ -467,4 +467,41 @@ async fn the_pagination_error_redacts_the_venue_supplied_context() {
         rendered.contains("{account}"),
         "the redacted context should still identify the endpoint: {rendered}"
     );
+}
+
+/// The shape that made a missing field read as an authentication problem: a
+/// real account existed, and the caller was handed an empty list.
+#[tokio::test]
+async fn a_listing_where_nothing_decodes_is_reported_not_returned_empty() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /sessions".to_string(),
+        Route::ok(login_response_body()),
+    );
+    routes.insert(
+        "GET /customers/me/accounts".to_string(),
+        Route::ok(wholly_unparseable_accounts_body()),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let (result, logs) = capture_logs_at(Level::WARN, async {
+        let client = TastyTrade::login(&config)
+            .await
+            .expect("login must succeed");
+        client.accounts().await.map(|accounts| accounts.len())
+    })
+    .await;
+
+    let error = result.expect_err("a wholly unparseable listing must not look empty");
+    let rendered = format!("{error}");
+    assert!(
+        rendered.contains("failed to deserialize") && rendered.contains("all 1 item(s)"),
+        "the error must say the model is the problem and how much was lost: {rendered}"
+    );
+    assert!(
+        !rendered.contains(sentinel::ACCOUNT_NUMBER),
+        "the error must not carry the payload: {rendered}"
+    );
+    logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
 }

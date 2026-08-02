@@ -48,14 +48,27 @@ pub fn login_response_body() -> String {
     )
 }
 
-/// A `GET /customers/me/accounts` body whose single item cannot deserialize,
-/// shaped like a real account so the sentinels are exactly what a leak would
-/// expose.
-pub fn unparseable_accounts_body() -> String {
+/// A `GET /customers/me/accounts` body with one account that decodes and one
+/// that cannot, shaped like real accounts so the sentinels are exactly what a
+/// leak would expose.
+///
+/// The healthy account matters: a listing where *nothing* decodes is an error
+/// rather than a skip, so without it this exercises a different path.
+pub fn partially_unparseable_accounts_body() -> String {
     format!(
         r#"{{
             "data": {{
                 "items": [
+                    {{
+                        "account": {{
+                            "account-number": "5WX00001",
+                            "nickname": "Healthy",
+                            "account-type-name": "Individual",
+                            "margin-or-cash": "Margin",
+                            "opened-at": "2025-01-14T10:22:41.000+00:00"
+                        }},
+                        "authority-level": "owner"
+                    }},
                     {{
                         "account": {{
                             "account-number": "{}",
@@ -74,6 +87,31 @@ pub fn unparseable_accounts_body() -> String {
         sentinel::BALANCE,
         // A number where the model wants a string: the serde error renders the
         // rejected value, which is the leak path this suite guards.
+        12345
+    )
+}
+
+/// A listing where every item fails, which is a broken model rather than a
+/// thin response.
+pub fn wholly_unparseable_accounts_body() -> String {
+    format!(
+        r#"{{
+            "data": {{
+                "items": [
+                    {{
+                        "account": {{
+                            "account-number": "{}",
+                            "nickname": "{}",
+                            "margin-or-cash": {}
+                        }},
+                        "authority-level": "owner"
+                    }}
+                ]
+            }},
+            "context": "/customers/me/accounts"
+        }}"#,
+        sentinel::ACCOUNT_NUMBER,
+        sentinel::BALANCE,
         12345
     )
 }
