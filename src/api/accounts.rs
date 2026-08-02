@@ -19,6 +19,32 @@ impl<T: AsRef<str>> From<T> for AccountNumber {
     }
 }
 
+impl AccountNumber {
+    /// A form of this account number that is safe to log.
+    ///
+    /// Enough of it survives to tell two accounts apart in a log or a support
+    /// thread; not enough to identify the account to someone who did not
+    /// already have it. Anything short enough that a prefix and a suffix would
+    /// reveal most of it is masked entirely.
+    ///
+    /// This exists because the rule — account identifiers stay out of logs —
+    /// is easy to state and easy to forget at the call site. Somewhere to
+    /// reach for makes it easier to follow than to break.
+    pub fn redacted(&self) -> String {
+        const KEEP_PREFIX: usize = 2;
+        const KEEP_SUFFIX: usize = 3;
+
+        let chars: Vec<char> = self.0.chars().collect();
+        if chars.len() <= KEEP_PREFIX + KEEP_SUFFIX {
+            return "*".repeat(chars.len().max(1));
+        }
+
+        let prefix: String = chars[..KEEP_PREFIX].iter().collect();
+        let suffix: String = chars[chars.len() - KEEP_SUFFIX..].iter().collect();
+        format!("{prefix}…{suffix}")
+    }
+}
+
 /// Details of a single trading account.
 ///
 /// The certification environment and production do not return the same set of
@@ -478,5 +504,44 @@ mod tests {
         assert_eq!(items.items.len(), 1, "the sandbox account must survive");
         assert_eq!(items.items[0].account.account_number.0, "5WX12345");
         assert_eq!(items.items[0].authority_level, "owner");
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    #[test]
+    fn a_redacted_number_identifies_without_revealing() {
+        let account = AccountNumber::from("5WX123456");
+        let redacted = account.redacted();
+
+        assert_eq!(redacted, "5W…456");
+        assert!(
+            !redacted.contains("X1234"),
+            "the middle must not survive: {redacted}"
+        );
+    }
+
+    /// Two accounts must still be distinguishable in a support thread.
+    #[test]
+    fn different_accounts_redact_differently() {
+        assert_ne!(
+            AccountNumber::from("5WX123456").redacted(),
+            AccountNumber::from("5WX123789").redacted()
+        );
+    }
+
+    /// A number short enough that a prefix and a suffix would reveal most of
+    /// it is not partially redacted, it is hidden.
+    #[test]
+    fn a_short_number_is_masked_entirely() {
+        for short in ["", "1", "12345"] {
+            let redacted = AccountNumber::from(short).redacted();
+            assert!(
+                redacted.chars().all(|c| c == '*'),
+                "{short:?} should be fully masked, got {redacted}"
+            );
+        }
     }
 }

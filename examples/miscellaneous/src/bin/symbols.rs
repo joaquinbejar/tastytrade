@@ -49,16 +49,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Found {} account(s)", accounts.len());
     let account = &accounts[0]; // Use the first account
-    info!("Using account: {}", account.number().0);
+    info!("Using account {}", account.number().redacted());
 
     // Get positions to see which symbols are available in the account
     let positions = account.positions().await?;
     info!("Current positions: {}", positions.len());
 
     if !positions.is_empty() {
-        info!("Symbols in your positions:");
+        // What is held is account activity, so it goes to the operator who
+        // asked, not into tracing.
+        println!("\nSymbols in your positions:");
         for (i, position) in positions.iter().enumerate() {
-            info!(
+            println!(
                 "  {}. Symbol: {}, Type: {:?}, Underlying: {}",
                 i + 1,
                 position.symbol.0,
@@ -68,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // For stock positions, get option chain information
             if let tastytrade::InstrumentType::Equity = position.instrument_type {
-                debug!("Getting option chain for {}", position.symbol.0);
+                debug!("Getting an option chain for a held equity");
                 match tasty
                     .nested_option_chain_for(position.symbol.as_symbol())
                     .await

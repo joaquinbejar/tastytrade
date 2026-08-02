@@ -73,13 +73,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let account = &accounts[0]; // Use the first account
-    info!("Using account: {}", account.number().0);
+    info!("Using account {}", account.number().redacted());
+    println!("Using account {}", account.number().0);
 
     // Check account balance and buying power
     let balance = account.balance().await?;
-    info!("Account balance:");
-    info!("  Cash balance: ${}", balance.cash_balance);
-    info!("  Buying power: ${}", balance.equity_buying_power);
+    // Figures go to the operator who asked for them, not into tracing.
+    println!("Account balance:");
+    println!("  Cash balance: ${}", balance.cash_balance);
+    println!("  Buying power: ${}", balance.equity_buying_power);
 
     // Create Symbol object
     let symbol = Symbol(UNDERLYING_SYMBOL.to_string());
@@ -217,15 +219,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = account.review_order(&order).await?;
     let dry_run_result = receipt.result();
 
-    info!("Dry run successful:");
-    info!(
+    info!("Dry run successful");
+    // The figures are the account's, so they go to the operator rather than
+    // into a trace that gets pasted somewhere.
+    println!("Dry run successful:");
+    println!(
         "  Buying power effect: ${} {}",
         dry_run_result.buying_power_effect.change_in_buying_power,
         dry_run_result
             .buying_power_effect
             .change_in_buying_power_effect
     );
-    info!(
+    println!(
         "  Estimated fees: ${} {}",
         dry_run_result.fee_calculation.total_fees, dry_run_result.fee_calculation.total_fees_effect
     );
@@ -283,9 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match account.place_reviewed_order(reviewed).await {
             Ok(result) => {
-                info!("Order placed successfully!");
-                info!("Order ID: {}", result.order.id.0);
-                info!("Status: {:?}", result.order.status);
+                info!("Order placed successfully");
+                println!("Order ID: {}", result.order.id.0);
+                println!("Status: {:?}", result.order.status);
                 info!(
                     "You have sold {} {} put(s) at strike ${}.",
                     CONTRACT_QUANTITY, symbol.0, target_strike.strike_price
