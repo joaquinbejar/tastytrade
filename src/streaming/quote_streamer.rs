@@ -6,16 +6,29 @@ use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 #[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SubscriptionId(usize);
 
+/// A cheap, clonable handle to the streamer's command loop and its channel.
+///
+/// This is everything a subscription needs from the streamer: a way to send
+/// commands. It used to hold a whole cloned `QuoteStreamer` instead, and that
+/// clone's `Drop` sent `Disconnect` on the shared command channel, so dropping
+/// a subscription tore down the connection the real streamer was still using.
+/// A handle owns no connection, so dropping one cannot end anybody's stream.
+#[derive(Clone)]
+struct StreamerHandle {
+    commands: Option<mpsc::Sender<DXLinkCommand>>,
+    channel_id: Option<u32>,
+}
+
 pub struct QuoteSubscription {
     pub id: SubscriptionId,
-    streamer: Arc<Mutex<QuoteStreamer>>,
+    streamer: StreamerHandle,
     event_types: i32, // Keep for compatibility with existing code
     event_receiver: flume::Receiver<dxfeed::Event>, // Keep for compatibility
     dxlink_receiver: mpsc::Receiver<MarketEvent>, // New DXLink event receiver
@@ -74,25 +87,12 @@ impl QuoteSubscription {
             .collect::<Vec<FeedSubscription>>();
 
         // Execute the subscription in a new async task
-        let streamer_clone = self.streamer.clone();
+        let handle = self.streamer.clone();
         let subscriptions_clone = subscriptions.clone();
         let sub_id = self.id.0 as u32;
 
         tokio::spawn(async move {
-            // Get the data we need from the mutex before awaiting
-            let (channel_id, tx) = {
-                if let Ok(streamer_guard) = streamer_clone.lock() {
-                    // Extract what we need from the guard
-                    let channel_id = streamer_guard.channel_id;
-                    let tx = streamer_guard.dxlink_command_tx.clone();
-                    (channel_id, tx)
-                } else {
-                    // If we can't lock the mutex, just return early
-                    return;
-                }
-            }; // MutexGuard is dropped here
-
-            // Now we're safe to await since we no longer hold the MutexGuard
+            let (channel_id, tx) = (handle.channel_id, handle.commands.clone());
             if let (Some(channel_id), Some(tx)) = (channel_id, tx) {
                 // Send subscribe command through the channel
                 if !subscriptions_clone.is_empty()
@@ -193,9 +193,7 @@ impl Clone for QuoteSubscription {
         let (tx, rx) = mpsc::channel(100);
 
         // Register this new channel with the streamer
-        if let Ok(streamer) = self.streamer.lock()
-            && let Some(cmd_tx) = &streamer.dxlink_command_tx
-        {
+        if let Some(cmd_tx) = &self.streamer.commands {
             let cmd_tx_clone = cmd_tx.clone();
             let sub_id = self.id.0;
 
@@ -244,7 +242,6 @@ pub struct QuoteStreamer {
     #[allow(dead_code)]
     dxlink_client: Option<DXLinkClient>,
     channel_id: Option<u32>,
-    subscriptions: Arc<Mutex<HashMap<Symbol, Vec<String>>>>,
     next_sub_id: usize,
     subscription_map: HashMap<SubscriptionId, QuoteSubscription>,
     dxlink_command_tx: Option<mpsc::Sender<DXLinkCommand>>,
@@ -418,11 +415,18 @@ impl QuoteStreamer {
         Ok(Self {
             dxlink_client: None, // We moved client into the command handler task
             channel_id: Some(channel_id),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
             next_sub_id: 0,
             subscription_map: HashMap::new(),
             dxlink_command_tx: Some(command_tx),
         })
+    }
+
+    /// A handle a subscription can hold without owning the connection.
+    fn handle(&self) -> StreamerHandle {
+        StreamerHandle {
+            commands: self.dxlink_command_tx.clone(),
+            channel_id: self.channel_id,
+        }
     }
 
     /// Create a subscription to market data. See `dxfeed::DXF_ET_*` for possible event types.
@@ -464,7 +468,7 @@ impl QuoteStreamer {
         // Create subscription
         let subscription = QuoteSubscription {
             id,
-            streamer: Arc::new(Mutex::new(self.clone())), // Clone self
+            streamer: self.handle(),
             event_types: flags,
             event_receiver,
             dxlink_receiver: dxlink_rx,
@@ -574,37 +578,82 @@ impl QuoteStreamer {
     }
 }
 
-// Implement Clone for QuoteStreamer to support Arc<Mutex<Self>>
-impl Clone for QuoteStreamer {
-    fn clone(&self) -> Self {
-        Self {
-            dxlink_client: None, // Don't clone the client
-            channel_id: self.channel_id,
-            subscriptions: self.subscriptions.clone(),
-            next_sub_id: self.next_sub_id,
-            subscription_map: HashMap::new(), // Create a new empty map
-            dxlink_command_tx: self.dxlink_command_tx.clone(),
+impl Drop for QuoteStreamer {
+    fn drop(&mut self) {
+        // No per-subscription unsubscribe loop here. Disconnecting ends every
+        // subscription on the far side anyway, and close_sub spawns a task per
+        // subscription, which is both redundant and a panic waiting to happen
+        // when a streamer is dropped outside a Tokio runtime.
+
+        // try_send rather than spawning: Drop can run outside a Tokio runtime,
+        // where tokio::spawn panics, and a disconnect that panics while
+        // unwinding is worse than one that is dropped. The command loop exits
+        // on its own when this sender is the last one and goes away.
+        if let Some(tx) = &self.dxlink_command_tx
+            && let Err(e) = tx.try_send(DXLinkCommand::Disconnect)
+        {
+            warn!("Could not signal disconnect on drop: {}", e);
         }
     }
 }
 
-impl Drop for QuoteStreamer {
-    fn drop(&mut self) {
-        // Clean up all subscriptions
-        let subs_to_close: Vec<SubscriptionId> = self.subscription_map.keys().cloned().collect();
-        for id in subs_to_close {
-            self.close_sub(id);
-        }
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
 
-        // Signal disconnection
-        if let Some(tx) = &self.dxlink_command_tx {
-            let tx_clone = tx.clone();
+    /// The regression this change exists for: a subscription used to hold a
+    /// cloned `QuoteStreamer`, and that clone's `Drop` sent `Disconnect` on the
+    /// shared command channel. Dropping a subscription therefore tore down the
+    /// connection the real streamer was still using.
+    ///
+    /// A handle owns no connection, so dropping one has to leave the channel
+    /// alive and silent.
+    #[tokio::test]
+    async fn dropping_a_handle_does_not_disconnect_anyone() {
+        let (tx, mut rx) = mpsc::channel::<DXLinkCommand>(8);
 
-            tokio::spawn(async move {
-                if let Err(e) = tx_clone.send(DXLinkCommand::Disconnect).await {
-                    warn!("Error sending disconnect command: {}", e);
-                }
-            });
-        }
+        let handle = StreamerHandle {
+            commands: Some(tx.clone()),
+            channel_id: Some(1),
+        };
+        let second = handle.clone();
+
+        drop(handle);
+        drop(second);
+
+        // Nothing was sent, and the channel is still usable by its owner.
+        assert!(
+            rx.try_recv().is_err(),
+            "dropping a handle must not send a command"
+        );
+        tx.send(DXLinkCommand::Disconnect)
+            .await
+            .expect("the owner's channel is still alive after handles are dropped");
+        assert!(matches!(rx.recv().await, Some(DXLinkCommand::Disconnect)));
+    }
+
+    /// `Drop` must not need a Tokio runtime. `try_send` is synchronous;
+    /// `tokio::spawn` would panic here, which is what this asserts by simply
+    /// not panicking.
+    #[test]
+    fn dropping_the_owner_outside_a_runtime_does_not_panic() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+
+        let streamer = QuoteStreamer {
+            dxlink_client: None,
+            channel_id: Some(1),
+            next_sub_id: 0,
+            subscription_map: HashMap::new(),
+            dxlink_command_tx: Some(tx),
+        };
+
+        drop(streamer);
+
+        // The disconnect was queued synchronously rather than spawned.
+        let mut rx = rx;
+        assert!(
+            matches!(rx.try_recv(), Ok(DXLinkCommand::Disconnect)),
+            "the owner must signal disconnect on drop"
+        );
     }
 }
