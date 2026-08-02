@@ -89,6 +89,28 @@
 //! Logging in without `TASTYTRADE_USERNAME` and `TASTYTRADE_PASSWORD` fails
 //! locally with `TastyTradeError::ConfigError` and never reaches the network.
 //!
+//! ## Logging
+//!
+//! This crate emits `tracing` events and does **not** install a subscriber on
+//! your behalf: process-global logging belongs to the application. Loading
+//! configuration touches no global state, so a program that already owns
+//! `tracing` keeps its own setup.
+//!
+//! Binaries that do not want to build one can opt in:
+//!
+//! ```rust,no_run
+//! use tastytrade::utils::logger::{try_setup_logger, LoggerInit};
+//!
+//! match try_setup_logger() {
+//!     LoggerInit::Installed => {}
+//!     LoggerInit::AlreadyInstalled => { /* the application owns it */ }
+//!     LoggerInit::Unsupported => { /* wasm32 */ }
+//! }
+//! ```
+//!
+//! Without a subscriber the environment warnings above are not printed, so a
+//! binary that cares about them should install one before building the config.
+//!
 //!  ## Setup Instructions
 //!  
 //!  1. Clone the repository:
