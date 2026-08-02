@@ -755,6 +755,48 @@ fn pending_replay(registry: &Registry) -> Vec<(u32, Vec<FeedSubscription>)> {
         .collect()
 }
 
+/// Records that `sub_id` wants events for these symbols.
+///
+/// Called before the subscribe is written, so no event can arrive for a symbol
+/// that has no route yet.
+async fn record_routes(
+    routing: &Arc<RwLock<EventRouting>>,
+    sub_id: u32,
+    subscriptions: &[FeedSubscription],
+) {
+    let mut routing = routing.write().await;
+    for sub in subscriptions {
+        routing
+            .symbol_subs
+            .entry(sub.symbol.clone())
+            .or_default()
+            .insert(sub_id);
+    }
+}
+
+/// Takes those routes back.
+///
+/// Used when the venue refuses the subscribe and when an unsubscribe lands. A
+/// refused subscribe that keeps its route means the subscription receives
+/// events for a symbol it was told it does not have, as soon as anybody else
+/// subscribes to that symbol — and `add_symbols` has already given up its
+/// reservation by then, so nothing else would ever clean it up.
+async fn forget_routes(
+    routing: &Arc<RwLock<EventRouting>>,
+    sub_id: u32,
+    subscriptions: &[FeedSubscription],
+) {
+    let mut routing = routing.write().await;
+    for sub in subscriptions {
+        if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
+            subs.remove(&sub_id);
+            if subs.is_empty() {
+                routing.symbol_subs.remove(&sub.symbol);
+            }
+        }
+    }
+}
+
 /// Runs one connection until it is lost or the owner goes away.
 async fn run_connection(
     client: &mut DXLinkClient,
@@ -781,23 +823,18 @@ async fn run_connection(
             // with. After a reconnect that number is stale, and only this loop
             // knows the live one.
             DXLinkCommand::Subscribe(subscriptions, sub_id, ack) => {
-                // Record symbol routing before subscribing, so no event can
-                // arrive for a symbol that has no route yet.
-                {
-                    let mut routing = routing.write().await;
-                    for sub in &subscriptions {
-                        routing
-                            .symbol_subs
-                            .entry(sub.symbol.clone())
-                            .or_default()
-                            .insert(sub_id);
-                    }
-                }
-                match client.subscribe(channel_id, subscriptions).await {
+                record_routes(routing, sub_id, &subscriptions).await;
+
+                match client.subscribe(channel_id, subscriptions.clone()).await {
                     Ok(()) => answer(ack, Ok(())),
                     Err(e) => {
                         let lost = is_connection_lost(&e);
                         error!("Error subscribing to symbols: {}", e);
+
+                        // The route was recorded before the write, so a
+                        // refused write has to take it back.
+                        forget_routes(routing, sub_id, &subscriptions).await;
+
                         answer(
                             ack,
                             Err(TastyTradeError::Streaming(format!(
@@ -818,15 +855,7 @@ async fn run_connection(
                 let outcome = client.unsubscribe(channel_id, subscriptions.clone()).await;
 
                 if outcome.is_ok() {
-                    let mut routing = routing.write().await;
-                    for sub in &subscriptions {
-                        if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
-                            subs.remove(&sub_id);
-                            if subs.is_empty() {
-                                routing.symbol_subs.remove(&sub.symbol);
-                            }
-                        }
-                    }
+                    forget_routes(routing, sub_id, &subscriptions).await;
                 }
 
                 match outcome {
@@ -1411,6 +1440,48 @@ mod reconnect_tests {
             "an event that arrived is the milestone the backoff resets on"
         );
         forwarder.abort();
+    }
+
+    /// A subscription the venue refused must not keep its route. `add_symbols`
+    /// gives up its reservation on failure, so nothing else would ever remove
+    /// it, and the subscription would start receiving events for that symbol
+    /// as soon as anybody else subscribed to it.
+    #[tokio::test]
+    async fn a_refused_subscribe_takes_its_route_back() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let wanted = feed_subscriptions(&[Symbol::from("AAPL")], dxfeed::DXF_ET_QUOTE);
+
+        // Two subscriptions ask for the same symbol; one of them is refused.
+        record_routes(&routing, 3, &wanted).await;
+        record_routes(&routing, 4, &wanted).await;
+        forget_routes(&routing, 3, &wanted).await;
+
+        let routes = routing.read().await;
+        let subs = routes
+            .symbol_subs
+            .get("AAPL")
+            .expect("the accepted subscription still holds the symbol");
+        assert!(
+            !subs.contains(&3),
+            "a refused subscribe must not leave a route behind"
+        );
+        assert!(subs.contains(&4), "the accepted one keeps its route");
+    }
+
+    /// The symbol goes with the last subscription that wanted it, so an
+    /// unrouted event is dropped rather than delivered to a stale id.
+    #[tokio::test]
+    async fn the_last_route_removed_takes_the_symbol_with_it() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let wanted = feed_subscriptions(&[Symbol::from("AAPL")], dxfeed::DXF_ET_QUOTE);
+
+        record_routes(&routing, 3, &wanted).await;
+        forget_routes(&routing, 3, &wanted).await;
+
+        assert!(
+            routing.read().await.symbol_subs.is_empty(),
+            "an empty set must not be left behind as a route"
+        );
     }
 
     /// The budget is bounded, and running out is reported rather than
