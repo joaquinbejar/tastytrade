@@ -1,0 +1,74 @@
+# Dependency policy for tastytrade.
+#
+# This crate does not commit Cargo.lock, so a developer's stale local lock and
+# the graph a consumer actually resolves can differ by months. Running
+# `cargo deny check` against the stale lock in this working copy reported ten
+# advisories across the TLS stack that a fresh resolution does not select at
+# all. CI therefore resolves the graph from scratch before checking, and this
+# file is what "acceptable" means.
+#
+# Findings are handled by class rather than lumped together:
+#   vulnerability  deny. A reachable runtime vulnerability is P0.
+#   unmaintained   deny, with narrow documented exceptions below.
+#   yanked         deny. A yanked version is the maintainer saying do not use it.
+#   duplicate      warn. Transitive version skew is normal and not ours to fix.
+#   license        deny anything outside the allow list.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+# Every exception carries a reason, an owner and an expiry, in the form
+# `owner=<login> expires=<YYYY-MM-DD>`. cargo-deny has no expiring-ignore
+# feature, so `make deny-expiry` enforces the date: once it passes, the gate
+# fails and the decision gets made again instead of being inherited forever.
+ignore = [
+    { id = "RUSTSEC-2021-0141", reason = "dotenv is unmaintained and superseded by dotenvy. It is used only by TastyTradeConfig::from_env to read a local .env the developer wrote, before any network or credential handling, and the advisory reports maintenance status rather than a vulnerability. Swapping it for dotenvy is a small self-contained change tracked separately; this exception lets the rest of the policy be enforced today instead of after that swap. owner=joaquinbejar expires=2026-12-31" },
+]
+
+[licenses]
+version = 2
+# Every license currently present in the resolved graph. Extending this list is
+# a deliberate act: this crate ships under MIT and must not pick up a copyleft
+# dependency by accident.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # webpki-root-certs. Covers the Mozilla root CA trust data the TLS stack
+    # embeds, not code, and imposes no obligation on a crate that ships it.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# ring ships a combined licence text that no detector scores confidently.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Version skew among transitive dependencies is reported, not fatal: it is
+# almost never actionable from here, and a hard failure would make the gate
+# hostage to other people's release cadence.
+multiple-versions = "warn"
+# A wildcard requirement in our own manifests is ours to fix.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
