@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 use crate::TastyTradeError;
 use crate::types::balance::Balance;
@@ -67,6 +68,14 @@ pub struct HandlerAction {
     /// An optional value associated with the action.  This value, if present,
     /// must implement the `erased_serde::Serialize`, `Send`, and `Sync` traits.
     value: Option<Box<dyn erased_serde::Serialize + Send + Sync>>,
+
+    /// Where the writer reports what actually happened.
+    ///
+    /// Reaching the in-process queue is not the same as reaching the venue.
+    /// Serialisation and the websocket write both happen later and both can
+    /// fail, so the outcome travels back rather than the caller being told
+    /// "sent" while the work is still ahead of it.
+    ack: Option<oneshot::Sender<TastyResult<()>>>,
 }
 
 /// Represents a message related to an account.
@@ -234,20 +243,20 @@ impl AccountStreamer {
                     }
                 };
 
-                let data = frame.into_data();
-                let event: AccountEvent = match serde_json::from_slice(&data) {
-                    Ok(event) => event,
-                    Err(e) => {
-                        // The frame is account data, so only its shape is
-                        // reported. One unreadable frame is not a reason to
-                        // drop the stream the caller is relying on.
-                        warn!(
-                            "Skipping an unreadable account frame ({} bytes): {}",
-                            data.len(),
-                            e
-                        );
-                        continue;
+                // Control frames are protocol noise, not account data.
+                // Feeding them to serde produced a warning per heartbeat.
+                let data = match frame {
+                    Message::Text(text) => text.as_bytes().to_vec(),
+                    Message::Binary(bytes) => bytes.to_vec(),
+                    Message::Close(_) => {
+                        debug!("Account websocket closed by the venue");
+                        break;
                     }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                };
+
+                let Some(event) = decode_account_frame(&data) else {
+                    continue;
                 };
 
                 if event_sender.send_async(event).await.is_err() {
@@ -260,28 +269,41 @@ impl AccountStreamer {
 
         tokio::spawn(async move {
             while let Ok(action) = action_receiver.recv_async().await {
+                let ack = action.ack;
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
                     auth_token: writer_token.clone(),
                     action: action.action,
                     value: action.value,
                 };
-                let message = match serde_json::to_string(&message) {
+                let text = match serde_json::to_string(&message) {
                     Ok(text) => text,
                     Err(e) => {
                         // A caller's own Serialize failed. Their action is
                         // lost, which they must be told about, but it is not a
                         // reason to tear down the connection.
-                        error!(
-                            "Dropping an account action that could not be serialized: {}",
-                            e
+                        error!("Dropping an account action that could not be serialized: {e}");
+                        report(
+                            ack,
+                            Err(TastyTradeError::Streaming(
+                                "the action could not be serialized".to_string(),
+                            )),
                         );
                         continue;
                     }
                 };
 
-                if write.send(Message::Text(message.into())).await.is_err() {
-                    debug!("Account websocket writer ended");
-                    break;
+                match write.send(Message::Text(text.into())).await {
+                    Ok(()) => report(ack, Ok(())),
+                    Err(e) => {
+                        debug!("Account websocket writer ended: {e}");
+                        report(
+                            ack,
+                            Err(TastyTradeError::Streaming(
+                                "the account stream closed before the action was sent".to_string(),
+                            )),
+                        );
+                        break;
+                    }
                 }
             }
         });
@@ -294,6 +316,9 @@ impl AccountStreamer {
                     .send_async(HandlerAction {
                         action: SubRequestAction::Heartbeat,
                         value: None,
+                        // Nobody is waiting on a heartbeat: if it fails the
+                        // socket is gone and the writer's own exit says so.
+                        ack: None,
                     })
                     .await
                     .is_err()
@@ -353,18 +378,30 @@ impl AccountStreamer {
         action: SubRequestAction,
         value: Option<T>,
     ) -> TastyResult<()> {
+        let (ack, answer) = oneshot::channel();
+
         self.action_sender
             .send_async(HandlerAction {
                 action,
                 value: value
                     .map(|inner| Box::new(inner) as Box<dyn erased_serde::Serialize + Send + Sync>),
+                ack: Some(ack),
             })
             .await
             .map_err(|_| {
                 TastyTradeError::Streaming(
                     "the account stream is closed; reconnect before sending again".to_string(),
                 )
-            })
+            })?;
+
+        // Reaching the queue is not the same as reaching the venue, so wait for
+        // the writer to say what happened rather than reporting success while
+        // the work is still ahead of us.
+        answer.await.map_err(|_| {
+            TastyTradeError::Streaming(
+                "the account stream closed before the action was sent".to_string(),
+            )
+        })?
     }
 
     /// Receives the next account event asynchronously.
@@ -375,6 +412,39 @@ impl AccountStreamer {
     ///
     pub async fn get_event(&self) -> std::result::Result<AccountEvent, flume::RecvError> {
         self.event_receiver.recv_async().await
+    }
+}
+
+/// Sends the outcome back to whoever is waiting, if anyone still is.
+///
+/// A caller that stopped waiting is not an error: dropping the receiver is how
+/// a fire-and-forget caller opts out.
+fn report(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()>) {
+    if let Some(ack) = ack {
+        let _ = ack.send(outcome);
+    }
+}
+
+/// Decodes one account frame, reporting a failure without its contents.
+///
+/// Split out so the privacy rule is testable without a socket. `serde_json`'s
+/// `Display` renders the rejected value on a type mismatch, so an account
+/// number in a frame would land in the log through the error itself — the
+/// same trap this crate closed on the REST path.
+fn decode_account_frame(data: &[u8]) -> Option<AccountEvent> {
+    match serde_json::from_slice::<AccountEvent>(data) {
+        Ok(event) => Some(event),
+        Err(e) => {
+            warn!(
+                "Skipping an unreadable account frame ({} bytes): {:?} error at line {}, column {}",
+                data.len(),
+                e.classify(),
+                e.line(),
+                e.column()
+            );
+            debug!("account frame decode error: {e}");
+            None
+        }
     }
 }
 
@@ -392,5 +462,89 @@ impl TastyTrade {
     /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.
     pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod frame_privacy_tests {
+    use super::*;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+    use tracing::Level;
+
+    /// A value that must never reach a log, distinctive enough that a
+    /// substring search cannot match it by accident.
+    const ACCOUNT_NUMBER: &str = "SENTINEL-5WX00042";
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Captured {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("not poisoned in tests")).into_owned()
+        }
+    }
+
+    impl io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("not poisoned in tests")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn decode_capturing(data: &[u8], level: Level) -> (Option<AccountEvent>, String) {
+        let logs = Captured::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        let event = tracing::subscriber::with_default(subscriber, || decode_account_frame(data));
+        (event, logs.text())
+    }
+
+    /// The trap this crate already closed once on the REST path: a type
+    /// mismatch renders the rejected value inside the serde error, so logging
+    /// the error is logging the account data.
+    #[test]
+    fn an_unreadable_frame_never_logs_its_contents_at_warn() {
+        // `status` wants a string; a number there makes serde quote the
+        // neighbouring context, and the frame carries an account number.
+        let frame = format!(
+            r#"{{"type":"Order","data":{{"account-number":"{ACCOUNT_NUMBER}","status":12345}}}}"#
+        );
+
+        let (event, logs) = decode_capturing(frame.as_bytes(), Level::WARN);
+
+        assert!(event.is_none(), "the frame must not decode");
+        assert!(
+            !logs.contains(ACCOUNT_NUMBER),
+            "the account number reached the logs:\n{logs}"
+        );
+        assert!(
+            logs.contains("bytes)") && logs.contains("error at line"),
+            "the failure must still be diagnosable:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn the_detail_is_available_one_level_down() {
+        let frame = br#"{ not json at all"#;
+        let (event, logs) = decode_capturing(frame, Level::DEBUG);
+
+        assert!(event.is_none());
+        assert!(
+            logs.contains("decode error"),
+            "DEBUG keeps the full error:\n{logs}"
+        );
     }
 }
