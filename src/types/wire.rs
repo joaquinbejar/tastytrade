@@ -37,7 +37,7 @@ impl WireNumber {
 
         Decimal::from_str(text.trim()).map_err(|e| {
             E::custom(format!(
-                "expected a decimal quantity, got something unparseable ({e})"
+                "expected a decimal value, got something unparseable ({e})"
             ))
         })
     }
@@ -121,7 +121,7 @@ mod tests {
             .expect_err("garbage must not silently become zero");
 
         assert!(
-            error.to_string().contains("decimal quantity"),
+            error.to_string().contains("decimal value"),
             "the error should say what was expected: {error}"
         );
     }
