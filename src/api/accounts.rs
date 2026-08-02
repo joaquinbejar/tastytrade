@@ -3,6 +3,7 @@ use crate::api::base::TastyResult;
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +38,8 @@ pub struct AccountDetails {
     /// External identifier, when the account carries one.
     pub external_id: Option<String>,
     /// Timestamp the account was opened, RFC 3339.
-    pub opened_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub opened_at: DateTime<FixedOffset>,
     /// User-facing name of the account.
     pub nickname: String,
     /// Account type as named by the broker, e.g. `Individual`.
@@ -64,11 +66,13 @@ pub struct AccountDetails {
     /// which is not the same as `false`.
     pub is_foreign: Option<bool>,
     /// Date the account was funded, when it has been.
-    pub funding_date: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub funding_date: Option<NaiveDate>,
     /// Whether the account has been closed. `None` when the venue omits it.
     pub is_closed: Option<bool>,
     /// Timestamp the account record was created.
-    pub created_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub created_at: Option<DateTime<FixedOffset>>,
     /// Stated investment objective, e.g. `SPECULATION`.
     pub investment_objective: Option<String>,
     /// Whether the account is approved to trade futures.

@@ -1,6 +1,7 @@
 use super::{base::Items, quote_streaming::DxFeedSymbol};
 use crate::api::base::TastyResult;
 use crate::{AsSymbol, Symbol, TastyTrade};
+use chrono::NaiveDate;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -63,7 +64,8 @@ pub struct NestedOptionChain {
 #[serde(rename_all = "kebab-case")]
 pub struct Expiration {
     pub expiration_type: String,
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
     pub days_to_expiration: u64,
     pub settlement_type: String,
     pub strikes: Vec<Strike>,
@@ -136,7 +138,10 @@ mod tests {
 
         let expiration: Expiration = serde_json::from_str(json).unwrap();
         assert_eq!(expiration.expiration_type, "Regular");
-        assert_eq!(expiration.expiration_date, "2024-09-20");
+        assert_eq!(
+            expiration.expiration_date,
+            NaiveDate::from_ymd_opt(2024, 9, 20).unwrap()
+        );
         assert_eq!(expiration.days_to_expiration, 30);
         assert_eq!(expiration.settlement_type, "PM");
         assert_eq!(expiration.strikes.len(), 1);

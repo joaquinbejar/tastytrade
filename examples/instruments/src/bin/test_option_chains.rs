@@ -74,9 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Group by expiration
                     let mut expirations = std::collections::HashMap::new();
                     for option in &options {
-                        *expirations
-                            .entry(option.expiration_date.clone())
-                            .or_insert(0) += 1;
+                        *expirations.entry(option.expiration_date).or_insert(0) += 1;
                     }
 
                     info!("   📅 Found {} unique expiration dates", expirations.len());

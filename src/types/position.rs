@@ -1,6 +1,7 @@
 use super::order::{PriceEffect, Symbol};
 use crate::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -78,18 +79,22 @@ pub struct FullPosition {
     /// The effect of the realized day gain (e.g., "Debit", "Credit").
     pub realized_day_gain_effect: String,
     /// The date of the realized day gain.
-    pub realized_day_gain_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub realized_day_gain_date: NaiveDate,
     /// The realized gain for today. Uses arbitrary precision for accuracy.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub realized_today: Decimal,
     /// The effect of the realized gain for today (e.g., "Debit", "Credit").
     pub realized_today_effect: String,
     /// The date of the realized gain for today.
-    pub realized_today_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub realized_today_date: NaiveDate,
     /// The date and time when the position was created.
-    pub created_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub created_at: DateTime<FixedOffset>,
     /// The date and time when the position was last updated.
-    pub updated_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub updated_at: DateTime<FixedOffset>,
 }
 
 /// Represents a brief overview of a position.
@@ -139,9 +144,11 @@ pub struct BriefPosition {
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub realized_today: Decimal,
     /// The timestamp of when the position was created.
-    pub created_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub created_at: DateTime<FixedOffset>,
     /// The timestamp of when the position was last updated.
-    pub updated_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub updated_at: DateTime<FixedOffset>,
 }
 
 #[cfg(test)]
