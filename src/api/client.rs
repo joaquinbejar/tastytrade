@@ -107,6 +107,16 @@ impl TastyTrade {
     }
 
     pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
+        // Fail here rather than posting an empty credential pair to the venue.
+        // The message names the variables, never their values.
+        if !config.has_valid_credentials() {
+            return Err(crate::TastyTradeError::ConfigError(
+                "Missing tastytrade credentials: set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD, \
+                 or load a configuration file that provides both"
+                    .to_string(),
+            ));
+        }
+
         let creds = Self::do_login_request(
             &config.username,
             &config.password,
