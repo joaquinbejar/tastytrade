@@ -92,23 +92,39 @@ fn sanitize_api_error(error: ApiError) -> ApiError {
     }
 }
 
-pub trait FromTastyResponse<T: DeserializeOwned + Serialize + std::fmt::Debug> {
-    fn from_tasty(resp: Response<T>) -> Self;
+/// Converts a decoded response envelope into the value a caller asked for.
+///
+/// Fallible because not every envelope can produce every target: a paginated
+/// result needs a pagination block the venue may not have sent, and a library
+/// must report that rather than panic in the caller's process.
+pub trait FromTastyResponse<T: DeserializeOwned + Serialize + std::fmt::Debug>: Sized {
+    /// Builds `Self` from `resp`, or explains why it cannot.
+    fn from_tasty(resp: Response<T>) -> TastyResult<Self>;
 }
 
 impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<T> for T {
-    fn from_tasty(resp: Response<T>) -> Self {
-        resp.data
+    fn from_tasty(resp: Response<T>) -> TastyResult<Self> {
+        Ok(resp.data)
     }
 }
 
 impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<T>>
     for Paginated<T>
 {
-    fn from_tasty(resp: Response<Items<T>>) -> Self {
-        let pagination = resp
-            .pagination
-            .expect("Pagination should be present for paginated responses");
+    fn from_tasty(resp: Response<Items<T>>) -> TastyResult<Self> {
+        // The venue decides whether a listing paginates. Asking for a
+        // Paginated<T> from a response without a pagination block is a
+        // mismatch the caller can act on, not a reason to abort their process.
+        let Some(pagination) = resp.pagination else {
+            // context is venue-provided and mirrors the request path, so it
+            // carries the account number on account-scoped endpoints. Same
+            // redaction as everywhere else.
+            return Err(crate::TastyTradeError::Unknown(format!(
+                "response for {} carried no pagination block; \
+                 request this endpoint as a plain listing instead",
+                redact_account_path(&resp.context)
+            )));
+        };
 
         // Counts and offsets describe the shape of the page, not its contents.
         debug!(
@@ -119,10 +135,10 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
             pagination.page_offset
         );
 
-        Paginated {
+        Ok(Paginated {
             items: resp.data.items,
             pagination,
-        }
+        })
     }
 }
 
@@ -154,7 +170,7 @@ impl TastyTrade {
         // Deliberately not the email: it identifies the account holder, and
         // the caller already knows which credentials it supplied.
         debug!("Login successful");
-        let client = Self::create_client(&creds);
+        let client = Self::create_client(&creds)?;
 
         Ok(Self {
             client,
@@ -163,26 +179,30 @@ impl TastyTrade {
         })
     }
 
-    fn create_client(creds: &LoginResponse) -> reqwest::Client {
+    fn create_client(creds: &LoginResponse) -> TastyResult<reqwest::Client> {
         let mut headers = HeaderMap::new();
 
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&creds.session_token).unwrap(),
-        );
+        // A session token with bytes a header cannot carry is a venue
+        // response this crate cannot use. The error says so without quoting
+        // the token.
+        let token = HeaderValue::from_str(&creds.session_token).map_err(|_| {
+            crate::TastyTradeError::Auth(
+                "the session token returned by the venue is not a valid header value".to_string(),
+            )
+        })?;
+        headers.insert(header::AUTHORIZATION, token);
         headers.insert(
             header::CONTENT_TYPE,
-            HeaderValue::from_str("application/json").unwrap(),
+            HeaderValue::from_static("application/json"),
         );
-        headers.insert(
-            header::USER_AGENT,
-            HeaderValue::from_str("tastytrade").unwrap(),
-        );
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("tastytrade"));
 
         ClientBuilder::new()
             .default_headers(headers)
             .build()
-            .expect("Could not create client")
+            .map_err(|e| {
+                crate::TastyTradeError::Connection(format!("could not build the HTTP client: {e}"))
+            })
     }
 
     async fn do_login_request(
@@ -313,7 +333,7 @@ impl TastyTrade {
         })?;
 
         match result {
-            TastyApiResponse::Success(s) => Ok(R::from_tasty(s)),
+            TastyApiResponse::Success(s) => R::from_tasty(s),
             TastyApiResponse::Error { error } => Err(error.into()),
         }
     }
@@ -335,7 +355,7 @@ impl TastyTrade {
         let result = self
             .client
             .post(url)
-            .body(serde_json::to_string(&payload).unwrap())
+            .body(serde_json::to_string(&payload)?)
             .send()
             .await?
             .json::<TastyApiResponse<R>>()
