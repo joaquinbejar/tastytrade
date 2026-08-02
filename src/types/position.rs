@@ -60,8 +60,8 @@ pub struct FullPosition {
     /// The average daily market close price of the instrument. Uses arbitrary precision for accuracy.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub average_daily_market_close_price: Decimal,
-    /// The multiplier for the instrument. Uses floating-point deserialization for the Decimal type.
-    #[serde(with = "rust_decimal::serde::float")]
+    /// The multiplier for the instrument.
+    #[serde(with = "crate::types::wire::decimal")]
     pub multiplier: Decimal,
     /// The effect of the price on the account (Debit, Credit, or None).
     pub cost_effect: PriceEffect,
@@ -121,7 +121,7 @@ pub struct BriefPosition {
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub average_open_price: Decimal,
     /// The multiplier for the instrument.
-    #[serde(with = "rust_decimal::serde::float")]
+    #[serde(with = "crate::types::wire::decimal")]
     pub multiplier: Decimal,
     /// The effect of the price on the account (Debit, Credit, or None).
     pub cost_effect: PriceEffect,
@@ -130,7 +130,7 @@ pub struct BriefPosition {
     /// A flag indicating whether the position is frozen.
     pub is_frozen: bool,
     /// The restricted quantity of the instrument.
-    #[serde(with = "rust_decimal::serde::float")]
+    #[serde(with = "crate::types::wire::decimal")]
     pub restricted_quantity: Decimal,
     /// The realized day gain for the position.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]

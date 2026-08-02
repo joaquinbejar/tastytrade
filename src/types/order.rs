@@ -249,8 +249,12 @@ pub struct LiveOrderRecord {
     pub time_in_force: TimeInForce,
     /// The type of order (e.g., Limit, Market, Stop).
     pub order_type: OrderType,
-    /// The size of the order (quantity of the underlying asset).
-    pub size: u64,
+    /// The size of the order.
+    ///
+    /// `Decimal` rather than an integer: cryptocurrencies trade in fractions,
+    /// and a corporate action can leave an equity position with one too.
+    #[serde(with = "crate::types::wire::decimal")]
+    pub size: Decimal,
     /// The symbol of the underlying asset being traded.
     pub underlying_symbol: Symbol,
     /// The price of the order.  Uses `rust_decimal` for arbitrary precision
@@ -285,9 +289,11 @@ pub struct LiveOrderLeg {
     /// The trading symbol for this leg.
     pub symbol: Symbol,
     /// The total quantity of the order for this leg.
-    pub quantity: u64,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub quantity: Decimal,
     /// The remaining quantity to be filled for this leg.
-    pub remaining_quantity: u64,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub remaining_quantity: Decimal,
     /// The action associated with this leg (e.g., Buy, Sell).
     pub action: Action,
     /// A vector of strings representing fills for this leg.  Further
@@ -336,8 +342,11 @@ pub struct OrderLeg {
     instrument_type: InstrumentType,
     /// The trading symbol for the instrument.
     symbol: Symbol,
-    /// The quantity of the instrument to be traded.  Serialized as a float.
-    #[serde(with = "rust_decimal::serde::float")]
+    /// The quantity of the instrument to be traded.
+    ///
+    /// Read from either wire shape and never through `f64`, so a fractional
+    /// crypto quantity survives the round trip.
+    #[serde(with = "crate::types::wire::decimal")]
     quantity: Decimal,
     /// The action to be taken (e.g., Buy, Sell).
     action: Action,
@@ -397,7 +406,8 @@ pub struct DryRunRecord {
     /// The type of the dry-run order (e.g., Limit, Market).
     pub order_type: OrderType,
     /// The size of the dry-run order.
-    pub size: u64,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub size: Decimal,
     /// The underlying symbol for the dry-run order.
     pub underlying_symbol: Symbol,
     /// The price of the dry-run order.  Uses arbitrary precision deserialization.
