@@ -5,8 +5,8 @@ use crate::{AsSymbol, Symbol, TastyResult, TastyTradeError};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -32,19 +32,40 @@ pub struct QuoteSubscription {
     event_types: i32, // Keep for compatibility with existing code
     event_receiver: flume::Receiver<dxfeed::Event>, // Keep for compatibility
     dxlink_receiver: mpsc::Receiver<MarketEvent>, // New DXLink event receiver
-    symbols: Vec<Symbol>, // To track subscribed symbols
+    /// The symbols this subscription is actually subscribed to.
+    ///
+    /// Shared with the copy the streamer keeps in its `subscription_map`, and
+    /// that sharing is the fix rather than an optimisation: `create_sub`
+    /// stores one clone and hands the caller another, so a `Vec` on each
+    /// meant `add_symbols` updated the caller's copy while `close_sub` read
+    /// the streamer's, which stayed empty forever. Unsubscribes were
+    /// therefore derived from an empty list and never sent, leaving the
+    /// subscription alive on the venue.
+    ///
+    /// A set, so adding the same symbol twice subscribes once.
+    symbols: Arc<Mutex<BTreeSet<Symbol>>>,
 }
 
 impl QuoteSubscription {
     /// Add symbols to subscription. See the "Note on symbology" section in [`QuoteSubscription`]
     pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
-        let symbols: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
+        let requested: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
 
-        // Update subscribed symbols internally
-        let mut my_symbols = Vec::new();
-        for sym in &symbols {
-            my_symbols.push(sym.clone());
-        }
+        // Only symbols that are not already subscribed. Asking the venue twice
+        // for the same symbol is at best wasted work and at worst a duplicate
+        // stream.
+        // Checked and reserved in one lock section. Filtering against the set
+        // and inserting afterwards let two concurrent callers both see a
+        // symbol as absent and both subscribe to it. Reserving here means the
+        // second caller sees the first one's claim; a failure below removes
+        // the reservation again.
+        let symbols: Vec<Symbol> = {
+            let mut known = symbols_of(&self.symbols);
+            requested
+                .into_iter()
+                .filter(|sym| known.insert(sym.clone()))
+                .collect()
+        };
 
         // Prepare subscription requests for DXLink
         let subscriptions = symbols
@@ -102,15 +123,43 @@ impl QuoteSubscription {
             ));
         };
 
-        tx.send(DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id))
+        let (ack, answered) = oneshot::channel();
+        let queued = tx
+            .send(DXLinkCommand::Subscribe(
+                channel_id,
+                subscriptions,
+                sub_id,
+                Some(ack),
+            ))
             .await
             .map_err(|_| {
                 TastyTradeError::Streaming(
                     "the quote streamer is closed; reconnect before subscribing".to_string(),
                 )
-            })?;
+            });
 
-        Ok(())
+        // Reaching the command queue is not the venue accepting the
+        // subscription: the loop can still be refused by DXLink. Wait for the
+        // real answer, and give back the reservation if it is a refusal, so a
+        // symbol that is not subscribed is never later unsubscribed as though
+        // it were.
+        let outcome = match queued {
+            Ok(()) => answered.await.unwrap_or_else(|_| {
+                Err(TastyTradeError::Streaming(
+                    "the quote streamer closed before the subscription was confirmed".to_string(),
+                ))
+            }),
+            Err(e) => Err(e),
+        };
+
+        if outcome.is_err() {
+            let mut known = symbols_of(&self.symbols);
+            for symbol in &symbols {
+                known.remove(symbol);
+            }
+        }
+
+        outcome
     }
 
     /// Receive one event from feed. Yields if there are no events.
@@ -224,9 +273,39 @@ impl Clone for QuoteSubscription {
 // Commands for DXLink client to execute.
 // Subscribe/Unsubscribe carry the subscription id so events can be routed
 // back to the subscription that requested each symbol.
+/// Replies to whoever is waiting on a command, if anyone still is.
+///
+/// A caller that stopped waiting is not an error: dropping the receiver is how
+/// a fire-and-forget caller opts out.
+fn answer(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()>) {
+    if let Some(ack) = ack {
+        let _ = ack.send(outcome);
+    }
+}
+
+/// Recovers a poisoned lock rather than panicking.
+///
+/// The value behind it is a set of symbol strings. A thread panicking while
+/// holding the lock cannot leave that set in a state the next reader cannot
+/// understand, so poisoning here carries no information worth aborting a
+/// caller's process over.
+fn symbols_of(set: &Mutex<BTreeSet<Symbol>>) -> std::sync::MutexGuard<'_, BTreeSet<Symbol>> {
+    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 enum DXLinkCommand {
-    Subscribe(u32, Vec<FeedSubscription>, u32),
-    Unsubscribe(u32, Vec<FeedSubscription>, u32),
+    Subscribe(
+        u32,
+        Vec<FeedSubscription>,
+        u32,
+        Option<oneshot::Sender<TastyResult<()>>>,
+    ),
+    Unsubscribe(
+        u32,
+        Vec<FeedSubscription>,
+        u32,
+        Option<oneshot::Sender<TastyResult<()>>>,
+    ),
     CreateEventStream,
     AddEventSender(u32, mpsc::Sender<MarketEvent>),
     RemoveEventSender(u32),
@@ -334,7 +413,7 @@ impl QuoteStreamer {
                 };
 
                 match cmd {
-                    DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id) => {
+                    DXLinkCommand::Subscribe(channel_id, subscriptions, sub_id, ack) => {
                         // Record symbol routing before subscribing, so no event
                         // can arrive for a symbol that has no route yet
                         {
@@ -347,12 +426,27 @@ impl QuoteStreamer {
                                     .insert(sub_id);
                             }
                         }
-                        if let Err(e) = client.subscribe(channel_id, subscriptions).await {
-                            error!("Error subscribing to symbols: {}", e);
+                        match client.subscribe(channel_id, subscriptions).await {
+                            Ok(()) => answer(ack, Ok(())),
+                            Err(e) => {
+                                error!("Error subscribing to symbols: {}", e);
+                                answer(
+                                    ack,
+                                    Err(TastyTradeError::Streaming(format!(
+                                        "the venue refused the subscription: {e}"
+                                    ))),
+                                );
+                            }
                         }
                     }
-                    DXLinkCommand::Unsubscribe(channel_id, subscriptions, sub_id) => {
-                        {
+                    DXLinkCommand::Unsubscribe(channel_id, subscriptions, sub_id, ack) => {
+                        // The venue is told first. Dropping the route before
+                        // knowing the unsubscribe landed leaves a subscription
+                        // running with nowhere to deliver, and the local state
+                        // that could have retried it already gone.
+                        let outcome = client.unsubscribe(channel_id, subscriptions.clone()).await;
+
+                        if outcome.is_ok() {
                             let mut routing = routing.write().await;
                             for sub in &subscriptions {
                                 if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
@@ -363,8 +457,18 @@ impl QuoteStreamer {
                                 }
                             }
                         }
-                        if let Err(e) = client.unsubscribe(channel_id, subscriptions).await {
-                            error!("Error unsubscribing from symbols: {}", e);
+
+                        match outcome {
+                            Ok(()) => answer(ack, Ok(())),
+                            Err(e) => {
+                                error!("Error unsubscribing from symbols: {}", e);
+                                answer(
+                                    ack,
+                                    Err(TastyTradeError::Streaming(format!(
+                                        "the venue refused the unsubscribe: {e}"
+                                    ))),
+                                );
+                            }
                         }
                     }
                     DXLinkCommand::CreateEventStream => {
@@ -496,7 +600,7 @@ impl QuoteStreamer {
             event_types: flags,
             event_receiver,
             dxlink_receiver: dxlink_rx,
-            symbols: Vec::new(),
+            symbols: Arc::new(Mutex::new(BTreeSet::new())),
         };
 
         // Store subscription in map and return a boxed clone
@@ -511,12 +615,19 @@ impl QuoteStreamer {
         self.subscription_map.get(&id)
     }
 
-    /// Close and remove subscription by id.
-    /// Close and remove subscription by id.
-    pub fn close_sub(&mut self, id: SubscriptionId) {
-        // Get symbols from subscription to close
+    /// Unsubscribes a subscription's symbols and removes it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue refuses the unsubscribe or the streamer is
+    /// closed. On failure the subscription's symbols stay recorded, because
+    /// that record is what a retry needs.
+    pub async fn close_sub(&mut self, id: SubscriptionId) -> TastyResult<()> {
+        // Get symbols from subscription to close. This is the shared set, so
+        // it holds what add_symbols actually subscribed rather than the empty
+        // vector this used to read.
         if let Some(subscription) = self.subscription_map.get(&id) {
-            let symbols = subscription.symbols.clone();
+            let symbols: Vec<Symbol> = symbols_of(&subscription.symbols).iter().cloned().collect();
 
             // Prepare unsubscribe requests
             let unsubscribe_requests = symbols
@@ -556,36 +667,57 @@ impl QuoteStreamer {
                 })
                 .collect::<Vec<FeedSubscription>>();
 
-            // Execute unsubscribe via command channel
+            // Awaited, and the local state is only discarded once the venue
+            // has confirmed. Clearing it on a queued-but-unconfirmed command
+            // threw away the one record of what still needs unsubscribing.
             if let (Some(tx), Some(channel_id)) = (&self.dxlink_command_tx, self.channel_id) {
-                let tx_clone = tx.clone();
-                let channel = channel_id;
-                let requests = unsubscribe_requests.clone();
-                let sub_id = id.0;
+                let sub_id = id.0 as u32;
 
-                tokio::spawn(async move {
-                    // Unregister the event sender
-                    if let Err(e) = tx_clone
-                        .send(DXLinkCommand::RemoveEventSender(sub_id as u32))
-                        .await
-                    {
-                        error!("Error unregistering event sender: {}", e);
-                    }
+                let closed = |_| {
+                    TastyTradeError::Streaming(
+                        "the quote streamer is closed; the subscription is gone with it"
+                            .to_string(),
+                    )
+                };
 
-                    // Unsubscribe from symbols
-                    if !requests.is_empty()
-                        && let Err(e) = tx_clone
-                            .send(DXLinkCommand::Unsubscribe(channel, requests, sub_id as u32))
-                            .await
-                    {
-                        error!("Error sending unsubscribe command: {}", e);
-                    }
-                });
+                if !unsubscribe_requests.is_empty() {
+                    let (ack, answered) = oneshot::channel();
+                    tx.send(DXLinkCommand::Unsubscribe(
+                        channel_id,
+                        unsubscribe_requests,
+                        sub_id,
+                        Some(ack),
+                    ))
+                    .await
+                    .map_err(closed)?;
+
+                    answered.await.unwrap_or_else(|_| {
+                        Err(TastyTradeError::Streaming(
+                            "the quote streamer closed before the unsubscribe was confirmed"
+                                .to_string(),
+                        ))
+                    })?;
+                }
+
+                // Only now: the venue has stopped sending, so there is nothing
+                // left to route.
+                tx.send(DXLinkCommand::RemoveEventSender(sub_id))
+                    .await
+                    .map_err(closed)?;
+            }
+
+            // Confirmed unsubscribed, so the shared set must stop claiming
+            // otherwise. Reached only on success: an early return above leaves
+            // the symbols recorded, which is what a retry needs.
+            if let Some(subscription) = self.subscription_map.get(&id) {
+                symbols_of(&subscription.symbols).clear();
             }
         }
 
         // Remove subscription from map
         self.subscription_map.remove(&id);
+
+        Ok(())
     }
 
     pub fn subscribe(&self, _symbol: &[&str]) {
@@ -605,9 +737,8 @@ impl QuoteStreamer {
 impl Drop for QuoteStreamer {
     fn drop(&mut self) {
         // No per-subscription unsubscribe loop here. Disconnecting ends every
-        // subscription on the far side anyway, and close_sub spawns a task per
-        // subscription, which is both redundant and a panic waiting to happen
-        // when a streamer is dropped outside a Tokio runtime.
+        // subscription on the far side anyway, and close_sub is async now, so
+        // it could not be awaited from Drop even if it were worth doing.
 
         // A oneshot send is synchronous, so this works outside a Tokio runtime
         // where tokio::spawn would panic, and it cannot be discarded by a full
@@ -621,6 +752,116 @@ impl Drop for QuoteStreamer {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    /// The regression #19 exists for: create_sub stores one clone of the
+    /// subscription and hands the caller another, so a per-copy Vec meant
+    /// add_symbols updated the caller's while close_sub read the streamer's,
+    /// which stayed empty. Unsubscribes were derived from that empty list and
+    /// never sent, leaving the subscription alive on the venue.
+    #[tokio::test]
+    async fn both_copies_of_a_subscription_see_the_same_symbols() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let loop_handle = spawn_command_loop(rx, || Ok(()));
+
+        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        sub.add_symbols(&[Symbol::from("AAPL"), Symbol::from("MSFT")])
+            .await
+            .expect("subscribing succeeds");
+
+        // The streamer's own copy sees them, which is what close_sub reads.
+        {
+            let stored = symbols_of(
+                &streamer
+                    .subscription_map
+                    .get(&sub.id)
+                    .expect("the streamer kept a copy")
+                    .symbols,
+            );
+            assert_eq!(stored.len(), 2, "the streamer's copy must see the symbols");
+            assert!(stored.contains(&Symbol::from("AAPL")));
+        }
+
+        // Both the streamer and the subscription hold a command sender, so
+        // the loop only ends when both are gone. That shared ownership is the
+        // same property that made shutdown-by-command-queue wrong.
+        drop(sub);
+        drop(streamer);
+        let sent = loop_handle.await.expect("the stand-in loop finishes");
+        assert!(sent.contains(&"AAPL".to_string()));
+        assert!(sent.contains(&"MSFT".to_string()));
+    }
+
+    /// Reaching the command queue is not the venue accepting. A refusal must
+    /// leave nothing recorded, or the symbol is unsubscribed later as though
+    /// it had been subscribed.
+    #[tokio::test]
+    async fn a_refused_subscription_records_nothing() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let _loop_handle = spawn_command_loop(rx, || {
+            Err(TastyTradeError::Streaming("venue said no".to_string()))
+        });
+
+        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let error = sub
+            .add_symbols(&[Symbol::from("AAPL")])
+            .await
+            .expect_err("a refused subscription is not a success");
+
+        // The venue's own answer reaches the caller rather than being
+        // flattened into a generic failure.
+        assert!(format!("{error}").contains("venue said no"), "{error}");
+        assert!(
+            symbols_of(&sub.symbols).is_empty(),
+            "a refused symbol must not stay reserved"
+        );
+    }
+
+    /// A set, so asking twice subscribes once.
+    #[tokio::test]
+    async fn a_repeated_symbol_is_not_subscribed_twice() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let loop_handle = spawn_command_loop(rx, || Ok(()));
+
+        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
+        sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
+
+        drop(sub);
+        drop(streamer);
+        let sent = loop_handle.await.expect("the stand-in loop finishes");
+        assert_eq!(
+            sent.len(),
+            1,
+            "the second request had nothing new to say: {sent:?}"
+        );
+    }
+
+    /// A symbol whose command never left must not be unsubscribed later as
+    /// though it had.
+    #[tokio::test]
+    async fn a_failed_subscribe_records_nothing() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+
+        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        drop(rx); // the command loop is gone
+
+        sub.add_symbols(&[Symbol::from("AAPL")])
+            .await
+            .expect_err("a closed streamer cannot subscribe");
+
+        assert!(
+            symbols_of(&sub.symbols).is_empty(),
+            "nothing was subscribed, so nothing may be recorded"
+        );
+    }
 
     /// The regression this change exists for: a subscription used to hold a
     /// cloned `QuoteStreamer`, and that clone's `Drop` sent `Disconnect` on the
@@ -659,6 +900,30 @@ mod lifecycle_tests {
     /// `Drop` must not need a Tokio runtime. `try_send` is synchronous;
     /// `tokio::spawn` would panic here, which is what this asserts by simply
     /// not panicking.
+    /// Stands in for the command loop: drains commands, answers every one with
+    /// `outcome`, and hands back what it saw. Without it `add_symbols` waits
+    /// forever, which is the point — a subscription is not confirmed until
+    /// something confirms it.
+    fn spawn_command_loop(
+        mut rx: mpsc::Receiver<DXLinkCommand>,
+        outcome: fn() -> TastyResult<()>,
+    ) -> tokio::task::JoinHandle<Vec<String>> {
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    DXLinkCommand::Subscribe(_, requests, _, ack) => {
+                        seen.extend(requests.into_iter().map(|r| r.symbol));
+                        answer(ack, outcome());
+                    }
+                    DXLinkCommand::Unsubscribe(_, _, _, ack) => answer(ack, outcome()),
+                    _ => {}
+                }
+            }
+            seen
+        })
+    }
+
     fn streamer_with(
         commands: mpsc::Sender<DXLinkCommand>,
         shutdown: oneshot::Sender<()>,
