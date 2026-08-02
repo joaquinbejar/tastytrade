@@ -25,7 +25,7 @@ pub use crate::api::client::TastyTrade;
 pub use crate::api::base::TastyResult;
 
 // Re-export error types
-pub use crate::error::{ApiError, DxFeedError, TastyTradeError};
+pub use crate::error::{ApiError, DxFeedError, Environment, RequestContext, TastyTradeError};
 
 // Re-export account types
 pub use crate::api::accounts::{Account, AccountDetails, AccountInner, AccountNumber};

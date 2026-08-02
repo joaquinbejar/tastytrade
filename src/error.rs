@@ -42,9 +42,74 @@ pub struct InnerApiError {
 
 impl Error for ApiError {}
 
+/// Which tastytrade deployment a request was aimed at.
+///
+/// Carried on transport failures because "the request failed" means something
+/// different depending on whether real money was involved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    /// `api.cert.tastyworks.com`, the sandbox.
+    Certification,
+    /// `api.tastyworks.com`.
+    Production,
+}
+
+impl Display for Environment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Environment::Certification => write!(f, "certification"),
+            Environment::Production => write!(f, "production"),
+        }
+    }
+}
+
+/// Everything known about a failed request that is safe to hand to a caller.
+///
+/// The operation is the endpoint with account identifiers already replaced, so
+/// this whole struct can be logged or reported without leaking who it was
+/// about.
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    /// HTTP method.
+    pub method: &'static str,
+    /// Redacted endpoint, e.g. `/accounts/{account}/balances`.
+    pub operation: String,
+    /// Which deployment answered.
+    pub environment: Environment,
+    /// HTTP status, when one was received.
+    pub status: Option<u16>,
+}
+
+impl Display for RequestContext {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.status {
+            Some(status) => write!(
+                f,
+                "{} {} on {} returned {}",
+                self.method, self.operation, self.environment, status
+            ),
+            None => write!(
+                f,
+                "{} {} on {}",
+                self.method, self.operation, self.environment
+            ),
+        }
+    }
+}
+
 /// Represents errors that can occur within the Tastytrade API client.
 #[derive(Debug)]
 pub enum TastyTradeError {
+    /// A request that reached the venue and came back as a failure.
+    ///
+    /// Carries the sanitised context and, when the venue sent a structured
+    /// error document, the broker's own codes. Never carries a response body.
+    Request {
+        /// Where and what, already sanitised.
+        context: RequestContext,
+        /// The broker's error document, when it sent one.
+        api: Option<ApiError>,
+    },
     /// Represents an error returned from the Tastytrade API.  This variant contains an `ApiError` struct, which provides details about the API error, including an error code and message.
     Api(ApiError),
     /// Represents an HTTP error during communication with the Tastytrade API.  This variant wraps a `reqwest::Error`, which provides details about the underlying HTTP error.
@@ -72,6 +137,10 @@ pub enum TastyTradeError {
 impl Display for TastyTradeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            TastyTradeError::Request { context, api } => match api {
+                Some(api) => write!(f, "{}: {}", context, api.message),
+                None => write!(f, "{}", context),
+            },
             TastyTradeError::Api(err) => write!(f, "API error: {}", err),
             TastyTradeError::Http(err) => write!(f, "HTTP error: {}", err),
             TastyTradeError::Json(err) => write!(f, "JSON error: {}", err),
@@ -83,6 +152,37 @@ impl Display for TastyTradeError {
             TastyTradeError::Streaming(msg) => write!(f, "Streaming error: {}", msg),
             TastyTradeError::Unknown(msg) => write!(f, "Unknown error: {}", msg),
             TastyTradeError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
+        }
+    }
+}
+
+impl TastyTradeError {
+    /// Whether retrying the same request could plausibly succeed.
+    ///
+    /// Retryable means transport trouble or a venue that asked to be tried
+    /// again: connection failures, timeouts, `408`, `429`, and `5xx` other
+    /// than `501`. Everything else is fatal — a `4xx` will keep being a `4xx`,
+    /// and a rejected credential does not improve by asking twice.
+    ///
+    /// This says nothing about whether retrying is *safe*. Order placement is
+    /// not idempotent and must never be replayed on this signal alone.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            TastyTradeError::Request { context, .. } => match context.status {
+                Some(408) | Some(429) => true,
+                Some(501) => false,
+                Some(status) => (500..600).contains(&status),
+                None => true,
+            },
+            TastyTradeError::Http(err) => err.is_timeout() || err.is_connect() || err.is_request(),
+            TastyTradeError::Io(_) | TastyTradeError::Connection(_) => true,
+            TastyTradeError::WebSocket(_) | TastyTradeError::Streaming(_) => true,
+            TastyTradeError::Api(_)
+            | TastyTradeError::Json(_)
+            | TastyTradeError::DxFeed(_)
+            | TastyTradeError::Auth(_)
+            | TastyTradeError::Unknown(_)
+            | TastyTradeError::ConfigError(_) => false,
         }
     }
 }
@@ -123,6 +223,9 @@ impl Error for TastyTradeError {
     /// ```
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            // The broker document is the source when there is one; the
+            // context itself is data, not an error.
+            Self::Request { api, .. } => api.as_ref().map(|e| e as &(dyn Error + 'static)),
             Self::Api(err) => Some(err),
             Self::Http(err) => Some(err),
             Self::Json(err) => Some(err),
@@ -581,5 +684,65 @@ mod tests {
         assert_eq!(inner_errors.len(), 1);
         assert_eq!(inner_errors[0].code, Some("VALIDATION_ERROR".to_string()));
         assert_eq!(inner_errors[0].message, "Field is required");
+    }
+}
+
+#[cfg(test)]
+mod retryability_tests {
+    use super::*;
+
+    fn request_with(status: Option<u16>) -> TastyTradeError {
+        TastyTradeError::Request {
+            context: RequestContext {
+                method: "GET",
+                operation: "/accounts/{account}/balances".to_string(),
+                environment: Environment::Certification,
+                status,
+            },
+            api: None,
+        }
+    }
+
+    #[test]
+    fn client_errors_are_fatal_and_server_errors_are_not() {
+        for status in [400, 401, 403, 404, 422, 501] {
+            assert!(
+                !request_with(Some(status)).is_retryable(),
+                "{status} must not be retried"
+            );
+        }
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(
+                request_with(Some(status)).is_retryable(),
+                "{status} should be retryable"
+            );
+        }
+    }
+
+    /// No status means the request never got an answer, which is exactly the
+    /// case worth trying again.
+    #[test]
+    fn a_request_with_no_status_is_retryable() {
+        assert!(request_with(None).is_retryable());
+    }
+
+    #[test]
+    fn configuration_and_authentication_failures_are_never_retryable() {
+        assert!(!TastyTradeError::ConfigError("missing".into()).is_retryable());
+        assert!(!TastyTradeError::Auth("rejected".into()).is_retryable());
+        assert!(!TastyTradeError::Unknown("odd".into()).is_retryable());
+    }
+
+    /// The context is the whole point: it says where, against which
+    /// deployment, and with what status, without naming the account.
+    #[test]
+    fn the_context_renders_without_the_account_number() {
+        let rendered = request_with(Some(500)).to_string();
+        assert!(
+            rendered.contains("/accounts/{account}/balances"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("certification"), "{rendered}");
+        assert!(rendered.contains("500"), "{rendered}");
     }
 }

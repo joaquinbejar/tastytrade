@@ -223,7 +223,7 @@ pub use api::accounts;
 pub use api::base::TastyResult;
 pub use api::client::TastyTrade;
 
-pub use error::{ApiError, DxFeedError, TastyTradeError};
+pub use error::{ApiError, DxFeedError, Environment, RequestContext, TastyTradeError};
 pub use types::dxfeed;
 pub use types::instrument::InstrumentType;
 pub use types::order::{
