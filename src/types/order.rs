@@ -909,8 +909,8 @@ impl OrderBuilder {
             }
             if !needs_positive_price && price != Decimal::ZERO {
                 return Err(format!(
-                    "a {order_type:?} order takes no price, got {price}; \
-                     use Limit to bound the fill"
+                    "a {order_type:?} order carries no price, so price must be zero, got \
+                     {price}; use Limit to bound the fill"
                 ));
             }
         }
@@ -1022,7 +1022,7 @@ mod builder_validation_tests {
             .build()
             .expect_err("a market order with a price must not build");
 
-        assert!(error.to_string().contains("takes no price"), "{error}");
+        assert!(error.to_string().contains("price must be zero"), "{error}");
     }
 
     #[test]
@@ -1096,6 +1096,6 @@ mod order_type_price_tests {
 
         let error =
             build_with(OrderType::Market, "100").expect_err("a market order with a price must not");
-        assert!(error.to_string().contains("takes no price"), "{error}");
+        assert!(error.to_string().contains("price must be zero"), "{error}");
     }
 }
