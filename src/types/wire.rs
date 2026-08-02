@@ -412,7 +412,12 @@ macro_rules! wire_enum {
 
         impl From<String> for $name {
             fn from(text: String) -> Self {
-                match text.as_str() {
+                // Trimmed for matching, like every other helper here, so a
+                // stray space does not turn a known value into an unknown one.
+                // A known value is then canonical: "PM " serialises back as
+                // "PM". An unknown keeps the venue's text byte for byte,
+                // since that is the only record of what arrived.
+                match text.trim() {
                     $( $wire => $name::$variant, )+
                     _ => $name::Unknown(text),
                 }
@@ -495,16 +500,59 @@ mod wire_enum_tests {
         assert_eq!(parsed.as_wire(), "Fortnightly");
     }
 
+    /// Each enum is exercised with its own values. Round-tripping every
+    /// string through one type would have "AM" and "American" taking the
+    /// Unknown path, which proves nothing about the other two enums.
     #[test]
     fn every_value_round_trips_unchanged() {
-        for text in ["\"Regular\"", "\"AM\"", "\"American\"", "\"Something New\""] {
-            let parsed: ExpirationType = serde_json::from_str(text).expect("parses");
-            assert_eq!(
-                serde_json::to_string(&parsed).expect("serializes"),
-                text,
-                "the venue's own text must survive the round trip"
-            );
+        macro_rules! round_trip {
+            ($ty:ty, $($text:literal),+) => {
+                $(
+                    let parsed: $ty = serde_json::from_str($text).expect("parses");
+                    assert_eq!(
+                        serde_json::to_string(&parsed).expect("serializes"),
+                        $text,
+                        concat!("the venue's own text must survive for ", stringify!($ty))
+                    );
+                )+
+            };
         }
+
+        round_trip!(
+            ExpirationType,
+            "\"Regular\"",
+            "\"Weekly\"",
+            "\"End-Of-Month\"",
+            "\"Fortnightly\""
+        );
+        round_trip!(SettlementType, "\"AM\"", "\"PM\"", "\"Overnight\"");
+        round_trip!(
+            ExerciseStyle,
+            "\"American\"",
+            "\"European\"",
+            "\"Bermudan\""
+        );
+    }
+
+    /// Known values are recognised through incidental whitespace and come back
+    /// canonical; unknown ones keep the venue's text exactly as it arrived.
+    #[test]
+    fn whitespace_does_not_hide_a_known_value() {
+        let padded: SettlementType = serde_json::from_str(r#"" PM ""#).expect("parses");
+        assert_eq!(padded, SettlementType::Pm);
+        assert!(padded.is_known());
+        assert_eq!(
+            serde_json::to_string(&padded).expect("serializes"),
+            r#""PM""#,
+            "a known value normalises"
+        );
+
+        let unknown: SettlementType = serde_json::from_str(r#"" Overnight ""#).expect("parses");
+        assert_eq!(
+            unknown.as_wire(),
+            " Overnight ",
+            "an unknown value keeps exactly what arrived"
+        );
     }
 
     #[test]
