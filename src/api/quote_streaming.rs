@@ -12,10 +12,10 @@ impl TastyTrade {
         let url = format!("{}/api-quote-tokens", self.config.base_url);
         debug!("Requesting quote streamer tokens from: {}", url);
 
-        // Hacer la solicitud HTTP directamente para poder examinar la respuesta
+        // Issue the request directly so the response can be inspected here.
         let response = self.client.get(&url).send().await?;
 
-        // Verificar el código de estado
+        // Check the status before touching the body.
         let status = response.status();
         debug!("Response status: {}", status);
 
@@ -28,7 +28,7 @@ impl TastyTrade {
             )));
         }
 
-        // Intentar decodificar la respuesta como JSON.
+        // Decode the response as JSON.
         // The body contains the DXLink token, so it must never be logged.
         let text = response.text().await?;
 

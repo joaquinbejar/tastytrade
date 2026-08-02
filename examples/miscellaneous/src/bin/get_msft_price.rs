@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add symbol to subscription
     debug!("Adding symbol to subscription");
-    quote_sub.add_symbols(&[streamer_symbol.clone()]);
+    quote_sub.add_symbols(std::slice::from_ref(&streamer_symbol));
     debug!("Symbol added to subscription");
 
     // Wait for a quote
