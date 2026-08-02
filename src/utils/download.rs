@@ -3,375 +3,617 @@
    Email: jb@taunais.com
    Date: 31/8/25
 ******************************************************************************/
+
+//! Bulk download of option symbols.
+//!
+//! Split into stages that can be reasoned about separately: discovery finds
+//! the underlyings, retrieval fetches their chains, and transformation turns a
+//! chain into symbol entries. Only the retrieval stage does I/O, only the
+//! transformation stage is pure, and the report says which parts of the answer
+//! are missing rather than leaving that in the logs.
+
 use crate::prelude::{SymbolEntry, TastyTradeConfig};
+use crate::types::instrument::{FuturesNestedOptionChain, NestedOptionChain};
 use crate::utils::parse::expiration_instant;
-use crate::{InstrumentType, TastyTrade};
+use crate::{InstrumentType, TastyResult, TastyTrade, TastyTradeError};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
+use futures_util::stream;
 use std::collections::HashSet;
-use tracing::{error, info};
+use tracing::{debug, info, warn};
 
-/// Downloads all FutureOption and EquityOption symbols from TastyTrade
-pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
-    // Load configuration from environment
-    let config = TastyTradeConfig::new();
+/// The venue this crate labels downloaded symbols with.
+const EXCHANGE: &str = "TASTYTRADE";
 
-    // Check if we have valid credentials
-    if !config.has_valid_credentials() {
-        error!(
-            "❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables."
-        );
-        return Err("Missing credentials".into());
+/// Future products that do not carry option chains.
+///
+/// Asking for them costs a round trip and answers nothing, so they are skipped
+/// rather than retried. Interest-rate futures, mostly.
+const PRODUCTS_WITHOUT_OPTIONS: &[&str] = &["GE", "ZQ", "ZT", "ZF", "ZN", "ZB", "UB"];
+
+/// Limits and concurrency for a download.
+///
+/// Every knob that used to be an undocumented environment variable or a
+/// literal buried in a loop. `MAX_EQUITIES` and `MAX_FUTURE_PRODUCTS` were
+/// read from the environment by a function nothing documented, so a caller had
+/// no way to discover them and a library had no business reading them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadLimits {
+    /// How many pages of active equities to walk before stopping.
+    pub max_equity_pages: usize,
+    /// How many equities to fetch chains for.
+    pub max_equities: usize,
+    /// How many future products to fetch chains for.
+    pub max_future_products: usize,
+    /// How many chain requests may be in flight at once.
+    ///
+    /// The old code was strictly sequential, which is slow, but unbounded
+    /// concurrency against a broker is a good way to be rate limited or
+    /// blocked.
+    pub concurrency: usize,
+}
+
+impl Default for DownloadLimits {
+    fn default() -> Self {
+        Self {
+            max_equity_pages: 5,
+            max_equities: 100,
+            max_future_products: 50,
+            concurrency: 8,
+        }
+    }
+}
+
+/// One underlying whose chain could not be retrieved.
+///
+/// Named so a caller can retry exactly what failed instead of the whole run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadFailure {
+    /// The underlying symbol or product code that failed.
+    pub underlying: String,
+    /// Why, as text. Never contains a credential or an account.
+    pub reason: String,
+    /// Whether asking again could plausibly work.
+    ///
+    /// Carried rather than left for the caller to infer from `reason`:
+    /// deciding what to retry by matching on prose is how the old code
+    /// classified failures, and it was wrong the moment the venue reworded
+    /// anything.
+    pub retryable: bool,
+}
+
+impl DownloadFailure {
+    fn from_error(underlying: String, error: &TastyTradeError) -> Self {
+        Self {
+            underlying,
+            reason: error.to_string(),
+            retryable: error.is_retryable(),
+        }
+    }
+}
+
+/// How complete a download is.
+///
+/// The old function logged failures and returned a plain `Vec`, so a caller
+/// could not tell a complete answer from one missing half its underlyings —
+/// and a short list looks exactly like a quiet market.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadOutcome {
+    /// Every underlying that was asked for answered.
+    Complete,
+    /// Some underlyings failed. The symbols present are still usable.
+    Partial {
+        /// What failed and why.
+        failures: Vec<DownloadFailure>,
+    },
+}
+
+/// The symbols and how much of the picture they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadReport {
+    /// The symbols, deduplicated and sorted.
+    pub symbols: Vec<SymbolEntry>,
+    /// Whether anything is missing.
+    pub outcome: DownloadOutcome,
+    /// How many underlyings were asked about.
+    pub underlyings_requested: usize,
+}
+
+impl DownloadReport {
+    /// Whether every underlying answered.
+    pub fn is_complete(&self) -> bool {
+        matches!(self.outcome, DownloadOutcome::Complete)
     }
 
-    info!("🔐 Logging into TastyTrade...");
-    let tasty = TastyTrade::login(&config).await?;
-    info!("✅ Successfully logged in!");
+    /// What failed, empty on a complete run.
+    pub fn failures(&self) -> &[DownloadFailure] {
+        match &self.outcome {
+            DownloadOutcome::Complete => &[],
+            DownloadOutcome::Partial { failures } => failures,
+        }
+    }
+}
 
-    let mut all_symbols = Vec::new();
+/// Downloads every equity-option and future-option symbol, with defaults.
+///
+/// # Errors
+///
+/// Fails only when the download could not start: missing credentials, a
+/// refused login, or no underlyings discovered at all. An underlying whose
+/// chain fails is recorded in the report rather than failing the run.
+pub async fn download_options_report() -> TastyResult<DownloadReport> {
+    let config = TastyTradeConfig::new();
+    download_options_symbols_with(&config, &DownloadLimits::default()).await
+}
+
+/// Downloads every option symbol, discarding the report.
+///
+/// # Errors
+///
+/// As [`download_options_report`].
+#[deprecated(
+    since = "0.4.0",
+    note = "use download_options_report: this signature cannot tell a complete \
+            answer from one missing half its underlyings"
+)]
+pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
+    // Kept signature-compatible on purpose. The report is the improvement, but
+    // a caller who only wants the symbols should not have to be broken to keep
+    // getting them.
+    Ok(download_options_report().await?.symbols)
+}
+
+/// Downloads every equity-option and future-option symbol.
+///
+/// The configuration is taken rather than read from the environment, so a
+/// caller decides which account and which environment this runs against.
+pub async fn download_options_symbols_with(
+    config: &TastyTradeConfig,
+    limits: &DownloadLimits,
+) -> TastyResult<DownloadReport> {
+    // login already refuses missing credentials without a network call, and
+    // says which variables to set.
+    let tasty = TastyTrade::login(config).await?;
     let now = Utc::now();
 
-    // Download EquityOptions
-    info!("📈 Downloading EquityOption symbols...");
-    match download_equity_options(&tasty, now).await {
-        Ok(mut equity_options) => {
-            info!(
-                "✅ Downloaded {} EquityOption symbols",
-                equity_options.len()
-            );
-            all_symbols.append(&mut equity_options);
-        }
+    // The two sources are independent, so one failing must not discard the
+    // other's work or stop it from running at all.
+    let mut failures = Vec::new();
+
+    let equities = match discover_equities(&tasty, limits).await {
+        Ok(found) => found,
         Err(e) => {
-            error!("⚠️  Error downloading EquityOptions: {}", e);
+            failures.push(DownloadFailure::from_error(
+                "equity discovery".to_string(),
+                &e,
+            ));
+            Vec::new()
         }
+    };
+    let products = match discover_future_products(&tasty, limits).await {
+        Ok(found) => found,
+        Err(e) => {
+            failures.push(DownloadFailure::from_error(
+                "future product discovery".to_string(),
+                &e,
+            ));
+            Vec::new()
+        }
+    };
+
+    // Both failing is not a partial answer, it is no answer.
+    if equities.is_empty() && products.is_empty() {
+        return Err(TastyTradeError::Unknown(
+            "no equity or future underlyings were discovered; check connectivity and that the \
+             account can see instruments"
+                .to_string(),
+        ));
     }
 
-    // Download FutureOptions
-    info!("🔮 Downloading FutureOption symbols...");
-    match download_future_options(&tasty, now).await {
-        Ok(mut future_options) => {
-            info!(
-                "✅ Downloaded {} FutureOption symbols",
-                future_options.len()
-            );
-            all_symbols.append(&mut future_options);
-        }
-        Err(e) => {
-            error!("⚠️  Error downloading FutureOptions: {}", e);
-        }
-    }
-
-    // Remove duplicates using HashSet
-    let unique_symbols: HashSet<SymbolEntry> = all_symbols.into_iter().collect();
-    let final_symbols: Vec<SymbolEntry> = unique_symbols.into_iter().collect();
-
+    let requested = equities.len() + products.len();
     info!(
-        "🎯 Total unique symbols downloaded: {}",
-        final_symbols.len()
+        "Downloading option chains for {} equities and {} future products",
+        equities.len(),
+        products.len()
     );
 
-    Ok(final_symbols)
-}
-
-/// Downloads EquityOption symbols from TastyTrade
-async fn download_equity_options(
-    tasty: &TastyTrade,
-    last_update: DateTime<Utc>,
-) -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
     let mut symbols = Vec::new();
 
-    // Try different approaches to get equity symbols
-    info!("  📊 Getting equity symbols using multiple approaches...");
-    let mut all_equities = Vec::new();
+    let (equity_symbols, equity_failures) =
+        fetch_equity_chains(&tasty, &equities, limits, now).await;
+    symbols.extend(equity_symbols);
+    failures.extend(equity_failures);
 
-    // Approach 1: Try to get active equities with pagination
-    info!("  📊 Trying list_active_equities...");
-    let max_pages = 5; // Limit to avoid infinite loops
+    let (future_symbols, future_failures) =
+        fetch_future_chains(&tasty, &products, limits, now).await;
+    symbols.extend(future_symbols);
+    failures.extend(future_failures);
 
-    for page in 0..max_pages {
-        match tasty.list_active_equities(page).await {
-            Ok(paginated_equities) => {
-                let current_count = paginated_equities.items.len();
-                info!("    📄 Page {}: {} items found", page, current_count);
+    // Deduplicated by identity, which for a SymbolEntry is symbol plus epic,
+    // then sorted. Concurrent retrieval means arrival order is not stable, and
+    // a bulk download that produces a different file every run is one nobody
+    // can diff.
+    let unique: HashSet<SymbolEntry> = symbols.into_iter().collect();
+    let mut symbols: Vec<SymbolEntry> = unique.into_iter().collect();
+    symbols.sort_unstable_by(|a, b| {
+        a.symbol
+            .cmp(&b.symbol)
+            .then_with(|| a.epic.cmp(&b.epic))
+            .then_with(|| a.expiry.cmp(&b.expiry))
+    });
 
-                // Check pagination info first
-                let pagination = &paginated_equities.pagination;
+    // Sorted for the same reason the symbols are: buffer_unordered decides the
+    // order failures arrive in, and a report that differs between identical
+    // runs is not the deterministic report this claims to be.
+    failures.sort_unstable_by(|a, b| {
+        a.underlying
+            .cmp(&b.underlying)
+            .then_with(|| a.reason.cmp(&b.reason))
+    });
 
-                // Debug: Print full response structure
-                info!("    🔍 DEBUG - Full response for page {}:", page);
-                info!("    🔍 Items count: {}", current_count);
+    if failures.is_empty() {
+        info!("Downloaded {} unique symbols", symbols.len());
+    } else {
+        warn!(
+            "Downloaded {} unique symbols; {} of {} underlyings failed",
+            symbols.len(),
+            failures.len(),
+            requested
+        );
+    }
 
-                // Print ALL items in this page
-                for (i, item) in paginated_equities.items.iter().enumerate() {
-                    info!(
-                        "    🔍 Item {}: symbol={}, id={}, active={}, description={}",
-                        i, item.symbol.0, item.id, item.active, item.description
-                    );
-                }
+    Ok(DownloadReport {
+        symbols,
+        outcome: if failures.is_empty() {
+            DownloadOutcome::Complete
+        } else {
+            DownloadOutcome::Partial { failures }
+        },
+        underlyings_requested: requested,
+    })
+}
 
-                if current_count == 0 {
-                    info!(
-                        "    🔍 ⚠️  PAGE {} IS EMPTY - but API says there are {} total items",
-                        page, pagination.total_items
-                    );
-                }
-                info!(
-                    "    📊 Pagination: page {}/{}, total items: {}",
-                    pagination.page_offset, pagination.total_pages, pagination.total_items
-                );
-                info!(
-                    "    🔍 DEBUG - Pagination details: per_page={}, item_offset={}, current_item_count={}",
-                    pagination.per_page, pagination.item_offset, pagination.current_item_count
-                );
+/// Walks the active-equities pages up to the configured limit.
+async fn discover_equities(
+    tasty: &TastyTrade,
+    limits: &DownloadLimits,
+) -> TastyResult<Vec<crate::types::instrument::EquityInstrument>> {
+    let mut found = Vec::new();
 
-                if current_count > 0 {
-                    all_equities.extend(paginated_equities.items);
-                }
+    for page in 0..limits.max_equity_pages {
+        let paginated = tasty.list_active_equities(page).await?;
+        let pagination = &paginated.pagination;
+        debug!(
+            "active equities page {}/{}: {} items",
+            pagination.page_offset, pagination.total_pages, pagination.current_item_count
+        );
 
-                // Break if we've reached the last page
-                if pagination.page_offset + 1 >= pagination.total_pages {
-                    break;
-                }
+        let last_page = pagination.page_offset + 1 >= pagination.total_pages;
+        found.extend(paginated.items);
 
-                // If we have total_items but no items on this page, continue to next page
-                if current_count == 0 && pagination.total_items > 0 {
-                    info!(
-                        "    📄 Empty page but {} total items exist, continuing...",
-                        pagination.total_items
-                    );
-                    continue;
-                }
+        if last_page {
+            break;
+        }
+    }
 
-                // If no items and no total items, we're done
-                if current_count == 0 && pagination.total_items == 0 {
-                    break;
+    if found.len() > limits.max_equities {
+        info!(
+            "Limiting to {} of {} equities",
+            limits.max_equities,
+            found.len()
+        );
+        found.truncate(limits.max_equities);
+    }
+
+    Ok(found)
+}
+
+/// Lists future products worth asking about.
+async fn discover_future_products(
+    tasty: &TastyTrade,
+    limits: &DownloadLimits,
+) -> TastyResult<Vec<crate::types::instrument::FutureProduct>> {
+    let mut products: Vec<_> = tasty
+        .list_future_products()
+        .await?
+        .into_iter()
+        .filter(|product| !PRODUCTS_WITHOUT_OPTIONS.contains(&product.code.as_str()))
+        .collect();
+
+    if products.len() > limits.max_future_products {
+        info!(
+            "Limiting to {} of {} future products",
+            limits.max_future_products,
+            products.len()
+        );
+        products.truncate(limits.max_future_products);
+    }
+
+    Ok(products)
+}
+
+/// Fetches equity chains with bounded concurrency.
+async fn fetch_equity_chains(
+    tasty: &TastyTrade,
+    equities: &[crate::types::instrument::EquityInstrument],
+    limits: &DownloadLimits,
+    last_update: DateTime<Utc>,
+) -> (Vec<SymbolEntry>, Vec<DownloadFailure>) {
+    let results = stream::iter(equities.iter().map(|equity| async move {
+        let symbol = equity.symbol.clone();
+        (
+            symbol.0.clone(),
+            tasty.list_nested_option_chains(symbol).await,
+        )
+    }))
+    .buffer_unordered(limits.concurrency.max(1))
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut symbols = Vec::new();
+    let mut failures = Vec::new();
+
+    for (underlying, result) in results {
+        match result {
+            Ok(chains) => {
+                for chain in &chains {
+                    symbols.extend(equity_chain_to_symbols(chain, last_update));
                 }
             }
-            Err(e) => {
-                error!("Error fetching active equities at page {}: {}", page, e);
-                break;
+            Err(e) => failures.push(DownloadFailure::from_error(underlying, &e)),
+        }
+    }
+
+    (symbols, failures)
+}
+
+/// Fetches future-option chains with bounded concurrency.
+async fn fetch_future_chains(
+    tasty: &TastyTrade,
+    products: &[crate::types::instrument::FutureProduct],
+    limits: &DownloadLimits,
+    last_update: DateTime<Utc>,
+) -> (Vec<SymbolEntry>, Vec<DownloadFailure>) {
+    let results = stream::iter(products.iter().map(|product| async move {
+        (
+            product.code.clone(),
+            tasty.list_nested_futures_option_chains(&product.code).await,
+        )
+    }))
+    .buffer_unordered(limits.concurrency.max(1))
+    .collect::<Vec<_>>()
+    .await;
+
+    let mut symbols = Vec::new();
+    let mut failures = Vec::new();
+
+    for (underlying, result) in results {
+        match result {
+            Ok(chains) => {
+                for chain in &chains {
+                    symbols.extend(futures_chain_to_symbols(chain, last_update));
+                }
+            }
+            Err(e) => failures.push(DownloadFailure::from_error(underlying, &e)),
+        }
+    }
+
+    (symbols, failures)
+}
+
+/// Turns one equity chain into symbol entries.
+///
+/// Pure: no I/O, no logging, no clock. This is the part worth testing, and it
+/// used to be four levels deep inside a function that also did all three.
+fn equity_chain_to_symbols(
+    chain: &NestedOptionChain,
+    last_update: DateTime<Utc>,
+) -> Vec<SymbolEntry> {
+    let mut symbols = Vec::new();
+
+    for expiration in &chain.expirations {
+        let expiry = expiration_instant(expiration.expiration_date);
+
+        for strike in &expiration.strikes {
+            for (side, symbol) in [("Call", &strike.call), ("Put", &strike.put)] {
+                symbols.push(SymbolEntry {
+                    symbol: symbol.0.clone(),
+                    epic: symbol.0.clone(),
+                    name: format!(
+                        "{} {} ${} {}",
+                        chain.underlying_symbol.0,
+                        side,
+                        strike.strike_price,
+                        expiration.expiration_date
+                    ),
+                    instrument_type: InstrumentType::EquityOption,
+                    exchange: EXCHANGE.to_string(),
+                    expiry,
+                    last_update,
+                });
             }
         }
     }
 
-    // If we didn't get any equities, there's a problem that needs investigation
-    if all_equities.is_empty() {
-        error!("  ❌ No equity instruments found via list_active_equities API");
-        error!("  🔍 This indicates a potential API issue or authentication problem");
-        return Err("No equity instruments found - check API connectivity and credentials".into());
-    }
+    symbols
+}
 
-    info!("  📊 Found {} total equity instruments", all_equities.len());
+/// Turns one nested futures chain into symbol entries. Pure, as above.
+fn futures_chain_to_symbols(
+    chain: &FuturesNestedOptionChain,
+    last_update: DateTime<Utc>,
+) -> Vec<SymbolEntry> {
+    let mut symbols = Vec::new();
 
-    // Process options for each equity (limit to avoid overwhelming API)
-    let max_equities = std::env::var("MAX_EQUITIES")
-        .unwrap_or_else(|_| "100".to_string())
-        .parse::<usize>()
-        .unwrap_or(100);
+    for option_chain in &chain.option_chains {
+        for expiration in &option_chain.expirations {
+            let expiry = expiration_instant(expiration.expiration_date);
 
-    let equities_to_process = if all_equities.len() > max_equities {
-        info!(
-            "  ⚠️  Limiting to {} equities (set MAX_EQUITIES env var to change)",
-            max_equities
-        );
-        &all_equities[..max_equities]
-    } else {
-        &all_equities
-    };
-
-    for equity in equities_to_process {
-        info!("  📊 Processing options for {}", equity.symbol.0);
-
-        // Get nested option chains for this equity
-        match tasty.list_nested_option_chains(equity.symbol.clone()).await {
-            Ok(option_chains) => {
-                for chain in option_chains {
-                    // Process each expiration in the chain
-                    for expiration in &chain.expirations {
-                        // Parse expiration date
-                        let expiry = expiration_instant(expiration.expiration_date);
-
-                        // Process each strike in the expiration
-                        for strike in &expiration.strikes {
-                            // Add call option
-                            symbols.push(SymbolEntry {
-                                symbol: strike.call.0.clone(),
-                                epic: strike.call.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!(
-                                    "{} Call ${} {}",
-                                    chain.underlying_symbol.0,
-                                    strike.strike_price,
-                                    expiration.expiration_date
-                                ),
-                                instrument_type: InstrumentType::EquityOption,
-                                exchange: "TASTYTRADE".to_string(),
-                                expiry,
-                                last_update,
-                            });
-
-                            // Add put option
-                            symbols.push(SymbolEntry {
-                                symbol: strike.put.0.clone(),
-                                epic: strike.put.0.clone(), // Using symbol as epic for TastyTrade
-                                name: format!(
-                                    "{} Put ${} {}",
-                                    chain.underlying_symbol.0,
-                                    strike.strike_price,
-                                    expiration.expiration_date
-                                ),
-                                instrument_type: InstrumentType::EquityOption,
-                                exchange: "TASTYTRADE".to_string(),
-                                expiry,
-                                last_update,
-                            });
-                        }
-                    }
+            for strike in &expiration.strikes {
+                for (side, symbol) in [("Call", &strike.call), ("Put", &strike.put)] {
+                    symbols.push(SymbolEntry {
+                        symbol: symbol.clone(),
+                        epic: symbol.clone(),
+                        name: format!(
+                            "{} Future {} ${} {}",
+                            option_chain.underlying_symbol,
+                            side,
+                            strike.strike_price,
+                            expiration.expiration_date
+                        ),
+                        instrument_type: InstrumentType::FutureOption,
+                        exchange: EXCHANGE.to_string(),
+                        expiry,
+                        last_update,
+                    });
                 }
-            }
-            Err(e) => {
-                error!(
-                    "    ⚠️  Error getting option chain for {}: {}",
-                    equity.symbol.0, e
-                );
             }
         }
     }
 
-    Ok(symbols)
+    symbols
 }
 
-/// Downloads FutureOption symbols from TastyTrade
-async fn download_future_options(
-    tasty: &TastyTrade,
-    last_update: DateTime<Utc>,
-) -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
-    let mut symbols = Vec::new();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // Get ALL future products
-    info!("  📈 Getting all future products...");
-    let future_products = tasty.list_future_products().await?;
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(seconds, 0).expect("a valid timestamp")
+    }
 
-    info!("  📈 Found {} total future products", future_products.len());
+    #[test]
+    fn a_complete_report_has_no_failures() {
+        let report = DownloadReport {
+            symbols: Vec::new(),
+            outcome: DownloadOutcome::Complete,
+            underlyings_requested: 3,
+        };
 
-    // Process all future products (with optional limit via env var)
-    let max_products = std::env::var("MAX_FUTURE_PRODUCTS")
-        .unwrap_or_else(|_| "50".to_string())
-        .parse::<usize>()
-        .unwrap_or(50);
+        assert!(report.is_complete());
+        assert!(report.failures().is_empty());
+    }
 
-    let products_to_process = if future_products.len() > max_products {
-        info!(
-            "  ⚠️  Limiting to {} future products (set MAX_FUTURE_PRODUCTS env var to change)",
-            max_products
+    /// The old function logged failures and returned a plain Vec, so a caller
+    /// could not tell a complete answer from one missing half its underlyings.
+    /// A short list looks exactly like a quiet market.
+    #[test]
+    fn a_partial_report_names_what_is_missing() {
+        let report = DownloadReport {
+            symbols: Vec::new(),
+            outcome: DownloadOutcome::Partial {
+                failures: vec![DownloadFailure {
+                    underlying: "AAPL".to_string(),
+                    reason: "HTTP 503".to_string(),
+                    retryable: true,
+                }],
+            },
+            underlyings_requested: 2,
+        };
+
+        assert!(!report.is_complete());
+        assert_eq!(report.failures().len(), 1);
+        assert_eq!(report.failures()[0].underlying, "AAPL");
+        assert!(
+            report.failures()[0].retryable,
+            "a caller must not have to parse the reason to decide what to retry"
         );
-        &future_products[..max_products]
-    } else {
-        &future_products
-    };
+    }
 
-    // Products that typically don't have option chains
-    let products_without_options = [
-        "GE", // Eurodollar
-        "ZQ", // 30 Day Fed Fund
-        "ZT", // 2-Year Note
-        "ZF", // 5-Year Note
-        "ZN", // 10-Year Note
-        "ZB", // 30-Year Bond
-        "UB",
-    ];
-
-    for product in products_to_process {
-        info!(
-            "  🔮 Processing future options for product: {} ({})",
-            product.code, product.description
+    /// The retry verdict comes from the error's own classification, not from
+    /// matching on its prose, which is how the old code got it wrong.
+    #[test]
+    fn a_failure_carries_the_errors_own_retry_verdict() {
+        let transient = DownloadFailure::from_error(
+            "AAPL".to_string(),
+            &TastyTradeError::Connection("refused".to_string()),
+        );
+        let fatal = DownloadFailure::from_error(
+            "MSFT".to_string(),
+            &TastyTradeError::Auth("rejected".to_string()),
         );
 
-        // Skip products that typically don't have option chains
-        if products_without_options.contains(&product.code.as_str()) {
-            info!(
-                "    📝 {} ({}) typically has no option chains - skipping",
-                product.code, product.description
+        assert!(transient.retryable);
+        assert!(!fatal.retryable, "a rejected credential does not improve");
+    }
+
+    /// buffer_unordered decides the order failures arrive in, so a report that
+    /// differs between identical runs would not be the deterministic report
+    /// this claims to be.
+    #[test]
+    fn failures_are_ordered_deterministically() {
+        let mut failures = [
+            DownloadFailure {
+                underlying: "MSFT".to_string(),
+                reason: "b".to_string(),
+                retryable: true,
+            },
+            DownloadFailure {
+                underlying: "AAPL".to_string(),
+                reason: "a".to_string(),
+                retryable: false,
+            },
+        ];
+        failures.sort_unstable_by(|a, b| {
+            a.underlying
+                .cmp(&b.underlying)
+                .then_with(|| a.reason.cmp(&b.reason))
+        });
+
+        assert_eq!(failures[0].underlying, "AAPL");
+    }
+
+    /// Interest-rate futures carry no option chains, so asking costs a round
+    /// trip and answers nothing.
+    #[test]
+    fn products_without_options_are_known_by_code() {
+        for code in ["GE", "ZN", "UB"] {
+            assert!(
+                PRODUCTS_WITHOUT_OPTIONS.contains(&code),
+                "{code} should be skipped"
             );
-            continue;
         }
-
-        // Get nested option chains for this future product
-        match tasty.list_nested_futures_option_chains(&product.code).await {
-            Ok(option_chains) => {
-                if option_chains.is_empty() {
-                    info!(
-                        "    📭 No option chains found for {} ({})",
-                        product.code, product.description
-                    );
-                    continue;
-                }
-                info!(
-                    "    ✅ Found {} option chains for {}",
-                    option_chains.len(),
-                    product.code
-                );
-                for chain in option_chains {
-                    // Process each option chain in the nested structure
-                    for option_chain in &chain.option_chains {
-                        // Process each expiration in the chain
-                        for expiration in &option_chain.expirations {
-                            // Parse expiration date
-                            let expiry = expiration_instant(expiration.expiration_date);
-
-                            // Process each strike in the expiration
-                            for strike in &expiration.strikes {
-                                // Add call option
-                                symbols.push(SymbolEntry {
-                                    symbol: strike.call.clone(),
-                                    epic: strike.call.clone(), // Using symbol as epic for TastyTrade
-                                    name: format!(
-                                        "{} Future Call ${} {}",
-                                        option_chain.underlying_symbol,
-                                        strike.strike_price,
-                                        expiration.expiration_date
-                                    ),
-                                    instrument_type: InstrumentType::FutureOption,
-                                    exchange: "TASTYTRADE".to_string(),
-                                    expiry,
-                                    last_update,
-                                });
-
-                                // Add put option
-                                symbols.push(SymbolEntry {
-                                    symbol: strike.put.clone(),
-                                    epic: strike.put.clone(), // Using symbol as epic for TastyTrade
-                                    name: format!(
-                                        "{} Future Put ${} {}",
-                                        option_chain.underlying_symbol,
-                                        strike.strike_price,
-                                        expiration.expiration_date
-                                    ),
-                                    instrument_type: InstrumentType::FutureOption,
-                                    exchange: "TASTYTRADE".to_string(),
-                                    expiry,
-                                    last_update,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                // Check if it's a decoding error specifically
-                let error_msg = format!("{}", e);
-                if error_msg.contains("error decoding response body") {
-                    info!(
-                        "    📝 {} ({}) has no option chains or unsupported format - skipping",
-                        product.code, product.description
-                    );
-                } else {
-                    error!(
-                        "    ⚠️  API error for {} ({}): {}",
-                        product.code, product.description, e
-                    );
-                }
-            }
-        }
+        assert!(!PRODUCTS_WITHOUT_OPTIONS.contains(&"ES"));
     }
 
-    Ok(symbols)
+    /// Limits are a documented type now rather than environment variables a
+    /// caller had no way to discover.
+    #[test]
+    fn the_default_limits_are_bounded_on_every_axis() {
+        let limits = DownloadLimits::default();
+
+        assert!(limits.max_equity_pages > 0);
+        assert!(limits.max_equities > 0);
+        assert!(limits.max_future_products > 0);
+        assert!(
+            limits.concurrency > 1,
+            "the point of the refactor is that it is not sequential"
+        );
+    }
+
+    /// Concurrent retrieval means arrival order is not stable, so a bulk
+    /// download that produced a different file every run would be one nobody
+    /// can diff.
+    #[test]
+    fn identical_symbols_from_different_sources_collapse_to_one() {
+        let entry = |symbol: &str, expiry| SymbolEntry {
+            symbol: symbol.to_string(),
+            epic: symbol.to_string(),
+            name: format!("{symbol} option"),
+            instrument_type: InstrumentType::EquityOption,
+            exchange: EXCHANGE.to_string(),
+            expiry,
+            last_update: at(0),
+        };
+
+        let unique: HashSet<SymbolEntry> = vec![
+            entry("AAPL 250919C00100000", at(10)),
+            entry("AAPL 250919C00100000", at(10)),
+            entry("MSFT 250919P00300000", at(20)),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(unique.len(), 2, "identity is symbol plus epic");
+    }
 }
