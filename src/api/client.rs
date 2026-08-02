@@ -209,7 +209,7 @@ impl TastyTrade {
             // error means a caller that logs or reports the error cannot leak
             // account data it never asked to handle.
             crate::TastyTradeError::Unknown(format!(
-                "failed to parse JSON response for request {}: {}",
+                "Failed to parse JSON response for request {}: {}",
                 request_info, e
             ))
         })?;
