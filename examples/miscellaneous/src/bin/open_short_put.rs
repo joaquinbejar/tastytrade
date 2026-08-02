@@ -228,7 +228,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if there are any warnings
     if !dry_run_result.warnings.is_empty() {
         warn!("Order has {} warnings:", dry_run_result.warnings.len());
-        // A real application would inspect these warnings before continuing.
+        for warning in &dry_run_result.warnings {
+            match &warning.code {
+                Some(code) => warn!("  [{}] {}", code, warning.message),
+                None => warn!("  {}", warning.message),
+            }
+        }
+        // A real application would decide from these whether to continue.
     }
 
     // Step 6: Confirm and place the order
