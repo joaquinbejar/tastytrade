@@ -39,6 +39,32 @@ impl Display for TastyTrade {
     }
 }
 
+/// Replaces the account number in an account-scoped URL with a placeholder.
+///
+/// Every `/accounts/{number}/…` request embeds the identifier in its path. That
+/// URL is useful context in an error, the identifier is not: an error value is
+/// logged, reported, or shown wherever the caller decides, so it must not carry
+/// something the caller never chose to handle.
+fn redact_account_path(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    let mut redact_next = false;
+
+    for (index, segment) in url.split('/').enumerate() {
+        if index > 0 {
+            out.push('/');
+        }
+        if redact_next && !segment.is_empty() {
+            out.push_str("{account}");
+            redact_next = false;
+        } else {
+            out.push_str(segment);
+            redact_next = segment == "accounts";
+        }
+    }
+
+    out
+}
+
 pub trait FromTastyResponse<T: DeserializeOwned + Serialize + std::fmt::Debug> {
     fn from_tasty(resp: Response<T>) -> Self;
 }
@@ -165,11 +191,15 @@ impl TastyTrade {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("&");
-        let request_info = if query_string.is_empty() {
+        let full_request = if query_string.is_empty() {
             full_url.clone()
         } else {
             format!("{}?{}", full_url, query_string)
         };
+        // Errors travel wherever the caller sends them, and every account-scoped
+        // path carries the account number in the URL, so error context uses the
+        // redacted form. The full URL stays at DEBUG.
+        let request_info = redact_account_path(&full_request);
 
         let response: reqwest::Response = if query.is_empty() {
             self.client.get(&full_url).send().await?
@@ -203,11 +233,14 @@ impl TastyTrade {
         }
 
         let text = response.text().await?;
-        debug!("🔍 Full response for {}: {}", request_info, text);
+        debug!("full response for {}: {}", full_request, text);
         let result = serde_json::from_str::<TastyApiResponse<T>>(text.as_str()).map_err(|e| {
+            // The body is already available at DEBUG above. Keeping it out of the
+            // error means a caller that logs or reports the error cannot leak
+            // account data it never asked to handle.
             crate::TastyTradeError::Unknown(format!(
-                "Failed to parse JSON response for request {}: {}. Full response: {}",
-                request_info, e, text
+                "Failed to parse JSON response for request {}: {}",
+                request_info, e
             ))
         })?;
 
@@ -294,5 +327,47 @@ impl TastyTrade {
 
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         QuoteStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_the_account_number_from_an_account_scoped_path() {
+        assert_eq!(
+            redact_account_path("https://api.tastyworks.com/accounts/5WX12345/balances"),
+            "https://api.tastyworks.com/accounts/{account}/balances"
+        );
+    }
+
+    #[test]
+    fn redacts_the_account_number_ahead_of_a_query_string() {
+        let redacted = redact_account_path(
+            "https://api.tastyworks.com/accounts/5WX12345/balance-snapshots?start-date=2026-01-01",
+        );
+
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+        assert!(redacted.contains("start-date=2026-01-01"), "{redacted}");
+    }
+
+    #[test]
+    fn redacts_every_segment_that_follows_accounts() {
+        assert_eq!(
+            redact_account_path("https://api.tastyworks.com/accounts/5WX12345/orders/187"),
+            "https://api.tastyworks.com/accounts/{account}/orders/187"
+        );
+    }
+
+    #[test]
+    fn leaves_paths_without_an_account_segment_alone() {
+        for url in [
+            "https://api.tastyworks.com/customers/me/accounts",
+            "https://api.tastyworks.com/instruments/equities/AAPL",
+            "https://api.tastyworks.com/option-chains/SPY/nested",
+        ] {
+            assert_eq!(redact_account_path(url), url);
+        }
     }
 }
