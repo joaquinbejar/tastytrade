@@ -73,6 +73,22 @@
 //! }
 //! ```
 //!
+//! ## Environments
+//!
+//! `TastyTradeConfig::from_env` selects the **certification** environment by
+//! default (`api.cert.tastyworks.com`). Production is a deliberate opt-in:
+//!
+//! ```shell
+//! TASTYTRADE_USE_DEMO=false   # production — orders placed here are real
+//! ```
+//!
+//! Only a value that parses as `false` selects production. A missing, empty or
+//! misspelled variable resolves to certification, so a typo cannot be what
+//! points an order at a funded account.
+//!
+//! Logging in without `TASTYTRADE_USERNAME` and `TASTYTRADE_PASSWORD` fails
+//! locally with `TastyTradeError::ConfigError` and never reaches the network.
+//!
 //!  ## Setup Instructions
 //!  
 //!  1. Clone the repository:

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::Path;
+use tracing::warn;
 
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
@@ -55,24 +56,45 @@ impl TastyTradeConfig {
         Self::from_env()
     }
 
-    /// Initialize a new configuration from environment variables
+    /// Initialize a new configuration from environment variables.
+    ///
+    /// The **certification** environment is the default. Production is a
+    /// deliberate opt-in through `TASTYTRADE_USE_DEMO=false`, and only a value
+    /// that actually parses as `false` selects it — a missing, empty or
+    /// misspelled variable resolves to certification, because a typo must not
+    /// be what points an order at a funded account.
     pub fn from_env() -> Self {
         #[cfg(not(test))]
         dotenv::dotenv().ok();
         let username = env::var("TASTYTRADE_USERNAME").unwrap_or_default();
         let password = env::var("TASTYTRADE_PASSWORD").unwrap_or_default();
-        let use_demo = env::var("TASTYTRADE_USE_DEMO")
-            .unwrap_or_else(|_| "false".to_string())
-            .parse()
-            .unwrap_or(false);
         let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
+
+        // Before parsing the environment selector, so a warning about it is
+        // actually visible.
+        setup_logger_with_level(&log_level);
+
+        let use_demo = match env::var("TASTYTRADE_USE_DEMO") {
+            Ok(raw) => match raw.trim().parse::<bool>() {
+                Ok(value) => value,
+                Err(_) => {
+                    warn!(
+                        "TASTYTRADE_USE_DEMO is not a boolean; using the certification environment"
+                    );
+                    true
+                }
+            },
+            Err(_) => true,
+        };
         let remember_me = env::var("TASTYTRADE_REMEMBER_ME")
             .unwrap_or_else(|_| "false".to_string())
+            .trim()
             .parse()
             .unwrap_or(false);
 
-        // Initialize logger with the specified log level
-        setup_logger_with_level(&log_level);
+        if !use_demo {
+            warn!("Using the tastytrade production environment: orders placed here are real");
+        }
 
         Self {
             username,
@@ -116,15 +138,15 @@ impl TastyTradeConfig {
         !self.username.is_empty() && !self.password.is_empty()
     }
 
-    /// Creates a TastyTrade client from the configuration
+    /// Creates a TastyTrade client from the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TastyTradeError::ConfigError`] without making a network
+    /// request when the username or password is missing. The error names the
+    /// variables to set and never contains their values.
     pub async fn create_client(&self) -> Result<TastyTrade, TastyTradeError> {
-        if !self.has_valid_credentials() {
-            "Missing TastyTrade credentials. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD \
-            environment variables or load from config file.".to_string();
-        }
-
-        let client = TastyTrade::login(self).await?;
-        Ok(client)
+        TastyTrade::login(self).await
     }
 }
 
@@ -148,9 +170,84 @@ mod tests {
         let config = TastyTradeConfig::default();
         assert!(config.username.is_empty());
         assert!(config.password.is_empty());
-        assert!(!config.use_demo);
         assert_eq!(config.log_level, "INFO");
         assert!(!config.remember_me);
+
+        // Certification, not production, when nothing says otherwise.
+        assert!(
+            config.use_demo,
+            "an unset environment must not select production"
+        );
+        assert_eq!(config.base_url, BASE_DEMO_URL);
+        assert_eq!(config.websocket_url, WEBSOCKET_DEMO_URL);
+    }
+
+    /// Production is reachable only through a value that parses as `false`.
+    /// Anything else is a typo, and a typo must not point orders at a funded
+    /// account.
+    #[test]
+    #[serial]
+    fn unparseable_use_demo_falls_back_to_certification() {
+        for raw in ["", "no", "0", "FALSE!", "prod", "  "] {
+            unsafe {
+                env::set_var("TASTYTRADE_USE_DEMO", raw);
+            }
+            let config = TastyTradeConfig::from_env();
+            assert!(
+                config.use_demo,
+                "TASTYTRADE_USE_DEMO={raw:?} must not select production"
+            );
+            assert_eq!(config.base_url, BASE_DEMO_URL);
+        }
+        unsafe {
+            env::remove_var("TASTYTRADE_USE_DEMO");
+        }
+    }
+
+    /// Surrounding whitespace is a shell accident, not a different intent.
+    #[test]
+    #[serial]
+    fn production_opt_in_tolerates_surrounding_whitespace() {
+        unsafe {
+            env::set_var("TASTYTRADE_USE_DEMO", " false ");
+        }
+        let config = TastyTradeConfig::from_env();
+        assert!(!config.use_demo);
+        assert_eq!(config.base_url, BASE_URL);
+        unsafe {
+            env::remove_var("TASTYTRADE_USE_DEMO");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn missing_credentials_fail_locally_without_a_request() {
+        let config = TastyTradeConfig {
+            username: String::new(),
+            password: String::new(),
+            use_demo: true,
+            log_level: "WARN".to_string(),
+            remember_me: false,
+            // Unroutable on purpose: if the guard ever stops working, this
+            // test hangs or fails on connection rather than passing quietly.
+            base_url: "http://127.0.0.1:1".to_string(),
+            websocket_url: WEBSOCKET_DEMO_URL.to_string(),
+        };
+
+        let error = config
+            .create_client()
+            .await
+            .expect_err("missing credentials must not reach the venue");
+
+        assert!(
+            matches!(error, TastyTradeError::ConfigError(_)),
+            "expected a configuration error, got {error:?}"
+        );
+        let text = format!("{error}");
+        assert!(
+            text.contains("TASTYTRADE_USERNAME") && text.contains("TASTYTRADE_PASSWORD"),
+            "the error must name the variables to set: {text}"
+        );
     }
 
     #[test]
