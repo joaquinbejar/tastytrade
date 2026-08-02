@@ -22,6 +22,8 @@ pub mod sentinel {
     pub const PASSWORD: &str = "SENTINEL-password-4Tn8";
     /// Stands in for an account number.
     pub const ACCOUNT_NUMBER: &str = "SENTINEL-5WX00042";
+    /// Stands in for an account nickname.
+    pub const NICKNAME: &str = "SENTINEL-nickname-Retirement";
     /// Stands in for a cash balance.
     pub const BALANCE: &str = "SENTINEL-1234567.89";
 }
@@ -58,6 +60,7 @@ pub fn unparseable_accounts_body() -> String {
                         "account": {{
                             "account-number": "{}",
                             "nickname": "{}",
+                            "cash-balance": "{}",
                             "margin-or-cash": {}
                         }},
                         "authority-level": "owner"
@@ -67,6 +70,7 @@ pub fn unparseable_accounts_body() -> String {
             "context": "/customers/me/accounts"
         }}"#,
         sentinel::ACCOUNT_NUMBER,
+        sentinel::NICKNAME,
         sentinel::BALANCE,
         // A number where the model wants a string: the serde error renders the
         // rejected value, which is the leak path this suite guards.

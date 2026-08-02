@@ -50,6 +50,8 @@ pub struct RecordedRequest {
     pub target: String,
     /// Request body, empty for verbs that carry none.
     pub body: String,
+    /// Request headers, lowercased names to values.
+    pub headers: HashMap<String, String>,
 }
 
 /// A loopback stand-in for the tastytrade REST API.
@@ -88,13 +90,16 @@ impl MockVenue {
                 let recorder = recorder.clone();
 
                 tokio::spawn(async move {
-                    let mut raw = Vec::new();
+                    let mut raw: Vec<u8> = Vec::new();
                     let mut buf = [0u8; 4096];
 
-                    // Read until the headers are complete, then read exactly the
-                    // advertised body length. Enough for this suite; not a
-                    // general-purpose HTTP implementation.
-                    let (method, target, body) = loop {
+                    // Framing is done on the raw bytes throughout: Content-Length
+                    // counts bytes, and deciding when the body is complete from a
+                    // lossily decoded String would wait for bytes that already
+                    // arrived, or slice at the wrong boundary, as soon as
+                    // anything non-ASCII is in play. Only the finished body is
+                    // decoded, and only for assertions.
+                    let (method, target, headers, body) = loop {
                         let Ok(read) = socket.read(&mut buf).await else {
                             return;
                         };
@@ -103,30 +108,40 @@ impl MockVenue {
                         }
                         raw.extend_from_slice(&buf[..read]);
 
-                        let text = String::from_utf8_lossy(&raw).into_owned();
-                        let Some(header_end) = text.find("\r\n\r\n") else {
+                        let Some(header_end) =
+                            raw.windows(4).position(|window| window == b"\r\n\r\n")
+                        else {
                             continue;
                         };
+                        let body_start = header_end + 4;
 
-                        let head = &text[..header_end];
+                        // Headers are ASCII by definition, so decoding the head
+                        // is safe; the body is what needed the care.
+                        let head = String::from_utf8_lossy(&raw[..header_end]).into_owned();
                         let mut lines = head.split("\r\n");
                         let request_line = lines.next().unwrap_or_default();
                         let mut parts = request_line.split_whitespace();
                         let method = parts.next().unwrap_or_default().to_string();
                         let target = parts.next().unwrap_or_default().to_string();
 
-                        let content_length = lines
-                            .find_map(|line| {
+                        let headers: HashMap<String, String> = lines
+                            .filter_map(|line| {
                                 let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().ok())
-                                    .flatten()
+                                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
                             })
+                            .collect();
+
+                        let content_length = headers
+                            .get("content-length")
+                            .and_then(|value| value.parse::<usize>().ok())
                             .unwrap_or(0);
 
-                        let body_so_far = text[header_end + 4..].to_string();
-                        if body_so_far.len() >= content_length {
-                            break (method, target, body_so_far);
+                        if raw.len() - body_start >= content_length {
+                            let body = String::from_utf8_lossy(
+                                &raw[body_start..body_start + content_length],
+                            )
+                            .into_owned();
+                            break (method, target, headers, body);
                         }
                     };
 
@@ -137,6 +152,7 @@ impl MockVenue {
                             method: method.clone(),
                             target: target.clone(),
                             body,
+                            headers,
                         });
 
                     // Route on the path, ignoring any query string.

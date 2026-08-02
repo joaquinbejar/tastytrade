@@ -5,6 +5,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use tracing::Level;
+use tracing::instrument::WithSubscriber;
 
 /// An in-memory sink for `tracing` output.
 #[derive(Clone, Default)]
@@ -59,9 +60,14 @@ impl io::Write for CapturedLogs {
 /// Runs `body` with everything up to `max_level` captured, and returns what it
 /// produced alongside the future's output.
 ///
-/// Uses a scoped subscriber rather than the global default, so tests do not
-/// fight each other over process-global logging — the very thing #12 stopped
-/// the library from doing.
+/// The subscriber is attached to the future rather than to the thread.
+/// `set_default` installs a *thread-local* dispatcher, so holding its guard
+/// across an `.await` captures whatever happens to run on the original thread
+/// while the future itself may be polled somewhere else. Attaching it to the
+/// task makes the capture follow the work, on any runtime flavour.
+///
+/// It is also scoped rather than global, so tests do not fight each other over
+/// process-wide logging — the very thing the library stopped doing.
 pub async fn capture_logs_at<F, T>(max_level: Level, body: F) -> (T, CapturedLogs)
 where
     F: std::future::Future<Output = T>,
@@ -74,9 +80,7 @@ where
         .with_writer(move || writer.clone())
         .finish();
 
-    let guard = tracing::subscriber::set_default(subscriber);
-    let out = body.await;
-    drop(guard);
+    let out = body.with_subscriber(subscriber).await;
 
     (out, logs)
 }

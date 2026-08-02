@@ -125,7 +125,8 @@ async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
     // The whole point: the failure is reported without the data that failed.
     logs.assert_present("failed to deserialize item 0", "the failing item");
     logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
-    logs.assert_absent(sentinel::BALANCE, "the account nickname");
+    logs.assert_absent(sentinel::NICKNAME, "the account nickname");
+    logs.assert_absent(sentinel::BALANCE, "the cash balance");
     assert_no_secret_leaked(&logs);
 }
 
@@ -218,8 +219,21 @@ async fn the_session_token_is_sent_but_never_logged() {
 
     assert_eq!(accounts.expect("an empty list is a success"), 0);
 
-    // The token has to travel: it is what authenticates the request. It must
-    // simply never be written down.
-    assert_eq!(venue.requests().len(), 2);
+    // The token has to travel: it is what authenticates the request. Asserting
+    // the request count alone would stay green with the header removed, which
+    // would make this test's name a lie.
+    let sent = venue.requests();
+    assert_eq!(sent.len(), 2);
+    let authorization = sent[1]
+        .headers
+        .get("authorization")
+        .expect("the account request must be authenticated");
+    assert_eq!(
+        authorization,
+        sentinel::SESSION_TOKEN,
+        "the session token must be the credential actually sent"
+    );
+
+    // Sent, and still never written down.
     assert_no_secret_leaked(&logs);
 }
