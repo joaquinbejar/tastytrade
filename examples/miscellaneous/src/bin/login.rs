@@ -35,25 +35,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let accounts = tasty.accounts().await?;
     info!("Found {} accounts:", accounts.len());
 
+    // The split throughout: tracing gets counts and redacted identifiers,
+    // because example output is routinely pasted into CI logs and support
+    // threads. The operator who ran this and is looking at the terminal gets
+    // the figures, on stdout.
     for account in &accounts {
-        info!("Account: {}", account.number().0);
+        info!("Account {}", account.number().redacted());
+        println!("\nAccount {}", account.number().0);
 
-        // Get account balance
         let balance = account.balance().await?;
-        info!("Cash balance: {}", balance.cash_balance);
-        info!("Net liquidating value: {}", balance.net_liquidating_value);
-        info!(
-            "Maintenance requirement: {}",
+        println!("  Cash balance:            {}", balance.cash_balance);
+        println!(
+            "  Net liquidating value:   {}",
+            balance.net_liquidating_value
+        );
+        println!(
+            "  Maintenance requirement: {}",
             balance.maintenance_requirement
         );
 
-        // Get account positions
         let positions = account.positions().await?;
-        info!("Positions: {}", positions.len());
+        info!(
+            "Account {} has {} position(s)",
+            account.number().redacted(),
+            positions.len()
+        );
+        println!("  Positions ({}):", positions.len());
 
         for (i, position) in positions.iter().enumerate().take(5) {
-            info!(
-                "  Position {}: {} - {} {} @ {}",
+            println!(
+                "    {}. {} {} {} @ {}",
                 i + 1,
                 position.symbol.0,
                 position.quantity_direction,
@@ -61,18 +72,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 position.average_open_price
             );
         }
-
         if positions.len() > 5 {
-            info!("  ... and {} more", positions.len() - 5);
+            println!("    ... and {} more", positions.len() - 5);
         }
 
-        // Get live orders
         let orders = account.live_orders().await?;
-        info!("Live orders: {}", orders.len());
+        info!(
+            "Account {} has {} live order(s)",
+            account.number().redacted(),
+            orders.len()
+        );
+        println!("  Live orders ({}):", orders.len());
 
         for (i, order) in orders.iter().enumerate().take(3) {
-            info!(
-                "  Order {}: {} - {} {} @ {}",
+            println!(
+                "    {}. {} {} {} @ {}",
                 i + 1,
                 order.underlying_symbol.0,
                 order.status,
@@ -80,9 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 order.price
             );
         }
-
         if orders.len() > 3 {
-            info!("  ... and {} more", orders.len() - 3);
+            println!("    ... and {} more", orders.len() - 3);
         }
     }
 

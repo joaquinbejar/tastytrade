@@ -73,13 +73,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let account = &accounts[0]; // Use the first account
-    info!("Using account: {}", account.number().0);
+    info!("Using account {}", account.number().redacted());
+    println!("Using account {}", account.number().0);
 
     // Check account balance and buying power
     let balance = account.balance().await?;
-    info!("Account balance:");
-    info!("  Cash balance: ${}", balance.cash_balance);
-    info!("  Buying power: ${}", balance.equity_buying_power);
+    // Figures go to the operator who asked for them, not into tracing.
+    println!("Account balance:");
+    println!("  Cash balance: ${}", balance.cash_balance);
+    println!("  Buying power: ${}", balance.equity_buying_power);
 
     // Create Symbol object
     let symbol = Symbol(UNDERLYING_SYMBOL.to_string());
@@ -283,9 +285,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match account.place_reviewed_order(reviewed).await {
             Ok(result) => {
-                info!("Order placed successfully!");
-                info!("Order ID: {}", result.order.id.0);
-                info!("Status: {:?}", result.order.status);
+                info!("Order placed successfully");
+                println!("Order ID: {}", result.order.id.0);
+                println!("Status: {:?}", result.order.status);
                 info!(
                     "You have sold {} {} put(s) at strike ${}.",
                     CONTRACT_QUANTITY, symbol.0, target_strike.strike_price

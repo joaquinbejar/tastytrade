@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Found {} account(s)", accounts.len());
     let account = &accounts[0]; // Use the first account
-    info!("Using account: {}", account.number().0);
+    info!("Using account {}", account.number().redacted());
 
     // Get positions to see which symbols are available in the account
     let positions = account.positions().await?;

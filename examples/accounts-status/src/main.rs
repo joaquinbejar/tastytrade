@@ -47,12 +47,18 @@ async fn main() {
     };
 
     for account in accounts {
-        info!("📊 Account: {}", account.number().0);
+        info!("Account {}", account.number().redacted());
+        println!("\nAccount {}", account.number().0);
 
         match account.positions().await {
             Ok(positions) => {
                 let symbols: Vec<String> = positions.into_iter().map(|p| p.symbol.0).collect();
-                info!("   Positions ({}): {:?}", symbols.len(), symbols);
+                info!(
+                    "Account {} has {} position(s)",
+                    account.number().redacted(),
+                    symbols.len()
+                );
+                println!("   Positions ({}): {:?}", symbols.len(), symbols);
             }
             Err(e) => {
                 error!(
