@@ -82,10 +82,11 @@ fix:
 .PHONY: pre-push
 pre-push: fix fmt lint-fix test readme
 
+# missing_docs is denied at the crate root, so `make lint` already fails on an
+# undocumented public item. This is for reading the result.
 .PHONY: doc
 doc:
 	cargo doc --open
-	cargo clippy -- -W missing-docs
 
 .PHONY: publish
 publish: readme coverage

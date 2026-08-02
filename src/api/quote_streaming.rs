@@ -8,6 +8,13 @@ use serde::Serialize;
 use tracing::{debug, error};
 
 impl TastyTrade {
+    /// Exchanges the session for a short-lived DXLink streamer token.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error. Neither the response body nor the token
+    /// reaches the error or the logs: the body of this particular response
+    /// *is* a credential.
     pub async fn quote_streamer_tokens(&self) -> TastyResult<QuoteStreamerTokens> {
         let url = format!("{}/api-quote-tokens", self.config.base_url);
         debug!("Requesting quote streamer tokens from: {}", url);
@@ -50,9 +57,13 @@ impl TastyTrade {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct QuoteStreamerTokens {
+    /// The DXLink credential. Redacted by this type's `Debug`; keep it that
+    /// way.
     pub token: String,
+    /// Where to connect with it.
     #[serde(rename = "dxlink-url")]
     pub streamer_url: String,
+    /// The market-data entitlement this token carries.
     pub level: String,
 }
 
@@ -76,6 +87,10 @@ impl std::fmt::Display for QuoteStreamerTokens {
     DebugPretty, DisplaySimple, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(transparent)]
+/// A symbol as the streaming feed names it.
+///
+/// Not always the same string as the instrument symbol, which is why
+/// [`TastyTrade::get_streamer_symbol`] exists.
 pub struct DxFeedSymbol(pub String);
 
 impl AsSymbol for DxFeedSymbol {
@@ -91,6 +106,11 @@ impl AsSymbol for &DxFeedSymbol {
 }
 
 impl TastyTrade {
+    /// Looks up the streaming name for an instrument.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the instrument is unknown or carries no streamer symbol.
     pub async fn get_streamer_symbol(
         &self,
         instrument_type: &InstrumentType,

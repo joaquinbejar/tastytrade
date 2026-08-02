@@ -1,3 +1,9 @@
+// The public API is the crate contract, and an undocumented item is a
+// contract nobody can read. Denied at the crate root rather than in a
+// Makefile target, so it fails at the same moment as any other compile
+// error and cannot be forgotten by running a different command.
+#![deny(missing_docs)]
+
 //! # tastytrade
 //!
 //! `tastytrade` is a Rust client library for the Tastytrade API, providing programmatic access to
@@ -241,12 +247,16 @@
 //!  We appreciate your interest and look forward to your contributions!
 //!  
 
+/// REST surface: authentication, accounts, instruments and option chains.
 pub mod api;
 mod error;
+/// Real-time transports: DXLink quotes and the account websocket.
 pub mod streaming;
 mod types;
 
+/// The commonly used types in one import.
 pub mod prelude;
+/// Configuration, logging, bulk downloads and parsing helpers.
 pub mod utils;
 
 pub use api::accounts;

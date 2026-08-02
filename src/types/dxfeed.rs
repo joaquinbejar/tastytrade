@@ -5,74 +5,135 @@ use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 
 // Event type flags - these are bit flags used to identify different event types
+
+/// Subscribe to top-of-book quotes. Combine with `|`.
 pub const DXF_ET_QUOTE: i32 = 0x01;
+/// Subscribe to trade prints. Combine with `|`.
 pub const DXF_ET_TRADE: i32 = 0x02;
+/// Subscribe to option Greeks. Combine with `|`.
 pub const DXF_ET_GREEKS: i32 = 0x08;
 
-/// Represents a quote event from the market data feed
+/// The top of book for a symbol.
+///
+/// Prices are `f64` because that is what the feed sends. This is the one place
+/// in the crate where money is not `Decimal`: converting here would imply a
+/// precision the feed does not have. Convert at the boundary if you are going
+/// to settle anything against these.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct DxfQuoteT {
+    /// Event timestamp, milliseconds since the Unix epoch.
     pub time: i64,
+    /// Sequence number, for ordering events sharing a timestamp.
     pub sequence: i32,
+    /// Sub-millisecond part of `time`, in nanoseconds.
     pub time_nanos: i32,
+    /// When the bid was quoted, milliseconds since the Unix epoch.
     pub bid_time: i64,
+    /// Exchange the bid came from, as a single-character code.
     pub bid_exchange_code: i16,
+    /// Best bid.
     pub bid_price: f64,
+    /// Best ask.
     pub ask_price: f64,
+    /// Size available at the bid.
     pub bid_size: i64,
+    /// When the ask was quoted, milliseconds since the Unix epoch.
     pub ask_time: i64,
+    /// Size available at the ask.
     pub ask_size: i64,
+    /// Exchange the ask came from, as a single-character code.
     pub ask_exchange_code: i16,
+    /// Which book this quote describes: composite, regional or aggregate.
     pub scope: i32,
 }
 
-/// Represents a trade event from the market data feed
+/// The last trade for a symbol, with the day's running totals.
+///
+/// As with [`DxfQuoteT`], the figures are `f64` because the feed sends them
+/// that way.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct DxfTradeT {
+    /// Event timestamp, milliseconds since the Unix epoch.
     pub time: i64,
+    /// Sequence number, for ordering events sharing a timestamp.
     pub sequence: i32,
+    /// Sub-millisecond part of `time`, in nanoseconds.
     pub time_nanos: i32,
+    /// Exchange the trade printed on, as a single-character code.
     pub exchange_code: i16,
+    /// Trade price.
     pub price: f64,
+    /// Trade size.
     pub size: i64,
+    /// Uptick or downtick relative to the previous trade.
     pub tick: i32,
+    /// Price change against the previous close.
     pub change: f64,
+    /// Trading day, as a `YYYYMMDD` integer.
     pub day_id: i32,
+    /// Shares or contracts traded so far today.
     pub day_volume: f64,
+    /// Notional traded so far today.
     pub day_turnover: f64,
+    /// Feed-specific flag bits, unmodelled.
     pub raw_flags: i32,
+    /// Direction of the price move that produced this trade.
     pub direction: i32,
+    /// Non-zero when the trade happened in extended trading hours.
     pub is_eth: i32,
+    /// Which book this trade belongs to: composite or regional.
     pub scope: i32,
 }
 
-/// Represents Greeks data for options
+/// Option risk measures, as the feed computes them.
+///
+/// These are model outputs rather than quoted values: the venue's own
+/// volatility surface and rate assumptions produced them, and a different
+/// model gives different numbers for the same option.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct DxfGreeksT {
+    /// Feed flag bits describing the event's place in a snapshot or update.
     pub event_flags: i32,
+    /// Index the feed uses to order and replace events for this symbol.
     pub index: i64,
+    /// Event timestamp, milliseconds since the Unix epoch.
     pub time: i64,
+    /// Option price the Greeks were computed against.
     pub price: f64,
+    /// Implied volatility, as a fraction rather than a percentage.
     pub volatility: f64,
+    /// Change in option price per unit change in the underlying.
     pub delta: f64,
+    /// Change in delta per unit change in the underlying.
     pub gamma: f64,
+    /// Change in option price per day of time decay.
     pub theta: f64,
+    /// Change in option price per unit change in the interest rate.
     pub rho: f64,
+    /// Change in option price per unit change in volatility.
     pub vega: f64,
 }
 
 /// Enum representing different types of market event data
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub enum EventData {
+    /// Top of book.
     Quote(DxfQuoteT),
+    /// A trade print.
     Trade(DxfTradeT),
+    /// Option risk measures.
     Greeks(DxfGreeksT),
 }
 
 /// Main event structure that contains symbol and event data
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct Event {
+    /// The streamer symbol this event is about.
+    ///
+    /// Streamer symbols are not always the same string as the instrument
+    /// symbol; see `TastyTrade::get_streamer_symbol`.
     pub sym: String,
+    /// The event itself.
     pub data: EventData,
 }
 
