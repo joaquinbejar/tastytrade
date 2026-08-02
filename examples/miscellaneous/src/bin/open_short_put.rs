@@ -107,7 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Streamer symbol obtained: {}", streamer_symbol.0);
 
     // Add symbol to subscription
-    quote_sub.add_symbols(std::slice::from_ref(&streamer_symbol));
+    quote_sub
+        .add_symbols(std::slice::from_ref(&streamer_symbol))
+        .await?;
 
     // Wait for a quote
     info!("Waiting for quote data...");
