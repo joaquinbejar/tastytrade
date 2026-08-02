@@ -66,6 +66,18 @@ fn redact_account_path(url: &str) -> String {
     out
 }
 
+/// Wraps a transport failure in the same sanitised shape as a venue failure.
+///
+/// The reqwest error itself is kept out of the value: its `Display` renders
+/// the URL it was trying to reach, account number included.
+fn transport_failure(
+    context: crate::error::RequestContext,
+    error: reqwest::Error,
+) -> crate::TastyTradeError {
+    debug!("transport failure on {}: {}", context.operation, error);
+    crate::TastyTradeError::Request { context, api: None }
+}
+
 /// Strips the parts of a broker error document that can carry account data.
 ///
 /// The top-level code and message are the broker's summary of what went wrong
@@ -260,8 +272,23 @@ impl TastyTrade {
         let request_info = redact_account_path(&full_request);
         let started = std::time::Instant::now();
 
+        // A timeout or a refused connection is the failure most worth
+        // retrying, and it used to exit through From<reqwest::Error> before any
+        // context existed, so the caller lost the method, the endpoint and the
+        // environment on exactly those. Same shape as every other failure.
+        let transport_context = |status| crate::error::RequestContext {
+            method: "GET",
+            operation: request_info.clone(),
+            environment: self.config.environment(),
+            status,
+        };
+
         let response: reqwest::Response = if query.is_empty() {
-            self.client.get(&full_url).send().await?
+            self.client
+                .get(&full_url)
+                .send()
+                .await
+                .map_err(|e| transport_failure(transport_context(None), e))?
         } else {
             let mut url_with_query = reqwest::Url::parse(&full_url).map_err(|e| {
                 crate::TastyTradeError::Unknown(format!("Failed to parse URL: {}", e))
@@ -272,7 +299,11 @@ impl TastyTrade {
                     query_pairs.append_pair(k, v);
                 }
             }
-            self.client.get(url_with_query).send().await?
+            self.client
+                .get(url_with_query)
+                .send()
+                .await
+                .map_err(|e| transport_failure(transport_context(None), e))?
         };
 
         let status = response.status();
@@ -298,16 +329,21 @@ impl TastyTrade {
             );
 
             // A tastytrade error document is the useful case: it carries the
-            // broker's own codes, which are what a caller can act on. Anything
-            // else degrades to the status and the endpoint.
-            return Err(match parsed {
-                Ok(TastyApiResponse::Error { error }) => sanitize_api_error(error).into(),
-                _ => crate::TastyTradeError::Unknown(format!(
-                    "HTTP {} {} for request {}",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("Unknown"),
-                    request_info
-                )),
+            // broker's own code and message, which is what a caller can act
+            // on. Anything else degrades to the status and the endpoint.
+            // One shape for every failed request: sanitised context plus the
+            // broker's own document when it sent one. The body never travels.
+            return Err(crate::TastyTradeError::Request {
+                context: crate::error::RequestContext {
+                    method: "GET",
+                    operation: request_info,
+                    environment: self.config.environment(),
+                    status: Some(status.as_u16()),
+                },
+                api: match serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body) {
+                    Ok(TastyApiResponse::Error { error }) => Some(sanitize_api_error(error)),
+                    _ => None,
+                },
             });
         }
 

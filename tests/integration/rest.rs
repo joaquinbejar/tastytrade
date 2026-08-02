@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use tastytrade::TastyTrade;
-use tastytrade::TastyTradeError;
 use tastytrade::utils::config::TastyTradeConfig;
+use tastytrade::{Environment, TastyTradeError};
 use tracing::Level;
 
 use crate::support::{
@@ -277,24 +277,40 @@ async fn a_broker_error_document_becomes_a_typed_error() {
 
     let error = result.expect_err("a 422 must surface as an error");
 
-    // The broker's own code and message are what a caller can act on.
-    assert!(
-        matches!(error, TastyTradeError::Api(_)),
-        "expected a typed API error, got {error:?}"
+    // The broker's own code and message are what a caller can act on, and the
+    // context says where and against which deployment.
+    let TastyTradeError::Request { context, api } = &error else {
+        panic!("expected a request error, got {error:?}");
+    };
+    assert_eq!(context.status, Some(422));
+    assert_eq!(context.method, "GET");
+    // The fixture sets use_demo: true beside a loopback base_url, which is the
+    // divergence the environment derivation exists to survive. The URL decides,
+    // and a host that is not the certification one is reported as production
+    // because that is the answer that fails safe.
+    assert_eq!(
+        context.environment,
+        Environment::Production,
+        "the reported environment must follow the URL the request actually used"
     );
-    let displayed = format!("{error}");
-    let debugged = format!("{error:?}");
     assert!(
-        displayed.contains("buying power exceeded"),
-        "the broker summary must survive: {displayed}"
+        context.operation.contains("{account}"),
+        "the operation must be redacted: {}",
+        context.operation
+    );
+    assert_eq!(
+        api.as_ref().map(|a| a.message.as_str()),
+        Some("buying power exceeded")
     );
     assert!(
-        displayed.contains("bp"),
-        "the failing rule's code must survive: {displayed}"
+        !error.is_retryable(),
+        "a 422 is the venue rejecting the request, not asking to be retried"
     );
 
     // The nested detail is where balances and account references live, and
     // ApiError renders as JSON in both Display and Debug, so both are checked.
+    let displayed = format!("{error}");
+    let debugged = format!("{error:?}");
     assert!(
         !displayed.contains(sentinel::BALANCE),
         "the nested balance is reachable through Display: {displayed}"
@@ -339,6 +355,10 @@ async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
     assert!(
         rendered.contains("503") && rendered.contains("{account}"),
         "the status and the redacted endpoint must survive: {rendered}"
+    );
+    assert!(
+        error.is_retryable(),
+        "a 503 is the venue asking to be tried again: {rendered}"
     );
     assert!(
         !rendered.contains(sentinel::BALANCE) && !rendered.contains(sentinel::ACCOUNT_NUMBER),

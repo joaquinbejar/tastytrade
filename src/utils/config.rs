@@ -129,6 +129,22 @@ impl TastyTradeConfig {
         Ok(())
     }
 
+    /// Which deployment a request built from this configuration will reach.
+    ///
+    /// Derived from `base_url`, not from `use_demo`. Both fields are public
+    /// and can be set independently — a config loaded from JSON or written as
+    /// a literal can carry `use_demo: true` beside a production URL — and the
+    /// value that decides where the request actually goes is the URL. Anything
+    /// that is not the certification host is treated as production, because
+    /// that is the answer that fails safe.
+    pub fn environment(&self) -> crate::error::Environment {
+        if self.base_url.starts_with(BASE_DEMO_URL) {
+            crate::error::Environment::Certification
+        } else {
+            crate::error::Environment::Production
+        }
+    }
+
     /// Whether both credentials are present.
     ///
     /// Whitespace does not count. `TASTYTRADE_USERNAME=" "` is a shell
@@ -379,5 +395,49 @@ mod tests {
             env::remove_var("LOGLEVEL");
             env::remove_var("TASTYTRADE_REMEMBER_ME");
         }
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::*;
+    use crate::error::Environment;
+
+    fn config_with(base_url: &str, use_demo: bool) -> TastyTradeConfig {
+        TastyTradeConfig {
+            username: "someone".to_string(),
+            password: "secret".to_string(),
+            use_demo,
+            log_level: "WARN".to_string(),
+            remember_me: false,
+            base_url: base_url.to_string(),
+            websocket_url: WEBSOCKET_DEMO_URL.to_string(),
+        }
+    }
+
+    /// Both fields are public, so a config built as a literal or loaded from
+    /// JSON can carry a flag that disagrees with the URL. The URL is what the
+    /// request actually uses, so it is what the reported environment follows.
+    #[test]
+    fn the_url_decides_not_the_flag() {
+        assert_eq!(
+            config_with(BASE_URL, true).environment(),
+            Environment::Production,
+            "use_demo must not relabel a production URL as certification"
+        );
+        assert_eq!(
+            config_with(BASE_DEMO_URL, false).environment(),
+            Environment::Certification
+        );
+    }
+
+    /// An unrecognised host is reported as production, because that is the
+    /// answer that makes a caller careful rather than complacent.
+    #[test]
+    fn an_unknown_host_is_reported_as_production() {
+        assert_eq!(
+            config_with("http://127.0.0.1:8080", true).environment(),
+            Environment::Production
+        );
     }
 }
