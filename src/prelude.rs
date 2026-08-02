@@ -60,7 +60,7 @@ pub use crate::types::dxfeed::*;
 
 // Re-export streaming types
 pub use crate::streaming::account_streaming::{
-    AccountEvent, AccountMessage, AccountStreamer, ErrorMessage, StatusMessage,
+    AccountEvent, AccountMessage, AccountStreamer, AccountTransport, ErrorMessage, StatusMessage,
 };
 pub use crate::streaming::quote_streamer::{QuoteStreamer, QuoteSubscription};
 

@@ -1,16 +1,12 @@
 use std::time::Duration;
 
 use crate::types::balance::Balance;
-use crate::{
-    BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, TastyTradeError, accounts::Account,
-};
-use dxlink::{DXLinkClient, EventType, FeedSubscription};
+use crate::{BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, accounts::Account};
 use futures_util::{SinkExt, StreamExt};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 /**
 Represents the different types of subscription requests.  Used for managing real-time data streams.
@@ -163,152 +159,63 @@ pub enum AccountEvent {
     AccountMessage(Box<AccountMessage>),
 }
 
-/**
-Represents a command that can be sent to a DXLink service.
-
-This enum defines the different types of commands that can be used to interact with a DXLink service,
-primarily for managing subscriptions to data feeds.
-*/
-enum DXLinkCommand {
-    /// Subscribes to a set of data feeds.
-    ///
-    /// The first parameter is a unique request ID (u32). The DXLink service should respond with this same ID.
-    /// The second parameter is a vector of `FeedSubscription`s, defining the feeds to subscribe to.
-    Subscribe(u32, Vec<FeedSubscription>),
-
-    /// Unsubscribes from a set of data feeds.
-    ///
-    /// The first parameter is a unique request ID (u32). The DXLink service should respond with this same ID.
-    /// The second parameter is a vector of `FeedSubscription`s, defining the feeds to unsubscribe from.
-    #[allow(dead_code)]
-    Unsubscribe(u32, Vec<FeedSubscription>),
-
-    /// Disconnects from the DXLink service.
-    Disconnect,
+/// Which transport an [`AccountStreamer`] is using.
+///
+/// One variant today. It exists so the choice is visible in the type rather
+/// than implied by which fields happen to be `Some`, and so adding a transport
+/// later is an added variant rather than a redesign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountTransport {
+    /// The tastytrade account websocket, subscribed to with `SubRequest`
+    /// messages and kept alive with a heartbeat.
+    Websocket,
 }
 
-/// AccountStreamer struct.
+/// Streams account events: balances, orders and positions.
 ///
-/// Provides a way to stream account events. Uses DXLink for communication.
-///
+/// Exactly one transport is connected. An earlier version opened a DXLink
+/// client *and* this websocket, subscribed on both, and forwarded events from
+/// only one of them, so a consumer paid for two connections and received one
+/// stream. #54 tracks what DXLink would need before it can be offered here.
 #[derive(Debug)]
 pub struct AccountStreamer {
     /// Receiver for account events.
     pub event_receiver: flume::Receiver<AccountEvent>,
     /// Sender for actions to be handled.
     pub action_sender: flume::Sender<HandlerAction>,
-    /// Optional channel ID for DXLink communication.
-    channel_id: Option<u32>,
-    /// Optional sender for DXLink commands.
-    dxlink_command_tx: Option<mpsc::Sender<DXLinkCommand>>,
+    /// The transport this streamer connected over.
+    transport: AccountTransport,
 }
 
 impl AccountStreamer {
-    /// Establishes a connection to the TastyTrade streaming API for account updates.
+    /// Connects to the tastytrade account websocket.
     ///
-    /// This function initializes and manages two separate streaming connections:
-    /// 1. **DXLink:** A newer, more robust streaming solution.  It attempts to create and configure a DXLink channel for account updates, subscribing to `Order` and `Message` event types.  If successful, it uses this channel for streaming data.  If DXLink setup fails, it falls back to the legacy websocket implementation.
-    /// 2. **Legacy Websocket:**  A fallback mechanism used if DXLink connection or channel setup fails. It maintains a persistent websocket connection to receive account updates.
+    /// One connection, one stream. The previous implementation also stood up a
+    /// DXLink client, created an `ACCOUNT` feed channel and subscribed on it,
+    /// but nothing forwarded DXLink events to the receiver, so every event a
+    /// caller ever saw came from this websocket while they paid for both. It
+    /// also returned an error when DXLink failed to connect, which meant the
+    /// fallback its own comments described could not happen.
     ///
-    /// Both implementations handle incoming messages and send outgoing actions (e.g., heartbeats, subscriptions).  The DXLink implementation also includes a command channel for managing subscriptions and disconnections.
+    /// Offering DXLink here needs event forwarding written and a session
+    /// against certification confirming tastytrade actually emits account
+    /// events on that channel. That is #54. Until then this is the transport,
+    /// and saying so is more useful than a fallback that never ran.
     ///
     /// # Arguments
     ///
-    /// * `tasty` - A reference to the `TastyTrade` client, containing authentication and configuration details.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(AccountStreamer)` - If the connection is successful, returns an `AccountStreamer` instance for managing the stream.
-    /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.  This could be due to network issues, invalid credentials, or problems with the DXLink or legacy websocket connection.
-    ///
-    /// # Errors
-    ///
-    /// This function can return a variety of errors related to network communication, authentication, or streaming setup. See the `TastyTradeError` enum for more details.
+    /// * `tasty` - A reference to the `TastyTrade` client, containing
+    ///   authentication and configuration details.
     pub async fn connect(tasty: &TastyTrade) -> TastyResult<AccountStreamer> {
-        let token = &tasty.session_token;
+        let writer_token = tasty.session_token.clone();
         let (event_sender, event_receiver) = flume::unbounded();
         let (action_sender, action_receiver): (
             flume::Sender<HandlerAction>,
             flume::Receiver<HandlerAction>,
         ) = flume::unbounded();
 
-        // Initialize DXLink client for account updates
-        let mut client = DXLinkClient::new(&tasty.config.websocket_url, token);
-
-        // Connect to DXLink
-        match client.connect().await {
-            Ok(_) => debug!("Connected to DXLink for account updates"),
-            Err(e) => {
-                warn!("Error connecting to DXLink for account updates: {}", e);
-                return Err(TastyTradeError::Streaming(format!(
-                    "Error connecting to DXLink for account updates: {}",
-                    e
-                )));
-            }
-        }
-
-        // Create channel for account data
-        let channel_id = match client.create_feed_channel("ACCOUNT").await {
-            Ok(id) => {
-                debug!("Created DXLink channel {} for account updates", id);
-                Some(id)
-            }
-            Err(e) => {
-                warn!(
-                    "Could not create DXLink channel for account, using legacy implementation: {}",
-                    e
-                );
-                None
-            }
-        };
-
-        // Configure channel if created successfully
-        if let Some(id) = channel_id {
-            match client
-                .setup_feed(id, &[EventType::Order, EventType::Message])
-                .await
-            {
-                Ok(_) => debug!("Successfully set up DXLink feed for account"),
-                Err(e) => warn!("Error setting up DXLink feed for account: {}", e),
-            }
-        }
-
-        // Create command channel for DXLink operations
-        let (command_tx, mut command_rx) = mpsc::channel::<DXLinkCommand>(100);
-
-        // Spawn task to handle DXLink commands
-        tokio::spawn(async move {
-            while let Some(cmd) = command_rx.recv().await {
-                match cmd {
-                    DXLinkCommand::Subscribe(channel_id, subscriptions) => {
-                        match client.subscribe(channel_id, subscriptions).await {
-                            Ok(_) => debug!("Successfully subscribed to account via DXLink"),
-                            Err(e) => warn!("Error subscribing to account via DXLink: {}", e),
-                        }
-                    }
-                    DXLinkCommand::Unsubscribe(channel_id, subscriptions) => {
-                        match client.unsubscribe(channel_id, subscriptions).await {
-                            Ok(_) => debug!("Successfully unsubscribed from account via DXLink"),
-                            Err(e) => warn!("Error unsubscribing from account via DXLink: {}", e),
-                        }
-                    }
-                    DXLinkCommand::Disconnect => {
-                        match client.disconnect().await {
-                            Ok(_) => debug!("Successfully disconnected DXLink account client"),
-                            Err(e) => warn!("Error disconnecting DXLink account client: {}", e),
-                        }
-                        break; // Exit the loop after disconnecting
-                    }
-                }
-            }
-            debug!("DXLink account command handler terminated");
-        });
-
-        // Keep existing tokio-tungstenite implementation for compatibility
-        let url = tasty.config.websocket_url.clone();
-        let token_clone = token.clone();
-
-        let (ws_stream, _response) = connect_async(url).await?;
+        let (ws_stream, _response) = connect_async(tasty.config.websocket_url.clone()).await?;
+        debug!("Account websocket connected");
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -323,7 +230,7 @@ impl AccountStreamer {
         tokio::spawn(async move {
             while let Ok(action) = action_receiver.recv_async().await {
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token: token_clone.clone(),
+                    auth_token: writer_token.clone(),
                     action: action.action,
                     value: action.value,
                 };
@@ -356,60 +263,33 @@ impl AccountStreamer {
         Ok(Self {
             event_receiver,
             action_sender,
-            channel_id,
-            dxlink_command_tx: Some(command_tx),
+            transport: AccountTransport::Websocket,
         })
     }
 
-    /// Subscribes to account updates.
+    /// Which transport this streamer connected over.
     ///
-    /// This function subscribes to updates for the given account. It uses two methods for subscribing:
-    /// 1. It sends a `Connect` message with the account number to the internal `action_sender`.
-    /// 2. If DXLink is configured (`dxlink_command_tx` and `channel_id` are not `None`), it also sends a `Subscribe` command
-    ///    to the DXLink client, subscribing to "Order" and "Message" events for the account.
+    /// Observable without exposing tokens or account identifiers, so a caller
+    /// can log or report it.
+    pub fn transport(&self) -> AccountTransport {
+        self.transport
+    }
+
+    /// Subscribes to updates for `account`.
+    ///
+    /// One subscription over one transport. The previous version also sent a
+    /// DXLink subscribe for the same account, on a channel whose events never
+    /// reached the caller.
     ///
     /// # Arguments
     ///
     /// * `account` - A reference to the `Account` object to subscribe to.
-    ///
     pub async fn subscribe_to_account<'a>(&self, account: &'a Account<'a>) {
         self.send(
             SubRequestAction::Connect,
             Some(vec![account.inner.account.account_number.clone()]),
         )
         .await;
-
-        // If we have DXLink configured, also subscribe through that channel
-        if let (Some(tx), Some(ch_id)) = (&self.dxlink_command_tx, self.channel_id) {
-            // Subscribe to updates for specific account
-            let account_number = account.inner.account.account_number.0.clone();
-            let subscriptions = vec![
-                FeedSubscription {
-                    event_type: "Order".to_string(),
-                    symbol: account_number.clone(),
-                    from_time: None,
-                    source: None,
-                },
-                FeedSubscription {
-                    event_type: "Message".to_string(),
-                    symbol: account_number,
-                    from_time: None,
-                    source: None,
-                },
-            ];
-
-            let tx_clone = tx.clone();
-            let channel_id = ch_id;
-
-            tokio::spawn(async move {
-                if let Err(e) = tx_clone
-                    .send(DXLinkCommand::Subscribe(channel_id, subscriptions))
-                    .await
-                {
-                    error!("Error sending account subscription command: {}", e);
-                }
-            });
-        }
     }
 
     /// Sends an action to the account streamer.
@@ -451,34 +331,12 @@ impl AccountStreamer {
     }
 }
 
-impl Drop for AccountStreamer {
-    /// Cleans up resources when the `AccountStreamer` is dropped.
-    ///
-    /// This implementation sends a `Disconnect` command to the DXLink client
-    /// if a command channel is available.  This ensures a clean disconnect
-    /// from the data stream.  The disconnect command is sent asynchronously
-    /// to avoid blocking the drop function.  Any errors encountered while
-    /// sending the disconnect command are logged as warnings.
-    fn drop(&mut self) {
-        // Send disconnect command if we have a command channel
-        if let Some(tx) = &self.dxlink_command_tx {
-            let tx_clone = tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = tx_clone.send(DXLinkCommand::Disconnect).await {
-                    warn!("Error sending disconnect command: {}", e);
-                }
-            });
-        }
-    }
-}
-
 impl TastyTrade {
     /// Creates a new `AccountStreamer`.
     ///
-    /// This function attempts to establish a connection to the TastyTrade streaming API
-    /// for account updates.  It prioritizes using DXLink, a newer and more robust
-    /// streaming solution. If DXLink connection fails, it falls back to a legacy
-    /// websocket implementation.
+    /// Connects to the tastytrade account websocket, which is the one
+    /// transport this streamer offers. See [`AccountStreamer::connect`] for
+    /// why, and what a second one would need first.
     ///
     /// # Returns
     ///
