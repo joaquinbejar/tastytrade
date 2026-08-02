@@ -177,7 +177,10 @@ async fn main() -> Result<()> {
     let mut positions = Vec::new();
     let mut balances = BTreeMap::new();
     for account in tasty.accounts().await.unwrap() {
-        account_streamer.subscribe_to_account(&account).await;
+        account_streamer
+            .subscribe_to_account(&account)
+            .await
+            .context("subscribing to account updates")?;
         positions.extend(account.positions().await.unwrap());
         balances.insert(account.number().0, account.balance().await?.cash_balance);
     }

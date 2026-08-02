@@ -1,12 +1,13 @@
 use std::time::Duration;
 
+use crate::TastyTradeError;
 use crate::types::balance::Balance;
 use crate::{BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, accounts::Account};
 use futures_util::{SinkExt, StreamExt};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::debug;
+use tracing::{debug, error, warn};
 
 /**
 Represents the different types of subscription requests.  Used for managing real-time data streams.
@@ -219,12 +220,42 @@ impl AccountStreamer {
 
         let (mut write, mut read) = ws_stream.split();
 
+        // The reader owns the only path from the venue to the caller, so every
+        // way it can end has to be visible. A malformed frame is skipped and
+        // reported; a dead socket or a dropped receiver ends the task, and the
+        // receiver closing is how the caller learns.
         tokio::spawn(async move {
             while let Some(message) = read.next().await {
-                let data = message.unwrap().into_data();
-                let data: AccountEvent = serde_json::from_slice(&data).unwrap();
-                event_sender.send_async(data).await.unwrap();
+                let frame = match message {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        error!("Account websocket read failed, ending the stream: {}", e);
+                        break;
+                    }
+                };
+
+                let data = frame.into_data();
+                let event: AccountEvent = match serde_json::from_slice(&data) {
+                    Ok(event) => event,
+                    Err(e) => {
+                        // The frame is account data, so only its shape is
+                        // reported. One unreadable frame is not a reason to
+                        // drop the stream the caller is relying on.
+                        warn!(
+                            "Skipping an unreadable account frame ({} bytes): {}",
+                            data.len(),
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                if event_sender.send_async(event).await.is_err() {
+                    debug!("Account event receiver dropped, ending the reader");
+                    break;
+                }
             }
+            debug!("Account websocket reader ended");
         });
 
         tokio::spawn(async move {
@@ -234,10 +265,22 @@ impl AccountStreamer {
                     action: action.action,
                     value: action.value,
                 };
-                let message = serde_json::to_string(&message).unwrap();
-                let message = Message::Text(message.into());
+                let message = match serde_json::to_string(&message) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        // A caller's own Serialize failed. Their action is
+                        // lost, which they must be told about, but it is not a
+                        // reason to tear down the connection.
+                        error!(
+                            "Dropping an account action that could not be serialized: {}",
+                            e
+                        );
+                        continue;
+                    }
+                };
 
-                if write.send(message).await.is_err() {
+                if write.send(Message::Text(message.into())).await.is_err() {
+                    debug!("Account websocket writer ended");
                     break;
                 }
             }
@@ -284,12 +327,12 @@ impl AccountStreamer {
     /// # Arguments
     ///
     /// * `account` - A reference to the `Account` object to subscribe to.
-    pub async fn subscribe_to_account<'a>(&self, account: &'a Account<'a>) {
+    pub async fn subscribe_to_account<'a>(&self, account: &'a Account<'a>) -> TastyResult<()> {
         self.send(
             SubRequestAction::Connect,
             Some(vec![account.inner.account.account_number.clone()]),
         )
-        .await;
+        .await
     }
 
     /// Sends an action to the account streamer.
@@ -309,7 +352,7 @@ impl AccountStreamer {
         &self,
         action: SubRequestAction,
         value: Option<T>,
-    ) {
+    ) -> TastyResult<()> {
         self.action_sender
             .send_async(HandlerAction {
                 action,
@@ -317,7 +360,11 @@ impl AccountStreamer {
                     .map(|inner| Box::new(inner) as Box<dyn erased_serde::Serialize + Send + Sync>),
             })
             .await
-            .unwrap();
+            .map_err(|_| {
+                TastyTradeError::Streaming(
+                    "the account stream is closed; reconnect before sending again".to_string(),
+                )
+            })
     }
 
     /// Receives the next account event asynchronously.
