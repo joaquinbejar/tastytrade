@@ -1,11 +1,11 @@
 
-[![Dual License](https://img.shields.io/badge/license-MIT%20and%20Apache%202.0-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Crates.io](https://img.shields.io/crates/v/tastytrade.svg)](https://crates.io/crates/tastytrade)
 [![Downloads](https://img.shields.io/crates/d/tastytrade.svg)](https://crates.io/crates/tastytrade)
 [![Stars](https://img.shields.io/github/stars/joaquinbejar/tastytrade.svg)](https://github.com/joaquinbejar/tastytrade/stargazers)
 [![Issues](https://img.shields.io/github/issues/joaquinbejar/tastytrade.svg)](https://github.com/joaquinbejar/tastytrade/issues)
 [![PRs](https://img.shields.io/github/issues-pr/joaquinbejar/tastytrade.svg)](https://github.com/joaquinbejar/tastytrade/pulls)
-[![Build Status](https://img.shields.io/github/workflow/status/joaquinbejar/tastytrade/CI)](https://github.com/joaquinbejar/tastytrade/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/joaquinbejar/tastytrade/tests.yml?branch=main&label=tests)](https://github.com/joaquinbejar/tastytrade/actions/workflows/tests.yml)
 [![Coverage](https://img.shields.io/codecov/c/github/joaquinbejar/tastytrade)](https://codecov.io/gh/joaquinbejar/tastytrade)
 [![Dependencies](https://img.shields.io/librariesio/github/joaquinbejar/tastytrade)](https://libraries.io/github/joaquinbejar/tastytrade)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://docs.rs/tastytrade)

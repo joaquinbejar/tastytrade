@@ -177,6 +177,18 @@ deny-expiry:
 	fi; \
 	echo "deny-expiry: $$ignores exception(s), none expired"
 
+# README.md is generated from src/lib.rs. Nothing stopped the two drifting,
+# and a hand edit to the README silently disappears on the next regeneration.
+.PHONY: readme-check
+readme-check: check-cargo-readme create-doc
+	@cargo readme > /tmp/tastytrade-readme-check.md
+	@if ! diff -q README.md /tmp/tastytrade-readme-check.md > /dev/null; then \
+		echo "README.md is out of date with src/lib.rs. Run: make readme"; \
+		diff README.md /tmp/tastytrade-readme-check.md | head -40; \
+		exit 1; \
+	fi; \
+	echo "readme-check: README.md matches src/lib.rs"
+
 .PHONY: check-cargo-readme
 check-cargo-readme:
 	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme)
