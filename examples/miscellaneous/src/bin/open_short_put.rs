@@ -269,10 +269,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // The warnings, if any, have been printed above; saying so is what
         // turns the receipt into something placeable.
-        let reviewed = if receipt.is_clean() {
-            receipt.accept()?
-        } else {
-            receipt.accept_with_warnings()
+        // accept_with_warnings exists so a human can say "I read those and I
+        // still want this". An example cannot say it on their behalf, so a
+        // warned dry run stops here rather than demonstrating the flow by
+        // skipping the very review it is meant to require.
+        let Ok(reviewed) = receipt.accept() else {
+            warn!("Aborting: the venue attached warnings and nobody has reviewed them.");
+            warn!("Re-run after reading them, or call accept_with_warnings deliberately.");
+            return Ok(());
         };
 
         match account.place_reviewed_order(reviewed).await {

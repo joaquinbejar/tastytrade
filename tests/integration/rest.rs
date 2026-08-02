@@ -684,4 +684,52 @@ mod reviewed_placement {
             "the guard must fire before anything reaches the venue"
         );
     }
+
+    /// An account number is text, and certification reuses production
+    /// numbering. Without binding the receipt to the venue that answered, a
+    /// sandbox dry run would authorise a real order against the same number.
+    #[tokio::test]
+    async fn a_receipt_cannot_be_spent_on_another_venue() {
+        let first = account_venue("").await;
+        let second = account_venue("").await;
+        assert_ne!(
+            first.base_url(),
+            second.base_url(),
+            "the two venues must be distinguishable"
+        );
+
+        let reviewed = {
+            let config = config_for(&first);
+            let client = TastyTrade::login(&config).await.expect("login");
+            let accounts = client.accounts().await.expect("accounts");
+            accounts[0]
+                .review_order(&an_order())
+                .await
+                .expect("the dry run succeeds")
+                .accept()
+                .expect("a clean dry run accepts")
+        };
+
+        // Same account number, different venue.
+        let config = config_for(&second);
+        let client = TastyTrade::login(&config).await.expect("login");
+        let accounts = client.accounts().await.expect("accounts");
+        assert_eq!(accounts[0].number().0, reviewed.account_number().0);
+
+        let before = second.requests().len();
+        let error = accounts[0]
+            .place_reviewed_order(reviewed)
+            .await
+            .expect_err("a receipt from another venue must not place");
+
+        assert!(
+            format!("{error}").contains("different venue"),
+            "the error should say what is wrong: {error}"
+        );
+        assert_eq!(
+            second.requests().len(),
+            before,
+            "the guard must fire before anything reaches the venue"
+        );
+    }
 }

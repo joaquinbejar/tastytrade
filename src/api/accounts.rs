@@ -94,6 +94,13 @@ pub struct AccountInner {
 #[derive(Debug)]
 pub struct DryRunReceipt {
     account_number: AccountNumber,
+    /// The base URL the dry run was answered by.
+    ///
+    /// An account number is just text, and certification reuses production
+    /// numbering, so binding to the number alone would let a sandbox dry run
+    /// authorise a real order. The origin is what actually distinguishes the
+    /// venue that gave the answer.
+    origin: String,
     order: Order,
     result: DryRunResult,
 }
@@ -131,7 +138,7 @@ impl DryRunReceipt {
     /// [`DryRunReceipt::accept_with_warnings`] to say you did.
     pub fn accept(self) -> TastyResult<ReviewedOrder> {
         if !self.is_clean() {
-            return Err(crate::TastyTradeError::ConfigError(format!(
+            return Err(crate::TastyTradeError::Precondition(format!(
                 "the venue attached {} warning(s) to this order; read them and use \
                  accept_with_warnings to proceed deliberately",
                 self.result.warnings.len()
@@ -140,6 +147,7 @@ impl DryRunReceipt {
 
         Ok(ReviewedOrder {
             account_number: self.account_number,
+            origin: self.origin,
             order: self.order,
         })
     }
@@ -151,6 +159,7 @@ impl DryRunReceipt {
     pub fn accept_with_warnings(self) -> ReviewedOrder {
         ReviewedOrder {
             account_number: self.account_number,
+            origin: self.origin,
             order: self.order,
         }
     }
@@ -161,9 +170,10 @@ impl DryRunReceipt {
 ///
 /// Like [`DryRunReceipt`], this has no public constructor: holding one means
 /// the review happened.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ReviewedOrder {
     account_number: AccountNumber,
+    origin: String,
     order: Order,
 }
 
@@ -259,6 +269,7 @@ impl Account<'_> {
 
         Ok(DryRunReceipt {
             account_number: self.number(),
+            origin: self.tasty.config.base_url.clone(),
             order: order.clone(),
             result,
         })
@@ -277,9 +288,20 @@ impl Account<'_> {
         reviewed: ReviewedOrder,
     ) -> TastyResult<OrderPlacedResult> {
         if reviewed.account_number != self.number() {
-            return Err(crate::TastyTradeError::ConfigError(
+            return Err(crate::TastyTradeError::Precondition(
                 "this order was reviewed against a different account; \
                  review it again against the account you mean to trade"
+                    .to_string(),
+            ));
+        }
+
+        // An account number is text and certification reuses production
+        // numbering, so without this a sandbox dry run would authorise a real
+        // order against the same number.
+        if reviewed.origin != self.tasty.config.base_url {
+            return Err(crate::TastyTradeError::Precondition(
+                "this order was reviewed against a different venue; \
+                 a dry run on one environment says nothing about another"
                     .to_string(),
             ));
         }

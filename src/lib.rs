@@ -101,14 +101,15 @@
 //! let receipt = account.review_order(order).await?;
 //! println!("buying power effect: {}", receipt.result().buying_power_effect.change_in_buying_power);
 //!
-//! let reviewed = if receipt.is_clean() {
-//!     receipt.accept()?
-//! } else {
+//! if !receipt.is_clean() {
 //!     for warning in receipt.warnings() {
 //!         println!("warning: {}", warning.message);
 //!     }
-//!     receipt.accept_with_warnings()
-//! };
+//!     // accept_with_warnings is for a person who has read the above and
+//!     // still wants the order. Reaching for it automatically defeats it.
+//!     return Ok(());
+//! }
+//! let reviewed = receipt.accept()?;
 //!
 //! account.place_reviewed_order(reviewed).await?;
 //! # Ok(())
