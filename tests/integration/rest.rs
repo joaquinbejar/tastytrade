@@ -153,14 +153,17 @@ async fn an_account_scoped_error_does_not_carry_the_account_number() {
         .await
         .expect_err("a 500 must surface as an error");
 
+    // A well-formed error document is reported as the broker wrote it, so the
+    // endpoint context is not in this message. What matters is that nothing
+    // added the account number on the way through.
     let rendered = format!("{error}");
     assert!(
         !rendered.contains(sentinel::ACCOUNT_NUMBER),
         "the account number reached the error text: {rendered}"
     );
     assert!(
-        rendered.contains("{account}"),
-        "the redacted endpoint should still identify the request: {rendered}"
+        rendered.contains("upstream"),
+        "the broker message must survive: {rendered}"
     );
 }
 
@@ -236,4 +239,113 @@ async fn the_session_token_is_sent_but_never_logged() {
 
     // Sent, and still never written down.
     assert_no_secret_leaked(&logs);
+}
+
+#[tokio::test]
+async fn a_broker_error_document_becomes_a_typed_error() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /sessions".to_string(),
+        Route::ok(login_response_body()),
+    );
+    routes.insert(
+        format!("GET /accounts/{}/orders/live", sentinel::ACCOUNT_NUMBER),
+        Route::status(
+            422,
+            format!(
+                r#"{{"error":{{"code":"invalid_order","message":"buying power exceeded","errors":[{{"code":"bp","message":"needs {}"}}]}}}}"#,
+                sentinel::BALANCE
+            ),
+        ),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let (result, logs) = capture_logs_at(Level::WARN, async {
+        let client = TastyTrade::login(&config)
+            .await
+            .expect("login must succeed");
+        client
+            .get::<serde_json::Value, _>(&format!(
+                "/accounts/{}/orders/live",
+                sentinel::ACCOUNT_NUMBER
+            ))
+            .await
+            .map(|_| ())
+    })
+    .await;
+
+    let error = result.expect_err("a 422 must surface as an error");
+
+    // The broker's own code and message are what a caller can act on.
+    assert!(
+        matches!(error, TastyTradeError::Api(_)),
+        "expected a typed API error, got {error:?}"
+    );
+    let displayed = format!("{error}");
+    let debugged = format!("{error:?}");
+    assert!(
+        displayed.contains("buying power exceeded"),
+        "the broker summary must survive: {displayed}"
+    );
+    assert!(
+        displayed.contains("bp"),
+        "the failing rule's code must survive: {displayed}"
+    );
+
+    // The nested detail is where balances and account references live, and
+    // ApiError renders as JSON in both Display and Debug, so both are checked.
+    assert!(
+        !displayed.contains(sentinel::BALANCE),
+        "the nested balance is reachable through Display: {displayed}"
+    );
+    assert!(
+        !debugged.contains(sentinel::BALANCE),
+        "the nested balance is reachable through Debug: {debugged}"
+    );
+
+    // And it must not have been logged on the way through either.
+    logs.assert_absent(sentinel::BALANCE, "the balance from the error document");
+    logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
+}
+
+#[tokio::test]
+async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /sessions".to_string(),
+        Route::ok(login_response_body()),
+    );
+    routes.insert(
+        format!("GET /accounts/{}/balances", sentinel::ACCOUNT_NUMBER),
+        Route::status(
+            503,
+            format!("<html>maintenance {}</html>", sentinel::BALANCE),
+        ),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let client = TastyTrade::login(&config)
+        .await
+        .expect("login must succeed");
+
+    let error = client
+        .get::<serde_json::Value, _>(&format!("/accounts/{}/balances", sentinel::ACCOUNT_NUMBER))
+        .await
+        .expect_err("a 503 must surface as an error");
+
+    let rendered = format!("{error}");
+    assert!(
+        rendered.contains("503") && rendered.contains("{account}"),
+        "the status and the redacted endpoint must survive: {rendered}"
+    );
+    assert!(
+        !rendered.contains(sentinel::BALANCE) && !rendered.contains(sentinel::ACCOUNT_NUMBER),
+        "the body reached the error text: {rendered}"
+    );
+    assert!(
+        !format!("{error:?}").contains(sentinel::BALANCE),
+        "the body reached Debug"
+    );
 }
