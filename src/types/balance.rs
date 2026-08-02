@@ -5,6 +5,7 @@
 ******************************************************************************/
 use crate::PriceEffect;
 use crate::accounts::AccountNumber;
+use chrono::{DateTime, FixedOffset};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -139,7 +140,8 @@ pub struct Balance {
     pub effective_cryptocurrency_buying_power: Decimal,
 
     /// The timestamp of the last balance update.
-    pub updated_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub updated_at: DateTime<FixedOffset>,
 }
 
 /// Represents a snapshot of an account's balance at a specific point in time.
@@ -322,7 +324,7 @@ mod tests {
             pending_cash_effect: PriceEffect::None,
             pending_margin_interest: Decimal::from_str("0.00").unwrap(),
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
-            updated_at: "2024-01-01T12:00:00Z".to_string(),
+            updated_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap(),
         };
 
         let serialized = serde_json::to_string(&balance).unwrap();
@@ -405,7 +407,7 @@ mod tests {
             pending_cash_effect: PriceEffect::Debit,
             pending_margin_interest: Decimal::from_str("0.00").unwrap(),
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
-            updated_at: "2024-01-01T12:00:00Z".to_string(),
+            updated_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap(),
         };
 
         let debug_str = format!("{:?}", balance);

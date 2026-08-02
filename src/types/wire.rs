@@ -178,3 +178,187 @@ mod tests {
         );
     }
 }
+
+/// An instant the venue sends as RFC 3339, e.g. `2025-09-19T13:30:00.000+00:00`.
+///
+/// Kept as `DateTime<FixedOffset>` rather than converted to UTC: the offset is
+/// information the venue chose to send, and a caller who wants UTC is one
+/// `with_timezone` away, while a caller who wanted the original offset cannot
+/// recover it once it is gone.
+pub(crate) mod datetime {
+    use super::*;
+    use chrono::{DateTime, FixedOffset};
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<FixedOffset>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        DateTime::parse_from_rfc3339(text.trim())
+            .map_err(|e| serde::de::Error::custom(format!("expected an RFC 3339 timestamp ({e})")))
+    }
+
+    pub(crate) fn serialize<S>(
+        value: &DateTime<FixedOffset>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_rfc3339())
+    }
+}
+
+/// The same, for an instant the venue may omit.
+pub(crate) mod datetime_option {
+    use super::*;
+    use chrono::{DateTime, FixedOffset};
+
+    pub(crate) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<DateTime<FixedOffset>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Option::<String>::deserialize(deserializer)? {
+            Some(text) => DateTime::parse_from_rfc3339(text.trim())
+                .map(Some)
+                .map_err(|e| {
+                    serde::de::Error::custom(format!("expected an RFC 3339 timestamp ({e})"))
+                }),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn serialize<S>(
+        value: &Option<DateTime<FixedOffset>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(&value.to_rfc3339()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+/// A calendar date with no time and no zone, e.g. `2025-09-19`.
+///
+/// Deliberately `NaiveDate`: an expiration date is a day on an exchange
+/// calendar, not an instant. Attaching a timezone would invent information the
+/// venue did not send and make the value wrong for half the world.
+pub(crate) mod date {
+    use super::*;
+    use chrono::NaiveDate;
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<NaiveDate, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+            .map_err(|e| serde::de::Error::custom(format!("expected a YYYY-MM-DD date ({e})")))
+    }
+
+    pub(crate) fn serialize<S>(value: &NaiveDate, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.format("%Y-%m-%d").to_string())
+    }
+}
+
+/// The same, for a date the venue may omit.
+pub(crate) mod date_option {
+    use super::*;
+    use chrono::NaiveDate;
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Option::<String>::deserialize(deserializer)? {
+            Some(text) => NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+                .map(Some)
+                .map_err(|e| serde::de::Error::custom(format!("expected a YYYY-MM-DD date ({e})"))),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn serialize<S>(value: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(&value.format("%Y-%m-%d").to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod time_tests {
+    use super::*;
+    use chrono::{DateTime, Datelike, FixedOffset, NaiveDate};
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, serde::Serialize)]
+    struct Instant {
+        #[serde(with = "datetime")]
+        at: DateTime<FixedOffset>,
+    }
+
+    #[derive(Debug, Deserialize, serde::Serialize)]
+    struct Day {
+        #[serde(with = "date")]
+        on: NaiveDate,
+    }
+
+    /// The shape the venue actually sends, taken from a captured futures
+    /// option chain.
+    #[test]
+    fn an_rfc_3339_instant_keeps_its_offset() {
+        let parsed: Instant =
+            serde_json::from_str(r#"{"at":"2025-09-19T13:30:00.000+00:00"}"#).expect("parses");
+
+        assert_eq!(parsed.at.date_naive().day(), 19);
+        assert_eq!(
+            parsed.at,
+            DateTime::parse_from_rfc3339("2025-09-19T13:30:00+00:00").unwrap()
+        );
+    }
+
+    /// An expiration is a day on an exchange calendar, not an instant.
+    /// Attaching a timezone would invent information the venue did not send.
+    #[test]
+    fn a_calendar_date_stays_naive() {
+        let parsed: Day = serde_json::from_str(r#"{"on":"2025-09-19"}"#).expect("parses");
+        assert_eq!(parsed.on, NaiveDate::from_ymd_opt(2025, 9, 19).unwrap());
+
+        assert_eq!(
+            serde_json::to_string(&parsed).expect("serializes"),
+            r#"{"on":"2025-09-19"}"#,
+            "the wire shape must round trip unchanged"
+        );
+    }
+
+    /// Dates and instants are different wire formats and must not be
+    /// interchangeable, or a date-only field would silently accept a timestamp
+    /// and lose its time.
+    #[test]
+    fn the_two_formats_do_not_accept_each_other() {
+        serde_json::from_str::<Day>(r#"{"on":"2025-09-19T13:30:00.000+00:00"}"#)
+            .expect_err("a timestamp is not a calendar date");
+        serde_json::from_str::<Instant>(r#"{"at":"2025-09-19"}"#)
+            .expect_err("a calendar date is not an instant");
+    }
+
+    #[test]
+    fn an_unparseable_value_says_what_was_expected() {
+        let error = serde_json::from_str::<Day>(r#"{"on":"19/09/2025"}"#)
+            .expect_err("a non-ISO date must not parse");
+        assert!(error.to_string().contains("YYYY-MM-DD"), "{error}");
+    }
+}

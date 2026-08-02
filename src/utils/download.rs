@@ -3,7 +3,8 @@
    Email: jb@taunais.com
    Date: 31/8/25
 ******************************************************************************/
-use crate::prelude::{SymbolEntry, TastyTradeConfig, parse_expiration_date};
+use crate::prelude::{SymbolEntry, TastyTradeConfig};
+use crate::utils::parse::expiration_instant;
 use crate::{InstrumentType, TastyTrade};
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -187,8 +188,7 @@ async fn download_equity_options(
                     // Process each expiration in the chain
                     for expiration in &chain.expirations {
                         // Parse expiration date
-                        let expiry =
-                            parse_expiration_date(&expiration.expiration_date, last_update);
+                        let expiry = expiration_instant(expiration.expiration_date);
 
                         // Process each strike in the expiration
                         for strike in &expiration.strikes {
@@ -315,8 +315,7 @@ async fn download_future_options(
                         // Process each expiration in the chain
                         for expiration in &option_chain.expirations {
                             // Parse expiration date
-                            let expiry =
-                                parse_expiration_date(&expiration.expiration_date, last_update);
+                            let expiry = expiration_instant(expiration.expiration_date);
 
                             // Process each strike in the expiration
                             for strike in &expiration.strikes {

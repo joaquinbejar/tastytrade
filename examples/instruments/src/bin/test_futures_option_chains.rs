@@ -50,9 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         *symbol_stats
                             .entry(option.underlying_symbol.0.clone())
                             .or_insert(0) += 1;
-                        *expiration_stats
-                            .entry(option.expiration_date.clone())
-                            .or_insert(0) += 1;
+                        *expiration_stats.entry(option.expiration_date).or_insert(0) += 1;
                     }
 
                     let calls = options.iter().filter(|o| o.option_type == "C").count();

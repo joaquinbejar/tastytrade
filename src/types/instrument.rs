@@ -1,6 +1,6 @@
 use super::order::Symbol;
 use crate::api::quote_streaming::DxFeedSymbol;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -219,7 +219,8 @@ pub struct Expiration {
     pub expiration_type: String,
 
     /// The date of expiration in string format (e.g., "2024-12-20").
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
 
     /// The number of days remaining until expiration.
     pub days_to_expiration: u64,
@@ -285,7 +286,8 @@ pub struct FuturesInfo {
     pub root_symbol: String,
 
     /// The expiration date of the futures contract.
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
 
     /// Days to expiration of the futures contract.
     pub days_to_expiration: i32,
@@ -297,10 +299,12 @@ pub struct FuturesInfo {
     pub next_active_month: bool,
 
     /// When the futures contract stops trading.
-    pub stops_trading_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub stops_trading_at: DateTime<FixedOffset>,
 
     /// When the futures contract expires.
-    pub expires_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub expires_at: DateTime<FixedOffset>,
 }
 
 /// Represents the option chains section of futures nested option chain.
@@ -340,7 +344,8 @@ pub struct FuturesExpiration {
     pub asset: String,
 
     /// The expiration date.
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
 
     /// Days to expiration.
     pub days_to_expiration: i32,
@@ -364,10 +369,12 @@ pub struct FuturesExpiration {
     pub strike_factor: Decimal,
 
     /// When trading stops.
-    pub stops_trading_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub stops_trading_at: DateTime<FixedOffset>,
 
     /// When the option expires.
-    pub expires_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub expires_at: DateTime<FixedOffset>,
 
     /// Tick sizes information.
     pub tick_sizes: Vec<FuturesTickSize>,
@@ -434,7 +441,8 @@ pub struct EquityOption {
     /// The symbol of the underlying asset.
     pub underlying_symbol: Symbol,
     /// The expiration date of the option, formatted as a string.
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
     /// The exercise style of the option (e.g., "American").
     pub exercise_style: String,
     /// The number of shares per contract.
@@ -448,13 +456,15 @@ pub struct EquityOption {
     /// The settlement type.
     pub settlement_type: String,
     /// The date and time when the option stops trading, formatted as a string.
-    pub stops_trading_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub stops_trading_at: DateTime<FixedOffset>,
     /// The market time instrument collection.
     pub market_time_instrument_collection: String,
     /// The number of days to expiration (can be negative for expired options).
     pub days_to_expiration: i64,
     /// The date and time when the option expires, formatted as a string.
-    pub expires_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub expires_at: DateTime<FixedOffset>,
     /// Whether the option is closing only.
     pub is_closing_only: bool,
     /// The streamer symbol for the future option.
@@ -491,11 +501,14 @@ pub struct Future {
     #[serde(with = "crate::types::wire::decimal")]
     pub display_factor: Decimal,
     /// The last trade date of the future.
-    pub last_trade_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub last_trade_date: NaiveDate,
     /// The expiration date of the future.
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
     /// The closing only date of the future.
-    pub closing_only_date: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub closing_only_date: Option<NaiveDate>,
     /// Whether the future is active.
     pub active: bool,
     /// Whether the future is in the active month.
@@ -505,9 +518,11 @@ pub struct Future {
     /// Whether the future is closing only.
     pub is_closing_only: bool,
     /// The time at which the future stops trading.
-    pub stops_trading_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub stops_trading_at: DateTime<FixedOffset>,
     /// The time at which the future expires.
-    pub expires_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub expires_at: DateTime<FixedOffset>,
     /// The product group of the future.
     pub product_group: String,
     /// The exchange on which the future is traded.
@@ -637,7 +652,8 @@ pub struct FutureOption {
     /// The product code of the future option.
     pub product_code: String,
     /// The expiration date of the future option.
-    pub expiration_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub expiration_date: NaiveDate,
     /// The root symbol of the future option.
     pub root_symbol: Symbol,
     /// The option root symbol.
@@ -687,7 +703,8 @@ pub struct FutureOption {
     #[serde(with = "crate::types::wire::decimal")]
     pub strike_factor: Decimal,
     /// The maturity date of the future option.
-    pub maturity_date: String,
+    #[serde(with = "crate::types::wire::date")]
+    pub maturity_date: NaiveDate,
     /// Indicates whether the future option is exercisable weekly.
     pub is_exercisable_weekly: bool,
     /// The last trade time of the future option.
@@ -699,9 +716,11 @@ pub struct FutureOption {
     /// Indicates whether the future option is active.
     pub active: bool,
     /// The date and time when the future option stops trading.
-    pub stops_trading_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub stops_trading_at: DateTime<FixedOffset>,
     /// The date and time when the future option expires.
-    pub expires_at: String,
+    #[serde(with = "crate::types::wire::datetime")]
+    pub expires_at: DateTime<FixedOffset>,
     /// Information about the future option product.
     pub future_option_product: FutureOptionProduct,
 }

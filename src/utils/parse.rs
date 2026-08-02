@@ -19,3 +19,13 @@ pub fn parse_expiration_date(date_str: &str, fallback: DateTime<Utc>) -> DateTim
         fallback
     }
 }
+
+/// The instant an expiration date is treated as expiring at.
+///
+/// Deserialization already turns the wire value into a [`NaiveDate`], so the
+/// string parsing in [`parse_expiration_date`] has nothing left to do on that
+/// path. This is the same convention — the US market close, approximated as
+/// 21:00 UTC — applied to a date that is already a date.
+pub fn expiration_instant(date: chrono::NaiveDate) -> DateTime<Utc> {
+    date.and_hms_opt(21, 0, 0).unwrap_or_default().and_utc()
+}

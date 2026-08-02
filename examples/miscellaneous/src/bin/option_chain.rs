@@ -4,7 +4,7 @@
    Date: 7/3/25
 ******************************************************************************/
 
-use chrono::{Local, NaiveDate};
+use chrono::Local;
 use rust_decimal::Decimal;
 use std::env;
 use tastytrade::prelude::*;
@@ -66,18 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut found_0dte = false;
 
             for expiration in &chain.expirations {
-                // Parse the expiration date from the string
-                let exp_date =
-                    match NaiveDate::parse_from_str(&expiration.expiration_date, "%Y-%m-%d") {
-                        Ok(date) => date,
-                        Err(_) => {
-                            debug!(
-                                "Could not parse expiration date: {}",
-                                expiration.expiration_date
-                            );
-                            continue;
-                        }
-                    };
+                // Already a date: deserialization does the parsing now, so
+                // there is no failure case left to handle here.
+                let exp_date = expiration.expiration_date;
 
                 // Check if this expiration is today (0DTE)
                 if exp_date == today {
