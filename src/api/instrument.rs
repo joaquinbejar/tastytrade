@@ -5,9 +5,9 @@
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
 use crate::types::instrument::{
-    CompactOptionChain, CompactOptionChainResponse, Cryptocurrency, EquityInstrument,
-    EquityInstrumentInfo, EquityOption, FutureOption, FutureOptionProduct, FutureProduct,
-    FuturesNestedOptionChain, NestedOptionChain, QuantityDecimalPrecision, Warrant,
+    CompactOptionChain, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption,
+    FutureOption, FutureOptionProduct, FutureProduct, FuturesNestedOptionChain, NestedOptionChain,
+    QuantityDecimalPrecision, Warrant,
 };
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
@@ -115,20 +115,18 @@ impl TastyTrade {
         &self,
         underlying_symbol: impl AsSymbol,
     ) -> TastyResult<CompactOptionChain> {
-        let url = format!("/option-chains/{}/compact", underlying_symbol.as_symbol().0);
-        let full_url = format!("{}{}", self.config.base_url, url);
-
-        let response = self.client.get(&full_url).send().await?;
-        let text = response.text().await?;
-
-        let parsed: CompactOptionChainResponse = serde_json::from_str(&text).map_err(|e| {
-            crate::TastyTradeError::Unknown(format!(
-                "Failed to parse compact option chain response for {}: {}. Full response: {}",
-                full_url, e, text
+        // Through the generic verb like every other endpoint: it is the only
+        // path that checks the status. Decoding by hand here used to put the
+        // entire response body into the error message, so any caller logging a
+        // parse failure logged the whole document.
+        let resp: Items<CompactOptionChain> = self
+            .get(format!(
+                "/option-chains/{}/compact",
+                underlying_symbol.as_symbol().0
             ))
-        })?;
+            .await?;
 
-        parsed.data.items.into_iter().next().ok_or_else(|| {
+        resp.into_items()?.into_iter().next().ok_or_else(|| {
             crate::TastyTradeError::Unknown(
                 "No compact option chain data found in response".to_string(),
             )
@@ -196,25 +194,14 @@ impl TastyTrade {
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
     pub async fn get_equity_option(&self, symbol: impl AsSymbol) -> TastyResult<EquityOption> {
-        #[derive(serde::Deserialize)]
-        struct EquityOptionResponse {
-            data: EquityOption,
-        }
-
-        let url = format!("/instruments/equity-options/{}", symbol.as_symbol().0);
-        let full_url = format!("{}{}", self.config.base_url, url);
-
-        let response = self.client.get(&full_url).send().await?;
-        let text = response.text().await?;
-
-        let parsed: EquityOptionResponse = serde_json::from_str(&text).map_err(|e| {
-            crate::TastyTradeError::Unknown(format!(
-                "Failed to parse equity option response for {}: {}. Full response: {}",
-                full_url, e, text
-            ))
-        })?;
-
-        Ok(parsed.data)
+        // The hand-rolled envelope this replaced was `{ data: EquityOption }`,
+        // which is what the generic verb decodes anyway — minus the status
+        // check it never did and the body it put into the error message.
+        self.get(format!(
+            "/instruments/equity-options/{}",
+            symbol.as_symbol().0
+        ))
+        .await
     }
 
     /// Futures contracts, optionally filtered by product code.

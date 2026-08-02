@@ -7,16 +7,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
-pub struct CompactOptionChainResponse {
-    pub data: CompactOptionChainData,
-}
-
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
-pub struct CompactOptionChainData {
-    pub items: Vec<CompactOptionChain>,
-}
-
 /// Represents a compact option chain with simplified strike information.
 ///
 /// This structure provides a more streamlined representation of an option chain
