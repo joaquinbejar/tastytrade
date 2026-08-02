@@ -20,6 +20,10 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Scope, not a lint level: cargo-deny reports unmaintained findings as errors
+# and this says which crates to look at. "all" includes transitive ones, which
+# is where an abandoned crate usually arrives from.
+unmaintained = "all"
 
 # Every exception carries a reason, an owner and an expiry, in the form
 # `owner=<login> expires=<YYYY-MM-DD>`. cargo-deny has no expiring-ignore

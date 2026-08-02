@@ -153,7 +153,7 @@ deny: check-cargo-deny deny-expiry
 .PHONY: deny-expiry
 deny-expiry:
 	@dates=$$(grep -oE 'expires=[0-9]{4}-[0-9]{2}-[0-9]{2}' deny.toml | cut -d= -f2); \
-	ignores=$$(grep -cE '^\s*\{ id = "RUSTSEC' deny.toml); \
+	ignores=$$(grep -cE '^[[:space:]]*\{ id = "RUSTSEC' deny.toml); \
 	found=$$(printf '%s\n' "$$dates" | grep -c '[0-9]' || true); \
 	if [ "$$found" != "$$ignores" ]; then \
 		echo "deny-expiry: $$ignores exception(s) but $$found expiry marker(s)."; \
