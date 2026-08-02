@@ -18,6 +18,11 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::debug;
 
+/// An authenticated tastytrade session.
+///
+/// Holds the session token and the configuration it was built from, which
+/// includes the password, so its `Debug` redacts both. Cloning is cheap and
+/// shares the underlying HTTP client.
 #[derive(Clone)]
 pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
@@ -155,11 +160,25 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
 }
 
 impl TastyTrade {
+    /// Logs in using configuration read from the environment.
+    ///
+    /// # Errors
+    ///
+    /// Fails without a network request when the credentials are missing, and
+    /// with the venue's own error when they are rejected. Certification is the
+    /// default environment; see [`crate::utils::config::TastyTradeConfig`].
     pub async fn default() -> TastyResult<Self> {
         let config = TastyTradeConfig::default();
         Self::login(&config).await
     }
 
+    /// Logs in with an explicit configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` without contacting the venue when the username or
+    /// password is missing or blank. The error names the variables to set and
+    /// never their values.
     pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
         // Fail here rather than posting an empty credential pair to the venue.
         // The message names the variables, never their values.
@@ -249,6 +268,17 @@ impl TastyTrade {
         Ok(response)
     }
 
+    /// Performs a GET with query parameters and decodes the response.
+    ///
+    /// `T` is the payload inside the envelope; `R` is what you want back, so
+    /// asking for a `Paginated<T>` from an endpoint that does not paginate is
+    /// an error rather than a panic.
+    ///
+    /// # Errors
+    ///
+    /// A non-2xx response becomes [`crate::TastyTradeError::Request`] carrying
+    /// a redacted endpoint, the environment and the status. Response bodies
+    /// never reach the error or the logs.
     pub async fn get_with_query<T, R, U>(&self, url: U, query: &[(&str, &str)]) -> TastyResult<R>
     where
         T: DeserializeOwned + Serialize + std::fmt::Debug,
@@ -374,6 +404,11 @@ impl TastyTrade {
         }
     }
 
+    /// Performs a GET with no query parameters.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::get_with_query`].
     pub async fn get<T: DeserializeOwned + Serialize + std::fmt::Debug, U: AsRef<str>>(
         &self,
         url: U,
@@ -381,6 +416,17 @@ impl TastyTrade {
         self.get_with_query(url, &[]).await
     }
 
+    /// Performs a POST with a JSON payload.
+    ///
+    /// **This can mutate account state**, including placing an order. Prefer
+    /// [`crate::accounts::Account::review_order`] and
+    /// [`crate::accounts::Account::place_reviewed_order`] for anything that
+    /// trades.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a payload that fails to serialize, and the venue's error
+    /// otherwise.
     pub async fn post<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
     where
         R: DeserializeOwned + Serialize + std::fmt::Debug,
@@ -403,6 +449,13 @@ impl TastyTrade {
         }
     }
 
+    /// Performs a DELETE.
+    ///
+    /// **This can mutate account state**, including cancelling an order.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
     pub async fn delete<R, U>(&self, url: U) -> TastyResult<R>
     where
         R: DeserializeOwned + Serialize + std::fmt::Debug,
@@ -426,6 +479,13 @@ impl TastyTrade {
         }
     }
 
+    /// Every account on this session.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which
+    /// is a defect in this crate rather than an empty account list. An account
+    /// list that is genuinely empty is `Ok`.
     pub async fn accounts(&self) -> TastyResult<Vec<Account<'_>>> {
         let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
         Ok(resp
@@ -435,6 +495,11 @@ impl TastyTrade {
             .collect())
     }
 
+    /// One account by number, or `None` when this session cannot see it.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::accounts`], which this uses.
     pub async fn account(
         &self,
         account_number: impl Into<AccountNumber>,
@@ -449,6 +514,12 @@ impl TastyTrade {
         Ok(None)
     }
 
+    /// Opens a DXLink market-data streamer.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer token cannot be obtained or the DXLink
+    /// connection cannot be established.
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         QuoteStreamer::connect(self).await
     }

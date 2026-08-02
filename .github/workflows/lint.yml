@@ -53,3 +53,8 @@ jobs:
 
       - name: Lint
         run: make lint
+
+      # Presence of documentation is denied at the crate root; this catches
+      # documentation that is broken, which a presence check cannot see.
+      - name: Documentation builds without warnings
+        run: make doc-check

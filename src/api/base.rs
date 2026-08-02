@@ -6,11 +6,22 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use tracing::{debug, warn};
 
+/// The two shapes a tastytrade response can take.
+///
+/// Untagged, so the discriminant is the shape of the body rather than a field.
+/// One consequence is worth knowing: untagged deserialization discards the
+/// inner error and reports "data did not match any variant", so a failure
+/// inside `T` cannot explain itself through this enum.
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TastyApiResponse<T: Serialize + std::fmt::Debug> {
+    /// The venue answered with data.
     Success(Response<T>),
-    Error { error: ApiError },
+    /// The venue answered with an error document.
+    Error {
+        /// The broker's own code and message.
+        error: ApiError,
+    },
 }
 
 impl Display for TastyApiResponse<String> {
@@ -22,24 +33,42 @@ impl Display for TastyApiResponse<String> {
     }
 }
 
+/// A successful response envelope.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response<T: Serialize + std::fmt::Debug> {
+    /// The payload.
     pub data: T,
+    /// The endpoint the venue believes it answered.
+    ///
+    /// Venue-supplied and usually the request path, so on an account-scoped
+    /// endpoint it contains the account number. Redact it before it reaches a
+    /// log or an error.
     pub context: String,
+    /// Present only on paginated endpoints.
     pub pagination: Option<Pagination>,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// Where a page sits in a paginated listing.
 pub struct Pagination {
+    /// Items requested per page.
     pub per_page: usize,
+    /// Zero-based index of this page.
     pub page_offset: usize,
+    /// Index of the first item on this page within the whole listing.
     pub item_offset: usize,
+    /// Items in the listing as a whole.
     pub total_items: usize,
+    /// Pages in the listing as a whole.
     pub total_pages: usize,
+    /// Items on this page, which can be zero on a page the venue still counts.
     pub current_item_count: usize,
+    /// Link to the previous page, when there is one.
     pub previous_link: Option<String>,
+    /// Link to the next page, when there is one.
     pub next_link: Option<String>,
+    /// Template the venue offers for building page links.
     pub paging_link_template: Option<String>,
 }
 
@@ -159,12 +188,17 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> Items<T> {
     }
 }
 
+/// One page of a paginated listing.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Paginated<T> {
+    /// The items on this page. Unparseable ones are already dropped; see
+    /// [`Items::into_items`] for what that means.
     pub items: Vec<T>,
+    /// Where this page sits in the listing.
     pub pagination: Pagination,
 }
 
+/// The result type every fallible call in this crate returns.
 pub type TastyResult<T> = Result<T, TastyTradeError>;
 
 #[cfg(test)]

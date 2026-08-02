@@ -1,3 +1,9 @@
+// The public API is the crate contract, and an undocumented item is a
+// contract nobody can read. Denied at the crate root rather than in a
+// Makefile target, so it fails at the same moment as any other compile
+// error and cannot be forgotten by running a different command.
+#![deny(missing_docs)]
+
 //! # tastytrade
 //!
 //! `tastytrade` is a Rust client library for the Tastytrade API, providing programmatic access to
@@ -27,7 +33,9 @@
 //!     // Get account information
 //!     let accounts = tasty.accounts().await?;
 //!     for account in accounts {
-//!         println!("Account: {}", account.number().0);
+//!         // Redacted: doc examples get copied, and an account number in a
+//!         // log is the thing this crate spends most of its care avoiding.
+//!         println!("Account: {}", account.number().redacted());
 //!         
 //!         // Get positions
 //!         let positions = account.positions().await?;
@@ -51,9 +59,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = TastyTradeConfig::from_env();
-//!     let tasty = TastyTrade::login(&config)
-//!            .await
-//!            .unwrap();
+//!     let tasty = TastyTrade::login(&config).await?;
 //!     let mut quote_streamer = tasty.create_quote_streamer().await?;
 //!     let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
 //!
@@ -96,8 +102,12 @@
 //!
 //! ```rust,no_run
 //! # use tastytrade::{Order, TastyTrade};
-//! # async fn place(account: &tastytrade::accounts::Account<'_>, order: &Order)
-//! #     -> Result<(), Box<dyn std::error::Error>> {
+//! # use tastytrade::utils::config::TastyTradeConfig;
+//! # async fn place(
+//! #     account: &tastytrade::accounts::Account<'_>,
+//! #     order: &Order,
+//! #     config: &TastyTradeConfig,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
 //! let receipt = account.review_order(order).await?;
 //! println!("buying power effect: {}", receipt.result().buying_power_effect.change_in_buying_power);
 //!
@@ -111,7 +121,11 @@
 //! }
 //! let reviewed = receipt.accept()?;
 //!
-//! account.place_reviewed_order(reviewed).await?;
+//! // Certification only. An example that places on production is an example
+//! // somebody runs on production.
+//! if config.use_demo {
+//!     account.place_reviewed_order(reviewed).await?;
+//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -241,12 +255,16 @@
 //!  We appreciate your interest and look forward to your contributions!
 //!  
 
+/// REST surface: authentication, accounts, instruments and option chains.
 pub mod api;
 mod error;
+/// Real-time transports: DXLink quotes and the account websocket.
 pub mod streaming;
 mod types;
 
+/// The commonly used types in one import.
 pub mod prelude;
+/// Configuration, logging, bulk downloads and parsing helpers.
 pub mod utils;
 
 pub use api::accounts;

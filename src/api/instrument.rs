@@ -12,6 +12,12 @@ use crate::types::instrument::{
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
+    /// Details for one equity, including its trading flags.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_equity_info(
         &self,
         symbol: impl AsSymbol,
@@ -20,6 +26,13 @@ impl TastyTrade {
             .await
     }
 
+    /// Equities by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_equities(
         &self,
         symbols: &[impl AsSymbol],
@@ -38,6 +51,12 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One page of currently active equities.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and as the
+    /// other listings otherwise.
     pub async fn list_active_equities(
         &self,
         page_offset: usize,
@@ -52,11 +71,24 @@ impl TastyTrade {
             .await
     }
 
+    /// One equity by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_equity(&self, symbol: impl AsSymbol) -> TastyResult<EquityInstrument> {
         self.get(format!("/instruments/equities/{}", symbol.as_symbol().0))
             .await
     }
 
+    /// The flat option chain for an underlying.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_option_chains(
         &self,
         underlying_symbol: impl AsSymbol,
@@ -70,6 +102,15 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// The compact option chain for an underlying.
+    ///
+    /// Compact chains carry symbols without the per-contract detail, which is
+    /// what you want when building a subscription list.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_compact_option_chain(
         &self,
         underlying_symbol: impl AsSymbol,
@@ -94,6 +135,13 @@ impl TastyTrade {
         })
     }
 
+    /// Option chains grouped by expiration and strike.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_nested_option_chains(
         &self,
         underlying_symbol: impl AsSymbol,
@@ -107,6 +155,13 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// Equity options by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_equity_options(
         &self,
         symbols: &[impl AsSymbol],
@@ -134,6 +189,12 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One equity option by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_equity_option(&self, symbol: impl AsSymbol) -> TastyResult<EquityOption> {
         #[derive(serde::Deserialize)]
         struct EquityOptionResponse {
@@ -156,6 +217,13 @@ impl TastyTrade {
         Ok(parsed.data)
     }
 
+    /// Futures contracts, optionally filtered by product code.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_futures(
         &self,
         symbols: Option<&[impl AsSymbol]>,
@@ -204,6 +272,12 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One futures contract by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_future(
         &self,
         symbol: impl AsSymbol,
@@ -213,11 +287,24 @@ impl TastyTrade {
             .await
     }
 
+    /// Every futures product the venue lists.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_future_products(&self) -> TastyResult<Vec<FutureProduct>> {
         let resp: Items<FutureProduct> = self.get("/instruments/future-products").await?;
         resp.into_items()
     }
 
+    /// One futures product by exchange and code.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_future_product(
         &self,
         exchange: &str,
@@ -230,12 +317,25 @@ impl TastyTrade {
         .await
     }
 
+    /// Every futures-option product the venue lists.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_future_option_products(&self) -> TastyResult<Vec<FutureOptionProduct>> {
         let resp: Items<FutureOptionProduct> =
             self.get("/instruments/future-option-products").await?;
         resp.into_items()
     }
 
+    /// One futures-option product, addressed by exchange and root symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_future_option_product_by_exchange(
         &self,
         exchange: &str,
@@ -248,6 +348,12 @@ impl TastyTrade {
         .await
     }
 
+    /// One futures-option product by root symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_future_option_product(
         &self,
         root_symbol: &str,
@@ -259,6 +365,13 @@ impl TastyTrade {
         .await
     }
 
+    /// The flat futures-option chain for a product.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_futures_option_chains(
         &self,
         product_code: &str,
@@ -269,6 +382,13 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// Futures-option chains grouped by expiration and strike.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_nested_futures_option_chains(
         &self,
         product_code: &str,
@@ -282,6 +402,13 @@ impl TastyTrade {
         Ok(vec![nested_chain])
     }
 
+    /// Futures options by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_future_options(
         &self,
         symbols: &[impl AsSymbol],
@@ -303,6 +430,12 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One futures option by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_future_option(&self, symbol: impl AsSymbol) -> TastyResult<FutureOption> {
         let encoded_symbol = symbol
             .as_symbol()
@@ -314,6 +447,16 @@ impl TastyTrade {
             .await
     }
 
+    /// Tradable cryptocurrencies.
+    ///
+    /// These trade in fractions, which is why quantities across this crate are
+    /// `Decimal` rather than integers.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_cryptocurrencies(
         &self,
         symbols: &[impl AsSymbol],
@@ -335,12 +478,25 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One cryptocurrency by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_cryptocurrency(&self, symbol: impl AsSymbol) -> TastyResult<Cryptocurrency> {
         let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
         self.get(format!("/instruments/cryptocurrencies/{encoded_symbol}"))
             .await
     }
 
+    /// Tradable warrants.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_warrants(
         &self,
         symbols: Option<&[impl AsSymbol]>,
@@ -362,11 +518,27 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// One warrant by symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue does not recognise the symbol, and propagates its
+    /// error otherwise.
     pub async fn get_warrant(&self, symbol: impl AsSymbol) -> TastyResult<Warrant> {
         self.get(format!("/instruments/warrants/{}", symbol.as_symbol().0))
             .await
     }
 
+    /// How many decimal places each instrument type accepts for a quantity.
+    ///
+    /// Worth consulting before sizing an order: submitting more precision than
+    /// the venue accepts is a rejection.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which is a
+    /// defect in this crate's model rather than an empty result. A genuinely
+    /// empty listing is `Ok`.
     pub async fn list_quantity_decimal_precisions(
         &self,
     ) -> TastyResult<Vec<QuantityDecimalPrecision>> {

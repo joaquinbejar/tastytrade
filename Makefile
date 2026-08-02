@@ -68,7 +68,7 @@ clean:
 # Pre-push checks. Every target here is read-only, so CI and a developer see
 # the same verdict and neither of them rewrites the tree to reach it.
 .PHONY: check
-check: fmt-check lint test check-spanish
+check: fmt-check lint test check-spanish doc-check
 
 # Run the project
 .PHONY: run
@@ -82,10 +82,18 @@ fix:
 .PHONY: pre-push
 pre-push: fix fmt lint-fix test readme
 
+# Reading the docs. Opens a browser, so it is not a gate.
 .PHONY: doc
-doc:
+doc: doc-check
 	cargo doc --open
-	cargo clippy -- -W missing-docs
+
+# Validating them. missing_docs is denied at the crate root, so `make lint`
+# catches an item with no documentation at all; this catches documentation
+# that is broken, which the presence check cannot see. Non-interactive, whole
+# workspace, all features, warnings denied.
+.PHONY: doc-check
+doc-check:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 .PHONY: publish
 publish: readme coverage

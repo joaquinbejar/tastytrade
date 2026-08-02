@@ -10,6 +10,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 impl TastyTrade {
+    /// The nested option chain for one underlying.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the venue returns no chain for the symbol, which is an
+    /// error rather than a panic — it used to be the latter.
     pub async fn nested_option_chain_for(
         &self,
         symbol: impl Into<Symbol>,
@@ -26,6 +32,11 @@ impl TastyTrade {
         })
     }
 
+    /// The flat option chain for one underlying.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
     pub async fn option_chain_for(
         &self,
         symbol: impl Into<Symbol>,
@@ -36,6 +47,11 @@ impl TastyTrade {
         resp.into_items()
     }
 
+    /// Looks up the streaming name for one option symbol.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the option is unknown to the venue.
     pub async fn get_option_info(&self, symbol: impl AsSymbol) -> TastyResult<OptionInfo> {
         self.get(format!(
             "/instruments/equity-options/{}",
@@ -47,46 +63,76 @@ impl TastyTrade {
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// What the streaming feed calls one option.
 pub struct OptionInfo {
+    /// The symbol to subscribe with, which is not always the instrument
+    /// symbol.
     pub streamer_symbol: DxFeedSymbol,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// An option chain grouped by expiration and then by strike.
 pub struct NestedOptionChain {
+    /// The instrument the options are written on.
     pub underlying_symbol: Symbol,
+    /// The option root, which differs from the underlying after a corporate
+    /// action.
     pub root_symbol: Symbol,
+    /// Standard or non-standard. Still text: no captured payload in this
+    /// repository shows its value set, so it is not modelled as an enum.
     pub option_chain_type: String,
+    /// Shares delivered per contract. Not always 100 after a split.
     pub shares_per_contract: u64,
+    /// The expirations, each with its strikes.
     pub expirations: Vec<Expiration>,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// One expiration and the strikes listed against it.
 pub struct Expiration {
+    /// Regular, weekly, quarterly or end-of-month.
     pub expiration_type: ExpirationType,
+    /// The calendar date, with no time and no zone: an expiration is a day on
+    /// an exchange calendar, not an instant.
     #[serde(with = "crate::types::wire::date")]
     pub expiration_date: NaiveDate,
+    /// Days remaining, as the venue counts them.
     pub days_to_expiration: u64,
+    /// Morning or afternoon settlement.
     pub settlement_type: SettlementType,
+    /// The strikes at this expiration.
     pub strikes: Vec<Strike>,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// One strike, with the two contracts written at it.
 pub struct Strike {
+    /// The strike, at full precision.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub strike_price: Decimal,
+    /// The call contract's symbol.
     pub call: Symbol,
+    /// The put contract's symbol.
     pub put: Symbol,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// One option from a flat chain.
 pub struct OptionChain {
+    /// The instrument the option is written on.
     pub underlying_symbol: Symbol,
+    /// The strike, at full precision.
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub strike_price: Decimal,
+    /// Everything else the venue sent, kept rather than dropped.
+    ///
+    /// This endpoint returns a wide and undocumented set of fields that
+    /// changes without notice, so they are preserved verbatim instead of
+    /// being modelled and going stale.
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

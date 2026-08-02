@@ -71,6 +71,9 @@ pub mod config;
 /// and logger setup for the application.
 pub mod logger;
 
+/// Bulk download of option symbols, in bounded stages.
 pub mod download;
+/// Small file helpers used by the download stages.
 pub mod file;
+/// Parsing helpers for values the venue sends as text.
 pub mod parse;

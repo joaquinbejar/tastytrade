@@ -11,6 +11,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 #[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
+/// Identifies one subscription within a streamer.
 pub struct SubscriptionId(usize);
 
 /// A cheap, clonable handle to the streamer's command loop and its channel.
@@ -26,7 +27,12 @@ struct StreamerHandle {
     channel_id: Option<u32>,
 }
 
+/// A set of symbols and event types, and the events they produce.
+///
+/// Holds a handle to the streamer rather than the streamer itself, so dropping
+/// a subscription cannot end the connection.
 pub struct QuoteSubscription {
+    /// This subscription's identity within its streamer.
     pub id: SubscriptionId,
     streamer: StreamerHandle,
     event_types: i32, // Keep for compatibility with existing code
@@ -47,7 +53,18 @@ pub struct QuoteSubscription {
 }
 
 impl QuoteSubscription {
-    /// Add symbols to subscription. See the "Note on symbology" section in [`QuoteSubscription`]
+    /// Subscribes this subscription to `symbols`.
+    ///
+    /// Returns once the venue has accepted the subscription, not merely once
+    /// the command was queued. Symbols already subscribed are skipped, so
+    /// calling twice with the same symbol subscribes once.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer has no open channel, when it is closed, or when
+    /// the venue refuses. On any of those the symbols are not recorded, so a
+    /// later close does not try to unsubscribe something that was never
+    /// subscribed.
     pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
         let requested: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
 
@@ -319,6 +336,10 @@ struct EventRouting {
     symbol_subs: HashMap<String, HashSet<u32>>,
 }
 
+/// Owns the DXLink connection and the subscriptions on it.
+///
+/// Deliberately not `Clone`: exactly one value owns the connection, and
+/// dropping it disconnects. Subscriptions get a handle instead.
 pub struct QuoteStreamer {
     #[allow(dead_code)]
     dxlink_client: Option<DXLinkClient>,
@@ -335,6 +356,12 @@ pub struct QuoteStreamer {
 }
 
 impl QuoteStreamer {
+    /// Opens a DXLink connection and its market-data channel.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer token cannot be obtained, the connection
+    /// cannot be established, or the channel cannot be configured.
     pub async fn connect(tasty: &TastyTrade) -> TastyResult<Self> {
         let tokens = tasty.quote_streamer_tokens().await?;
         debug!(
@@ -720,6 +747,12 @@ impl QuoteStreamer {
         Ok(())
     }
 
+    /// Does nothing.
+    ///
+    /// Superseded by [`QuoteSubscription::add_symbols`], which subscribes
+    /// against a specific subscription and reports whether the venue accepted
+    /// it. Kept so existing callers still compile; it logs a warning and
+    /// returns.
     pub fn subscribe(&self, _symbol: &[&str]) {
         // This method is deprecated - use QuoteSubscription::add_symbols() instead
         warn!(
@@ -727,6 +760,11 @@ impl QuoteStreamer {
         );
     }
 
+    /// Always returns `Err(RecvError::Disconnected)`.
+    ///
+    /// Events belong to a subscription, so use
+    /// [`QuoteSubscription::get_event`]. Kept so existing callers still
+    /// compile.
     pub async fn get_event(&self) -> std::result::Result<dxfeed::Event, flume::RecvError> {
         // This method is deprecated - use QuoteSubscription::get_event() instead
         // Return an error indicating this method should not be used

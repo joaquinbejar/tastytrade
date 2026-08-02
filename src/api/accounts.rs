@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
     DebugPretty, DisplaySimple, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone,
 )]
 #[serde(transparent)]
+/// A broker-assigned account identifier.
+///
+/// Account PII: keep it out of logs and errors. [`AccountNumber::redacted`]
+/// gives a form that is safe to write down.
 pub struct AccountNumber(pub String);
 
 impl<T: AsRef<str>> From<T> for AccountNumber {
@@ -109,8 +113,11 @@ pub struct AccountDetails {
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+/// An account as the listing endpoint returns it.
 pub struct AccountInner {
+    /// The account itself.
     pub account: AccountDetails,
+    /// What this session may do with it, e.g. `owner`.
     pub authority_level: String,
 }
 
@@ -162,7 +169,7 @@ impl DryRunReceipt {
     ///
     /// # Errors
     ///
-    /// Returns [`TastyTradeError::ConfigError`] when the venue attached
+    /// Returns [`crate::TastyTradeError::Precondition`] when the venue attached
     /// warnings. That is not a refusal to proceed — it is a refusal to proceed
     /// *silently*. Read [`DryRunReceipt::warnings`] first, then use
     /// [`DryRunReceipt::accept_with_warnings`] to say you did.
@@ -219,16 +226,30 @@ impl ReviewedOrder {
     }
 }
 
+/// An account bound to the session that found it.
+///
+/// The lifetime ties it to its client, so an account cannot outlive the
+/// session that can act on it.
 pub struct Account<'t> {
     pub(crate) inner: AccountInner,
     pub(crate) tasty: &'t TastyTrade,
 }
 
 impl Account<'_> {
+    /// This account's number.
+    ///
+    /// Account PII. Use [`AccountNumber::redacted`] before logging it.
     pub fn number(&self) -> AccountNumber {
         self.inner.account.account_number.clone()
     }
 
+    /// Current balances: cash, buying power and margin requirements.
+    ///
+    /// Every monetary field is `Decimal`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error; the response body never reaches it.
     pub async fn balance(&self) -> TastyResult<Balance> {
         let resp = self
             .tasty
@@ -240,6 +261,12 @@ impl Account<'_> {
         Ok(resp)
     }
 
+    /// Historical balance snapshots for a date range.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, and fails if the endpoint answers
+    /// without a pagination block.
     pub async fn balance_snapshot(
         &self,
         start_date: chrono::NaiveDate,
@@ -265,6 +292,13 @@ impl Account<'_> {
         Ok(resp)
     }
 
+    /// Open positions.
+    ///
+    /// # Errors
+    ///
+    /// Fails when positions arrive but none can be decoded, which is a defect
+    /// in this crate rather than a flat account. A genuinely empty list is
+    /// `Ok`.
     pub async fn positions(&self) -> TastyResult<Vec<FullPosition>> {
         let resp: Items<FullPosition> = self
             .tasty
@@ -276,6 +310,11 @@ impl Account<'_> {
         resp.into_items()
     }
 
+    /// Orders that are still working.
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::positions`].
     pub async fn live_orders(&self) -> TastyResult<Vec<LiveOrderRecord>> {
         let resp: Items<LiveOrderRecord> = self
             .tasty
@@ -309,7 +348,7 @@ impl Account<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`TastyTradeError::ConfigError`] when the receipt belongs to a
+    /// Returns [`crate::TastyTradeError::Precondition`] when the receipt belongs to a
     /// different account. A receipt is bound to the account it was reviewed
     /// against, and buying power, permissions and positions are all per
     /// account, so a review against one says nothing about another.
@@ -374,6 +413,14 @@ impl Account<'_> {
         Ok(resp)
     }
 
+    /// Cancels a working order.
+    ///
+    /// **Mutates account state.** Cancelling an order that has already filled
+    /// is the venue's decision to refuse, not this crate's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a refusal to cancel.
     pub async fn cancel_order(&self, id: OrderId) -> TastyResult<LiveOrderRecord> {
         self.tasty
             .delete(&format!(
