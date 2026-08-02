@@ -229,17 +229,27 @@ impl TastyTrade {
         let status = response.status();
 
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unable to read response body".to_string());
-            return Err(crate::TastyTradeError::Unknown(format!(
-                "HTTP {} {} for request {}: {}",
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("Unknown"),
-                request_info,
-                error_text
-            )));
+            let body = response.text().await.unwrap_or_default();
+
+            // The body is venue data. It may describe the account the request
+            // was about, and an error value travels wherever the caller sends
+            // it, so it stays at DEBUG rather than riding inside the error.
+            debug!("error body for {}: {}", full_request, body);
+
+            // A tastytrade error document is the useful case: it carries the
+            // broker's own code and message, which is what a caller can act
+            // on. Anything else degrades to the status and the endpoint.
+            return Err(
+                match serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body) {
+                    Ok(TastyApiResponse::Error { error }) => error.into(),
+                    _ => crate::TastyTradeError::Unknown(format!(
+                        "HTTP {} {} for request {}",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or("Unknown"),
+                        request_info
+                    )),
+                },
+            );
         }
 
         let text = response.text().await?;
