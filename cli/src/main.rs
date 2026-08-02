@@ -38,13 +38,46 @@ use tastytrade::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// tastytrade username or email
+    /// tastytrade username or email; overrides TASTYTRADE_USERNAME
+    ///
+    /// The password is never a flag. It comes from TASTYTRADE_PASSWORD, so it
+    /// stays out of the shell history and out of the process list every other
+    /// user on the machine can read.
     #[arg(short, long)]
-    login: String,
+    login: Option<String>,
+}
 
-    /// tastytrade password
-    #[arg(short, long)]
-    password: String,
+/// Applies the command line on top of the environment.
+///
+/// `--login` overrides `TASTYTRADE_USERNAME`; everything else, the password
+/// included, comes from the environment. Both flags used to be required and
+/// then discarded, so the CLI could not start without being handed credentials
+/// it ignored, and it logged into whatever `.env` happened to hold.
+fn resolve_config(mut config: TastyTradeConfig, args: &Args) -> Result<TastyTradeConfig> {
+    if let Some(login) = &args.login {
+        let login = login.trim();
+        if login.is_empty() {
+            anyhow::bail!("--login was given but is blank");
+        }
+        config.username = login.to_string();
+    }
+
+    // Checked here so the message can name the missing piece. Login reports
+    // this too, but by then the operator has already been told which account
+    // and which environment, which reads as though the credential was fine.
+    if config.username.trim().is_empty() {
+        anyhow::bail!("no username: pass --login or set TASTYTRADE_USERNAME");
+    }
+    if config.password.trim().is_empty() {
+        anyhow::bail!(
+            "no password: set TASTYTRADE_PASSWORD. \
+             There is no --password flag: a password given on the command line \
+             is visible to every process on the machine and is kept in the \
+             shell history"
+        );
+    }
+
+    Ok(config)
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize)]
@@ -160,13 +193,13 @@ impl App {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parsed for --help, --version and argument validation only: credentials
-    // currently come from the environment, so --login and --password are
-    // accepted and ignored. Tracked in #35.
-    let _args = Args::parse();
+    let args = Args::parse();
+    let config = resolve_config(TastyTradeConfig::from_env(), &args)?;
 
-    println!("Logging in...");
-    let config = TastyTradeConfig::from_env();
+    // Which deployment, never who: the environment is what an operator needs
+    // to know before watching an account, and certification reuses production
+    // account numbering, so "which one am I looking at" is a real question.
+    println!("Logging in to {}...", config.environment());
     let tasty = TastyTrade::login(&config)
         .await
         .context("Logging into tastytrade")?;
@@ -435,4 +468,103 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         ]);
 
     f.render_stateful_widget(t, rects[0], &mut app.state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> TastyTradeConfig {
+        TastyTradeConfig {
+            username: "env-user@example.com".to_string(),
+            password: "env-password".to_string(),
+            use_demo: true,
+            log_level: "INFO".to_string(),
+            remember_me: true,
+            base_url: "https://api.cert.tastyworks.com".to_string(),
+            websocket_url: "wss://streamer.cert.tastyworks.com".to_string(),
+        }
+    }
+
+    /// The defect this fixes: the flag was required, parsed, and discarded, so
+    /// the CLI logged into whatever the environment held.
+    #[test]
+    fn a_login_flag_decides_which_account_is_used() {
+        let resolved = resolve_config(
+            config(),
+            &Args {
+                login: Some("flag-user@example.com".to_string()),
+            },
+        )
+        .expect("a complete pair resolves");
+
+        assert_eq!(resolved.username, "flag-user@example.com");
+        assert_eq!(
+            resolved.password, "env-password",
+            "the password still comes from the environment"
+        );
+    }
+
+    /// Without the flag the environment decides, which is how every existing
+    /// invocation works.
+    #[test]
+    fn without_the_flag_the_environment_decides() {
+        let resolved = resolve_config(config(), &Args { login: None }).expect("resolves");
+
+        assert_eq!(resolved.username, "env-user@example.com");
+    }
+
+    /// A blank flag is a shell accident, not a username. Accepting it would
+    /// send an unusable credential to the venue instead of failing here.
+    #[test]
+    fn a_blank_login_is_refused_rather_than_sent() {
+        let error = resolve_config(
+            config(),
+            &Args {
+                login: Some("   ".to_string()),
+            },
+        )
+        .expect_err("a blank login is not a login");
+
+        assert!(format!("{error}").contains("blank"), "{error}");
+    }
+
+    /// The message has to name the variable, and has to say that the flag it
+    /// would be natural to reach for does not exist, so the reader stops
+    /// looking for it.
+    #[test]
+    fn a_missing_password_names_the_variable_and_not_a_flag() {
+        let missing = TastyTradeConfig {
+            password: String::new(),
+            ..config()
+        };
+
+        let error = resolve_config(missing, &Args { login: None })
+            .expect_err("there is nothing to log in with");
+        let message = format!("{error}");
+
+        assert!(message.contains("TASTYTRADE_PASSWORD"), "{message}");
+        assert!(
+            message.contains("no --password flag"),
+            "the message must say the flag is absent on purpose: {message}"
+        );
+    }
+
+    /// No credential may appear in an error a user will paste into a bug
+    /// report.
+    #[test]
+    fn no_error_repeats_a_credential() {
+        let error = resolve_config(
+            TastyTradeConfig {
+                password: String::new(),
+                ..config()
+            },
+            &Args {
+                login: Some("flag-user@example.com".to_string()),
+            },
+        )
+        .expect_err("no password");
+
+        assert!(!format!("{error}").contains("env-password"), "{error}");
+    }
 }

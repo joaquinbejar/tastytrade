@@ -226,6 +226,18 @@
 //!
 //! This crate also includes a sample CLI application in the `tastytrade-cli` directory
 //! that demonstrates a portfolio viewer with real-time updates.
+//!
+//! It reads its credentials from the environment, and takes `--login` to point
+//! at a different account than `TASTYTRADE_USERNAME`. There is no `--password`
+//! flag on purpose: a password given on the command line is visible to every
+//! process on the machine and is kept in the shell history.
+//!
+//!  ```shell
+//!  export TASTYTRADE_USERNAME=you@example.com
+//!  export TASTYTRADE_PASSWORD=...
+//!  export TASTYTRADE_USE_DEMO=true      # certification, the safe default
+//!  cargo run -p tastytrade-cli
+//!  ```
 //!  
 //!  ## Testing
 //!  
