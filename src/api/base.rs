@@ -59,6 +59,11 @@ pub struct Items<T: DeserializeOwned + Serialize + std::fmt::Debug> {
     /// Zero on a healthy response. Non-zero means this crate's model has
     /// drifted from what the venue sends, and the dropped items are invisible
     /// to everything downstream.
+    ///
+    /// Client-side decode metadata, never part of the wire shape, so it is not
+    /// serialized: round-tripping an `Items` value must not invent a field the
+    /// venue does not have.
+    #[serde(skip_serializing)]
     pub skipped: usize,
 }
 
@@ -146,7 +151,7 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> Items<T> {
         if self.items.is_empty() && self.skipped > 0 {
             return Err(TastyTradeError::Unknown(format!(
                 "all {} item(s) in the listing failed to deserialize; this crate's model \
-                 does not match what the venue returned (enable DEBUG for the payloads)",
+                 does not match what the venue returned (raise the log level for diagnostics)",
                 self.skipped
             )));
         }
@@ -386,5 +391,23 @@ mod tests {
             10,
             "DEBUG must keep every failure: {debug_logs}"
         );
+    }
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    use super::*;
+
+    /// `skipped` is decode metadata this crate keeps for the caller. Emitting
+    /// it would invent a broker field in anything that re-serializes a listing.
+    #[test]
+    fn the_skipped_count_is_not_part_of_the_wire_shape() {
+        let items = Items::<String> {
+            items: vec!["a".to_string()],
+            skipped: 3,
+        };
+
+        let json = serde_json::to_string(&items).expect("Items serializes");
+        assert_eq!(json, r#"{"items":["a"]}"#);
     }
 }
