@@ -228,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if there are any warnings
     if !dry_run_result.warnings.is_empty() {
         warn!("Order has {} warnings:", dry_run_result.warnings.len());
-        // En una aplicación real, examinarías estas advertencias
+        // A real application would inspect these warnings before continuing.
     }
 
     // Step 6: Confirm and place the order
@@ -260,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        // Este ejemplo requiere confirmación explícita para cuentas reales
+        // Live accounts require explicit confirmation from the operator.
         warn!("\n!!! LIVE ACCOUNT ORDER CONFIRMATION REQUIRED !!!");
         warn!("This example does not automatically place orders on live accounts.");
         warn!("If you want to place this order, please:");

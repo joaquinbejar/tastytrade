@@ -139,20 +139,21 @@ readme: check-cargo-readme create-doc
 check-cargo-readme:
 	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme)
 
-# Code and comments are English. This replaces the old scripts/spanish.py,
-# which was referenced by the Makefile but never existed in the repository.
-# Two conservative signals over comment lines only: Spanish-only punctuation
-# and accents, and a word list with no English collisions. The author header
-# is the one legitimate accented line.
+# Code and comments are English, across every crate this repository ships.
+# This replaces the old scripts/spanish.py, which was referenced by the
+# Makefile but never existed. Two conservative signals over comment lines
+# only: Spanish-only punctuation and accents, and a word list with no English
+# collisions. The author header is the one legitimate accented line.
+SPANISH_ROOTS := src cli/src examples/*/src
 SPANISH_WORDS := que|los|las|una|unos|unas|para|con|pero|desde|hasta|cuando|donde|tambien|ademas|aqui|puede|debe|este|esta|esto|estos|estas|del|por|como|mas|asi|solo|cada|sobre|entre|hacer|tiene|ser|codigo|respuesta|solicitud|ejemplo|advertencia|cuenta|error de
 
 .PHONY: check-spanish
 check-spanish:
-	@comments=$$(grep -rn --include='*.rs' -E '^[[:space:]]*//' src/ | grep -vE 'Joaqu|Author:|Email:'); \
+	@comments=$$(grep -rn --include='*.rs' -E '^[[:space:]]*//' $(SPANISH_ROOTS) | grep -vE 'Joaqu|Author:|Email:'); \
 	hits=$$( { printf '%s\n' "$$comments" | grep -iE '[áéíóúñ¿¡]'; \
 	           printf '%s\n' "$$comments" | grep -iwE '($(SPANISH_WORDS))'; } | sort -u | grep -v '^$$' ); \
 	if [ -n "$$hits" ]; then \
-		echo "check-spanish: Spanish found in src/ comments:"; \
+		echo "check-spanish: Spanish found in comments:"; \
 		printf '%s\n' "$$hits"; \
 		exit 1; \
 	fi; \
