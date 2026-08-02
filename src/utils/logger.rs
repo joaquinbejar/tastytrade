@@ -82,8 +82,18 @@ pub fn try_setup_logger_with_level(log_level: &str) -> LoggerInit {
 /// Installs this crate's subscriber at the level named by `LOGLEVEL`,
 /// reporting what happened. Never panics.
 pub fn try_setup_logger() -> LoggerInit {
-    let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
-    try_setup_logger_with_level(&log_level)
+    // Short-circuit before touching the environment: there is nothing to
+    // install on this target, so reading LOGLEVEL would be pure ceremony.
+    #[cfg(target_arch = "wasm32")]
+    {
+        LoggerInit::Unsupported
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
+        try_setup_logger_with_level(&log_level)
+    }
 }
 
 /// Sets up a logger for the application for platforms other than `wasm32`.
@@ -348,7 +358,9 @@ mod tests_setup_logger_bis {
     }
 }
 
-#[cfg(test)]
+// The assertions here are about installing a subscriber, which this target
+// does not do; `make wasm-test` would otherwise fail by construction.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests_no_global_seizure {
     use super::*;
 
