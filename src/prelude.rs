@@ -63,6 +63,7 @@ pub use crate::streaming::account_streaming::{
     AccountEvent, AccountMessage, AccountStreamer, AccountTransport, ErrorMessage, StatusMessage,
 };
 pub use crate::streaming::quote_streamer::{QuoteStreamer, QuoteSubscription};
+pub use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 
 // Re-export quote streaming types
 pub use crate::api::quote_streaming::{DxFeedSymbol, QuoteStreamerTokens};

@@ -6,4 +6,6 @@
 
 pub mod quote_streamer;
 
+pub mod reconnect;
+
 pub mod account_streaming;
