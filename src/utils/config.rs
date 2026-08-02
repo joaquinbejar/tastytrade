@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::Path;
-use tracing::warn;
+use tracing::{debug, warn};
 
 const BASE_DEMO_URL: &str = "https://api.cert.tastyworks.com";
 const BASE_URL: &str = "https://api.tastyworks.com";
@@ -84,7 +84,12 @@ impl TastyTradeConfig {
                     true
                 }
             },
-            Err(_) => true,
+            Err(_) => {
+                // Absence is the normal case for a new checkout and the safe
+                // side, so it is not worth a warning. It is worth a line.
+                debug!("TASTYTRADE_USE_DEMO is unset; using the certification environment");
+                true
+            }
         };
         let remember_me = env::var("TASTYTRADE_REMEMBER_ME")
             .unwrap_or_else(|_| "false".to_string())
@@ -133,9 +138,13 @@ impl TastyTradeConfig {
         Ok(())
     }
 
-    /// Check if the configuration has valid credentials
+    /// Whether both credentials are present.
+    ///
+    /// Whitespace does not count. `TASTYTRADE_USERNAME=" "` is a shell
+    /// accident, not a username, and treating it as one would send an
+    /// unusable credential to the venue instead of failing here.
     pub fn has_valid_credentials(&self) -> bool {
-        !self.username.is_empty() && !self.password.is_empty()
+        !self.username.trim().is_empty() && !self.password.trim().is_empty()
     }
 
     /// Creates a TastyTrade client from the configuration.
@@ -277,6 +286,22 @@ mod tests {
             env::remove_var("LOGLEVEL");
             env::remove_var("TASTYTRADE_REMEMBER_ME");
         }
+    }
+
+    /// A shell accident is not a credential.
+    #[test]
+    #[serial]
+    fn whitespace_is_not_a_credential() {
+        let config = TastyTradeConfig {
+            username: "   ".to_string(),
+            password: "\t\n".to_string(),
+            use_demo: true,
+            log_level: "WARN".to_string(),
+            remember_me: false,
+            base_url: BASE_DEMO_URL.to_string(),
+            websocket_url: WEBSOCKET_DEMO_URL.to_string(),
+        };
+        assert!(!config.has_valid_credentials());
     }
 
     #[test]
