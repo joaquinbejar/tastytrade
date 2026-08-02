@@ -70,7 +70,11 @@ pub use crate::api::option_chain::{
 
 // Re-export utility types
 pub use crate::utils::{
-    config::TastyTradeConfig, download::*, file::*, logger::setup_logger, parse::*,
+    config::TastyTradeConfig,
+    download::*,
+    file::*,
+    logger::{LoggerInit, setup_logger, try_setup_logger, try_setup_logger_with_level},
+    parse::*,
 };
 
 // Re-export login types

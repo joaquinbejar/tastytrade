@@ -1,4 +1,3 @@
-use crate::utils::logger::setup_logger_with_level;
 use crate::{TastyTrade, TastyTradeError};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
@@ -70,10 +69,6 @@ impl TastyTradeConfig {
         let password = env::var("TASTYTRADE_PASSWORD").unwrap_or_default();
         let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
 
-        // Before parsing the environment selector, so a warning about it is
-        // actually visible.
-        setup_logger_with_level(&log_level);
-
         let use_demo = match env::var("TASTYTRADE_USE_DEMO") {
             Ok(raw) => match raw.trim().parse::<bool>() {
                 Ok(value) => value,
@@ -124,10 +119,6 @@ impl TastyTradeConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TastyTradeError> {
         let contents = fs::read_to_string(path)?;
         let config: TastyTradeConfig = serde_json::from_str(&contents)?;
-
-        // Initialize logger with the log level from the config file
-        setup_logger_with_level(&config.log_level);
-
         Ok(config)
     }
 

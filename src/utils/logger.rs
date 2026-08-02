@@ -19,11 +19,72 @@
 //! - `TRACE`: Fine-grained application execution details.
 //!
 
-use std::sync::Once;
 use tracing_subscriber::FmtSubscriber;
 use {std::env, tracing::Level};
 
-static INIT: Once = Once::new();
+/// What an attempt to install this crate's tracing subscriber actually did.
+///
+/// Process-global logging belongs to the application, not to a library. These
+/// helpers are a convenience for binaries and examples that do not want to
+/// build a subscriber themselves; when the application already owns one, the
+/// attempt reports that and changes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoggerInit {
+    /// This call installed the crate's subscriber.
+    Installed,
+    /// A subscriber was already installed. Nothing was changed.
+    AlreadyInstalled,
+    /// Not attempted: this target has no subscriber to install (`wasm32`).
+    Unsupported,
+}
+
+fn level_from(log_level: &str) -> Level {
+    match log_level.trim().to_uppercase().as_str() {
+        "DEBUG" => Level::DEBUG,
+        "ERROR" => Level::ERROR,
+        "WARN" => Level::WARN,
+        "TRACE" => Level::TRACE,
+        _ => Level::INFO,
+    }
+}
+
+/// Installs this crate's subscriber at `log_level`, reporting what happened.
+///
+/// Never panics and never replaces a subscriber the application installed.
+/// `set_global_default` is its own guard, so calling this twice is harmless:
+/// the second call reports [`LoggerInit::AlreadyInstalled`].
+pub fn try_setup_logger_with_level(log_level: &str) -> LoggerInit {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = log_level;
+        LoggerInit::Unsupported
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let level = level_from(log_level);
+        let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
+
+        match tracing::subscriber::set_global_default(subscriber) {
+            Ok(()) => {
+                tracing::debug!("Log level set to: {}", level);
+                LoggerInit::Installed
+            }
+            Err(_) => {
+                // The other subscriber is live, so this line reaches it.
+                tracing::debug!("A tracing subscriber is already installed; leaving it in place");
+                LoggerInit::AlreadyInstalled
+            }
+        }
+    }
+}
+
+/// Installs this crate's subscriber at the level named by `LOGLEVEL`,
+/// reporting what happened. Never panics.
+pub fn try_setup_logger() -> LoggerInit {
+    let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
+    try_setup_logger_with_level(&log_level)
+}
 
 /// Sets up a logger for the application for platforms other than `wasm32`.
 ///
@@ -36,33 +97,14 @@ static INIT: Once = Once::new();
 /// - All other values default to `INFO`, which captures general information.
 ///
 /// **Behavior:**
-/// - Concurrent calls to this function result in the logger being initialized only once.
-/// - When targeting `wasm32`, this function is effectively a no-op.
+/// - Repeated calls leave the first subscriber in place.
+/// - A subscriber already installed by the application is never replaced.
+/// - When targeting `wasm32`, this function is a no-op.
 ///
-/// # Panics
-/// This function panics if setting the default subscriber fails.
+/// Prefer [`try_setup_logger`] when the caller wants to know which of those
+/// happened. This function discards that outcome and never panics.
 pub fn setup_logger() {
-    #[cfg(not(target_arch = "wasm32"))]
-    INIT.call_once(|| {
-        let log_level = env::var("LOGLEVEL")
-            .unwrap_or_else(|_| "INFO".to_string())
-            .to_uppercase();
-
-        let level = match log_level.as_str() {
-            "DEBUG" => Level::DEBUG,
-            "ERROR" => Level::ERROR,
-            "WARN" => Level::WARN,
-            "TRACE" => Level::TRACE,
-            _ => Level::INFO,
-        };
-
-        let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
-
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("Error setting default subscriber");
-
-        tracing::debug!("Log level set to: {}", level);
-    });
+    let _ = try_setup_logger();
 }
 
 /// Sets up a logger with a user-specified log level for platforms other than `wasm32`.
@@ -71,30 +113,14 @@ pub fn setup_logger() {
 /// - `log_level`: The desired log level as a string. Supported levels are the same as for `setup_logger`.
 ///
 /// **Behavior:**
-/// - Concurrent calls to this function result in the logger being initialized only once.
+/// - Repeated calls leave the first subscriber in place.
+/// - A subscriber already installed by the application is never replaced.
 /// - When targeting `wasm32`, this function is a no-op.
 ///
-/// # Panics
-/// This function panics if setting the default subscriber fails.
+/// Prefer [`try_setup_logger_with_level`] when the caller wants to know which
+/// of those happened. This function discards that outcome and never panics.
 pub fn setup_logger_with_level(log_level: &str) {
-    INIT.call_once(|| {
-        let log_level = log_level.to_uppercase();
-
-        let level = match log_level.as_str() {
-            "DEBUG" => Level::DEBUG,
-            "ERROR" => Level::ERROR,
-            "WARN" => Level::WARN,
-            "TRACE" => Level::TRACE,
-            _ => Level::INFO,
-        };
-
-        let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
-
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("Error setting default subscriber");
-
-        tracing::debug!("Log level set to: {}", level);
-    });
+    let _ = try_setup_logger_with_level(log_level);
 }
 
 #[cfg(test)]
@@ -319,5 +345,40 @@ mod tests_setup_logger_bis {
         unsafe {
             env::remove_var("LOGLEVEL");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_no_global_seizure {
+    use super::*;
+
+    /// The panic this replaces: an application that owns tracing could bring
+    /// the process down merely by loading library configuration.
+    #[test]
+    fn a_second_installation_reports_instead_of_panicking() {
+        // Whether this process already has a subscriber depends on test
+        // ordering, so assert the property that holds either way: the call
+        // returns, and once something is installed every later call agrees.
+        let first = try_setup_logger_with_level("WARN");
+        assert_ne!(first, LoggerInit::Unsupported);
+
+        for _ in 0..3 {
+            assert_eq!(
+                try_setup_logger_with_level("DEBUG"),
+                LoggerInit::AlreadyInstalled,
+                "a subscriber is installed, so no later call may claim otherwise"
+            );
+        }
+    }
+
+    #[test]
+    fn level_parsing_is_case_and_whitespace_insensitive() {
+        assert_eq!(level_from(" debug "), Level::DEBUG);
+        assert_eq!(level_from("Warn"), Level::WARN);
+        assert_eq!(level_from("TRACE"), Level::TRACE);
+        assert_eq!(level_from("ERROR"), Level::ERROR);
+        // Anything unrecognised is INFO, as documented.
+        assert_eq!(level_from("verbose"), Level::INFO);
+        assert_eq!(level_from(""), Level::INFO);
     }
 }
