@@ -733,3 +733,424 @@ mod reviewed_placement {
         );
     }
 }
+
+/// Every verb reports a failure the same way.
+///
+/// GET has always produced a typed `Request` error with a status, a redacted
+/// endpoint and an environment. POST, DELETE and login never inspected the
+/// status at all: they handed the body straight to serde and surfaced whatever
+/// it said about a document it could not decode. These pin the shared path.
+mod every_verb_reports_failures_alike {
+    use super::*;
+
+    /// A `POST /sessions` that fails, plus the routes a test needs afterwards.
+    async fn venue_with_login(login: Route) -> MockVenue {
+        let mut routes = HashMap::new();
+        routes.insert("POST /sessions".to_string(), login);
+        MockVenue::start(routes).await
+    }
+
+    /// The login endpoint is the one request whose *request* body is a
+    /// credential, and a venue that echoes it back is not hypothetical: error
+    /// documents routinely quote the field that failed validation.
+    #[tokio::test]
+    async fn rejected_credentials_are_an_auth_error_not_a_decode_failure() {
+        let venue = venue_with_login(Route::status(
+            401,
+            format!(
+                r#"{{"error":{{"code":"invalid_credentials","message":"Invalid login",
+                     "errors":[{{"code":"password","message":"{} is not correct"}}]}}}}"#,
+                sentinel::PASSWORD
+            ),
+        ))
+        .await;
+        let config = config_for(&venue);
+
+        let (result, logs) =
+            capture_logs_at(Level::TRACE, async { TastyTrade::login(&config).await }).await;
+
+        let error = result.expect_err("a 401 must not produce a session");
+
+        // Auth rather than Request: the credentials are wrong, so retrying with
+        // the same ones is pointless, and `BackoffPolicy` already treats Auth as
+        // terminal.
+        let TastyTradeError::Auth(message) = &error else {
+            panic!("a rejected login must be an auth error, got {error:?}");
+        };
+        assert!(
+            message.contains("Invalid login"),
+            "the venue's own summary is what a caller acts on: {message}"
+        );
+        assert!(
+            !error.is_retryable(),
+            "wrong credentials do not become right on a retry"
+        );
+
+        // The nested detail quoted the password. Neither the error nor the log
+        // may carry it.
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(sentinel::PASSWORD),
+            "the password reached the error: {rendered}"
+        );
+        assert_no_secret_leaked(&logs);
+    }
+
+    /// A login endpoint that is down says nothing about the credentials, so
+    /// re-labelling every failure as `Auth` would be wrong.
+    #[tokio::test]
+    async fn an_unavailable_login_endpoint_stays_a_request_error() {
+        let venue = venue_with_login(Route::status(503, "<html>maintenance</html>")).await;
+        let config = config_for(&venue);
+
+        let error = TastyTrade::login(&config)
+            .await
+            .expect_err("a 503 must not produce a session");
+
+        let TastyTradeError::Request { context, api } = &error else {
+            panic!("a 503 on /sessions is a request failure, got {error:?}");
+        };
+        assert_eq!(context.status, Some(503));
+        assert_eq!(context.method, "POST");
+        assert_eq!(context.operation, "/sessions");
+        assert!(api.is_none(), "an HTML body is not a broker error document");
+        assert!(
+            error.is_retryable(),
+            "a venue that is temporarily down is exactly the retryable case"
+        );
+    }
+
+    /// The verb that can place an order.
+    #[tokio::test]
+    async fn a_rejected_post_carries_the_status_and_a_redacted_endpoint() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            format!("POST /accounts/{}/orders", sentinel::ACCOUNT_NUMBER),
+            Route::status(
+                422,
+                format!(
+                    r#"{{"error":{{"code":"buying_power","message":"Order exceeds buying power",
+                         "errors":[{{"code":"bp","message":"needs {}"}}]}}}}"#,
+                    sentinel::BALANCE
+                ),
+            ),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            let client = TastyTrade::login(&config)
+                .await
+                .expect("login must succeed");
+            client
+                .post::<serde_json::Value, _, _>(
+                    format!("/accounts/{}/orders", sentinel::ACCOUNT_NUMBER),
+                    serde_json::json!({ "order-type": "Market" }),
+                )
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        let error = result.expect_err("a 422 must surface as an error");
+        let TastyTradeError::Request { context, api } = &error else {
+            panic!("expected a request error, got {error:?}");
+        };
+        assert_eq!(context.status, Some(422));
+        assert_eq!(context.method, "POST");
+        assert!(
+            context.operation.contains("{account}")
+                && !context.operation.contains(sentinel::ACCOUNT_NUMBER),
+            "the account number must not survive into the error: {}",
+            context.operation
+        );
+        assert_eq!(
+            api.as_ref().map(|a| a.message.as_str()),
+            Some("Order exceeds buying power")
+        );
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(sentinel::BALANCE),
+            "the buying-power figure reached the error: {rendered}"
+        );
+        logs.assert_absent(sentinel::BALANCE, "the buying-power figure");
+        logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
+    }
+
+    /// The verb that can cancel an order. A 404 here means the order is already
+    /// gone, which a caller wants to tell apart from a network failure.
+    #[tokio::test]
+    async fn a_rejected_delete_carries_the_status_and_a_redacted_endpoint() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            let client = TastyTrade::login(&config)
+                .await
+                .expect("login must succeed");
+            // Unrouted, so the venue answers 404 with a JSON error body.
+            client
+                .delete::<serde_json::Value, _>(format!(
+                    "/accounts/{}/orders/17",
+                    sentinel::ACCOUNT_NUMBER
+                ))
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        let error = result.expect_err("a 404 must surface as an error");
+        let TastyTradeError::Request { context, .. } = &error else {
+            panic!("expected a request error, got {error:?}");
+        };
+        assert_eq!(context.status, Some(404));
+        assert_eq!(context.method, "DELETE");
+        assert!(
+            context.operation.contains("{account}")
+                && !context.operation.contains(sentinel::ACCOUNT_NUMBER),
+            "the account number must not survive into the error: {}",
+            context.operation
+        );
+        assert!(
+            !error.is_retryable(),
+            "an order that is not there will not be there on a retry"
+        );
+        logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
+    }
+
+    /// A venue that answers `200` with an error document disagrees with itself.
+    /// The document is the more specific answer, and treating the response as a
+    /// success would hand the caller a decode failure for a body that plainly
+    /// says what went wrong.
+    #[tokio::test]
+    async fn a_success_status_carrying_an_error_document_is_an_error() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            "POST /accounts/5WX00001/orders".to_string(),
+            Route::ok(r#"{"error":{"code":"preflight","message":"Market closed"}}"#),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let client = TastyTrade::login(&config).await.expect("login");
+        let error = client
+            .post::<serde_json::Value, _, _>(
+                "/accounts/5WX00001/orders",
+                serde_json::json!({ "order-type": "Market" }),
+            )
+            .await
+            .expect_err("an error document is an error whatever the status says");
+
+        let TastyTradeError::Request { context, api } = &error else {
+            panic!("expected a request error, got {error:?}");
+        };
+        assert_eq!(context.status, Some(200));
+        assert_eq!(
+            api.as_ref().map(|a| a.message.as_str()),
+            Some("Market closed")
+        );
+    }
+
+    /// A body this crate's model cannot read is a decode failure, and the body
+    /// is what makes it diagnosable — which is exactly why it cannot be in the
+    /// error a caller may log or forward.
+    #[tokio::test]
+    async fn a_body_that_cannot_be_decoded_stays_out_of_the_error() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            "POST /accounts/5WX00001/orders".to_string(),
+            Route::ok(format!(
+                r#"{{"data":{{"order":{{"id":{{"nested":"{}"}}}}}},"context":"/x"}}"#,
+                sentinel::BALANCE
+            )),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        struct Order {
+            order: OrderId,
+        }
+        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        struct OrderId {
+            id: u64,
+        }
+
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            let client = TastyTrade::login(&config).await.expect("login");
+            client
+                .post::<Order, _, _>(
+                    "/accounts/5WX00001/orders",
+                    serde_json::json!({ "order-type": "Market" }),
+                )
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        let error = result.expect_err("an object where a number belongs cannot decode");
+        let TastyTradeError::Request { context, api } = &error else {
+            panic!("expected a request error, got {error:?}");
+        };
+        assert_eq!(context.status, Some(200));
+        assert!(api.is_none(), "there was no broker error document");
+
+        // serde_json's Display renders the value it rejected. That is the whole
+        // reason the raw error does not travel.
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(sentinel::BALANCE),
+            "the rejected body reached the error: {rendered}"
+        );
+        logs.assert_absent(sentinel::BALANCE, "the rejected body");
+    }
+
+    /// A decode failure must not describe the body it could not read.
+    ///
+    /// Two things hold this today: the log line reports the error's category
+    /// and position rather than its `Display`, and the untagged
+    /// `TastyApiResponse` discards the inner error anyway, so the quoted value
+    /// never gets that far. This passes for either reason, which is the point —
+    /// it fails when *both* are gone, and a tagged envelope alone would be
+    /// enough to bring the quoted value back.
+    #[tokio::test]
+    async fn a_decode_failure_is_not_logged_by_rendering_the_serde_error() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            "GET /accounts/5WX00001/balances".to_string(),
+            // A number where the model wants a string: serde quotes it.
+            Route::ok(r#"{"data":{"cash-balance":1234567.89},"context":"/x"}"#),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug)]
+        #[serde(rename_all = "kebab-case")]
+        struct Balance {
+            cash_balance: String,
+        }
+
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            let client = TastyTrade::login(&config).await.expect("login");
+            client
+                .get::<Balance, _>("/accounts/5WX00001/balances")
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        result.expect_err("a number where a string belongs cannot decode");
+        logs.assert_absent("1234567.89", "the rejected balance quoted by serde");
+    }
+
+    /// The DXLink token response is the one body that *is* a credential, so a
+    /// failure to decode it must say nothing about what it held — no rendered
+    /// serde error, no `Json` variant handed to the caller with the rejected
+    /// value inside it.
+    #[tokio::test]
+    async fn a_streamer_token_that_cannot_be_decoded_never_renders_the_token() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            "GET /api-quote-tokens".to_string(),
+            // `token` where the model wants a string: the serde error would
+            // render the rejected value, and here that value is the credential.
+            Route::ok(format!(
+                r#"{{"data":{{"token":["{}"],"dxlink-url":"wss://x","level":"api"}},
+                     "context":"/api-quote-tokens"}}"#,
+                sentinel::SESSION_TOKEN
+            )),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            let client = TastyTrade::login(&config).await.expect("login");
+            client.quote_streamer_tokens().await.map(|_| ())
+        })
+        .await;
+
+        let error = result.expect_err("an array where a string belongs cannot decode");
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(sentinel::SESSION_TOKEN),
+            "the streamer token reached the error: {rendered}"
+        );
+        assert_no_secret_leaked(&logs);
+    }
+
+    /// A venue that is not there at all. This used to exit through
+    /// `From<reqwest::Error>`, whose `Display` renders the URL it was trying to
+    /// reach — account number included.
+    #[tokio::test]
+    async fn an_unreachable_venue_reports_the_verb_without_the_url() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let client = TastyTrade::login(&config).await.expect("login");
+
+        // A port nothing listens on, reached through a path that carries an
+        // account number.
+        let (result, logs) = capture_logs_at(Level::TRACE, async {
+            client
+                .delete::<serde_json::Value, _>(format!(
+                    "http://127.0.0.1:1/accounts/{}/orders/17",
+                    sentinel::ACCOUNT_NUMBER
+                ))
+                .await
+                .map(|_| ())
+        })
+        .await;
+
+        let error = result.expect_err("nothing is listening on that port");
+        let TastyTradeError::Request { context, .. } = &error else {
+            panic!("a transport failure must still be a typed request error, got {error:?}");
+        };
+        assert_eq!(
+            context.status, None,
+            "there is no status when nothing answered"
+        );
+        assert_eq!(context.method, "DELETE");
+        assert!(
+            error.is_retryable(),
+            "a connection that never happened is the retryable case"
+        );
+
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            !rendered.contains(sentinel::ACCOUNT_NUMBER),
+            "the account number reached the error: {rendered}"
+        );
+        logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
+    }
+}

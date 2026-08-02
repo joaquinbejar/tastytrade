@@ -1,11 +1,10 @@
 use crate::TastyTrade;
-use crate::api::base::TastyApiResponse;
 use crate::types::instrument::InstrumentType;
 use crate::{AsSymbol, Symbol, TastyResult};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Deserialize;
 use serde::Serialize;
-use tracing::{debug, error};
+use tracing::debug;
 
 impl TastyTrade {
     /// Exchanges the session for a short-lived DXLink streamer token.
@@ -14,39 +13,22 @@ impl TastyTrade {
     ///
     /// Propagates the venue's error. Neither the response body nor the token
     /// reaches the error or the logs: the body of this particular response
-    /// *is* a credential.
+    /// *is* a credential, so a decode failure reports the status and the
+    /// endpoint and nothing else.
     pub async fn quote_streamer_tokens(&self) -> TastyResult<QuoteStreamerTokens> {
-        let url = format!("{}/api-quote-tokens", self.config.base_url);
-        debug!("Requesting quote streamer tokens from: {}", url);
+        debug!("Requesting quote streamer tokens");
 
-        // Issue the request directly so the response can be inspected here.
-        let response = self.client.get(&url).send().await?;
-
-        // Check the status before touching the body.
-        let status = response.status();
-        debug!("Response status: {}", status);
-
-        if !status.is_success() {
-            // Never propagate the response body: it may echo credentials.
-            error!("Failed to get quote streamer tokens: HTTP {}", status);
-            return Err(crate::TastyTradeError::Connection(format!(
-                "Failed to get quote streamer tokens: HTTP {}",
-                status
-            )));
-        }
-
-        // Decode the response as JSON.
-        // The body contains the DXLink token, so it must never be logged.
-        let text = response.text().await?;
-
-        match serde_json::from_str::<TastyApiResponse<QuoteStreamerTokens>>(&text) {
-            Ok(TastyApiResponse::Success(s)) => Ok(s.data),
-            Ok(TastyApiResponse::Error { error }) => Err(error.into()),
-            Err(e) => {
-                error!("Failed to parse response: {}", e);
-                Err(crate::TastyTradeError::Json(e))
-            }
-        }
+        // Through the generic verb, which checks the status and keeps the body
+        // out of both the logs and the error. Decoding by hand here logged the
+        // serde error and then handed it to the caller inside
+        // `TastyTradeError::Json`. A serde_json error quotes the value it
+        // rejected, and the value in this particular response is the DXLink
+        // credential; the untagged envelope happened to mask it, which is a
+        // property of `TastyApiResponse` rather than anything this function
+        // arranged. A non-2xx also became a `Connection` error carrying only
+        // the status, where every other endpoint reports where and against
+        // which deployment.
+        self.get("/api-quote-tokens").await
     }
 }
 

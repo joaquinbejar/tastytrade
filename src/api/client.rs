@@ -71,16 +71,188 @@ fn redact_account_path(url: &str) -> String {
     out
 }
 
+/// What a request needs in order to report itself without leaking anything.
+///
+/// Built once per request and carried through both the transport failure and
+/// the decode paths, so every verb produces the same shape and no verb can
+/// forget a field.
+struct RequestReport {
+    method: &'static str,
+    /// Already redacted: no account number reaches this.
+    operation: String,
+    environment: crate::error::Environment,
+    /// Stamped when the report is built, which is before the request goes out,
+    /// so the observable timing covers the whole exchange rather than the part
+    /// after the headers arrived.
+    started: std::time::Instant,
+}
+
+impl RequestReport {
+    /// A report for `method operation`, timed from now.
+    fn new(
+        method: &'static str,
+        operation: String,
+        environment: crate::error::Environment,
+    ) -> Self {
+        Self {
+            method,
+            operation,
+            environment,
+            started: std::time::Instant::now(),
+        }
+    }
+
+    fn context(&self, status: Option<u16>) -> crate::error::RequestContext {
+        crate::error::RequestContext {
+            method: self.method,
+            operation: self.operation.clone(),
+            environment: self.environment,
+            status,
+        }
+    }
+}
+
+/// Re-labels a rejected login as an authentication failure.
+///
+/// A 401 or 403 on `/sessions` means the credentials are wrong, which is a
+/// different thing for a caller than a request that failed: it is not
+/// retryable, and `BackoffPolicy` already treats `Auth` as terminal. Every
+/// other status keeps its request shape, because a 503 from the login endpoint
+/// says nothing about whether the credentials are good.
+fn as_authentication_failure(error: crate::TastyTradeError) -> crate::TastyTradeError {
+    match &error {
+        crate::TastyTradeError::Request { context, api } => match context.status {
+            Some(401) | Some(403) => {
+                let detail = api
+                    .as_ref()
+                    .map(|api| api.message.clone())
+                    .unwrap_or_else(|| "the venue rejected the credentials".to_string());
+                crate::TastyTradeError::Auth(format!(
+                    "login refused on {}: {detail}",
+                    context.environment
+                ))
+            }
+            _ => error,
+        },
+        _ => error,
+    }
+}
+
+/// Turns one response into a value or a typed error.
+///
+/// The single place status handling and decoding happen, so every verb reports
+/// failures the same way. GET used to do this properly and POST, DELETE and
+/// login each did something different: none of the other three inspected the
+/// status at all, so a rejected login surfaced as a decode failure with no
+/// status, no endpoint and no environment — the least diagnosable error in the
+/// crate, on the request most worth diagnosing.
+async fn decode_response<T, R>(
+    report: &RequestReport,
+    response: reqwest::Response,
+) -> TastyResult<R>
+where
+    T: DeserializeOwned + Serialize + std::fmt::Debug,
+    R: FromTastyResponse<T>,
+{
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| transport_failure(report, e))?;
+
+    if !status.is_success() {
+        // The body is not logged at any level. An error response comes from an
+        // endpoint this code does not control, /sessions included, so it can
+        // echo a credential; the secrecy invariant has no DEBUG exemption.
+        // What is safe is the shape of it.
+        let parsed = serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body);
+        debug!(
+            "{} {} -> {} ({} bytes in {:?}, {})",
+            report.method,
+            report.operation,
+            status.as_u16(),
+            body.len(),
+            report.started.elapsed(),
+            match &parsed {
+                Ok(TastyApiResponse::Error { .. }) => "broker error document",
+                Ok(TastyApiResponse::Success(_)) => "success envelope on a failure status",
+                Err(_) => "unrecognised body",
+            }
+        );
+
+        return Err(crate::TastyTradeError::Request {
+            context: report.context(Some(status.as_u16())),
+            api: match parsed {
+                Ok(TastyApiResponse::Error { error }) => Some(sanitize_api_error(error)),
+                _ => None,
+            },
+        });
+    }
+
+    // Size and timing, never contents: this is the line that makes an exchange
+    // observable without making it quotable.
+    debug!(
+        "{} {} -> {} ({} bytes in {:?})",
+        report.method,
+        report.operation,
+        status.as_u16(),
+        body.len(),
+        report.started.elapsed()
+    );
+
+    match serde_json::from_str::<TastyApiResponse<T>>(&body) {
+        Ok(TastyApiResponse::Success(s)) => R::from_tasty(s),
+        // A 2xx carrying an error document. The venue disagrees with itself,
+        // and the document is the more specific answer.
+        Ok(TastyApiResponse::Error { error }) => Err(crate::TastyTradeError::Request {
+            context: report.context(Some(status.as_u16())),
+            api: Some(sanitize_api_error(error)),
+        }),
+        Err(e) => {
+            // The body stays out of the error: a caller that logs or reports it
+            // would leak account data they never asked to handle.
+            //
+            // The error is not rendered either, at any level. `serde_json`
+            // quotes the value it rejected ("invalid type: integer `12345`"),
+            // so its Display can be a fragment of the body. Today the untagged
+            // `TastyApiResponse` discards the inner error and reports only
+            // "data did not match any variant", which masks the value — but
+            // that is a property of the envelope, not a guarantee of this line,
+            // and it disappears the day the envelope becomes tagged. Category
+            // and position say what to look at without saying what it holds.
+            debug!(
+                "{} {}: decode failed ({:?} at line {}, column {})",
+                report.method,
+                report.operation,
+                e.classify(),
+                e.line(),
+                e.column()
+            );
+            Err(crate::TastyTradeError::Request {
+                context: report.context(Some(status.as_u16())),
+                api: None,
+            })
+        }
+    }
+}
+
 /// Wraps a transport failure in the same sanitised shape as a venue failure.
 ///
 /// The reqwest error itself is kept out of the value: its `Display` renders
 /// the URL it was trying to reach, account number included.
-fn transport_failure(
-    context: crate::error::RequestContext,
-    error: reqwest::Error,
-) -> crate::TastyTradeError {
-    debug!("transport failure on {}: {}", context.operation, error);
-    crate::TastyTradeError::Request { context, api: None }
+fn transport_failure(report: &RequestReport, error: reqwest::Error) -> crate::TastyTradeError {
+    // `without_url` strips it for the log too. The redacted operation is
+    // already there, and it is the part that says what failed.
+    debug!(
+        "transport failure on {} {}: {}",
+        report.method,
+        report.operation,
+        error.without_url()
+    );
+    crate::TastyTradeError::Request {
+        context: report.context(None),
+        api: None,
+    }
 }
 
 /// Strips the parts of a broker error document that can carry account data.
@@ -179,6 +351,14 @@ impl TastyTrade {
     /// Returns `ConfigError` without contacting the venue when the username or
     /// password is missing or blank. The error names the variables to set and
     /// never their values.
+    ///
+    /// Credentials the venue rejects (`401`/`403`) return
+    /// [`crate::TastyTradeError::Auth`], which is not retryable. Any other
+    /// failure keeps the [`crate::TastyTradeError::Request`] shape with its
+    /// status, because a login endpoint that is down says nothing about whether
+    /// the credentials are good. The request body carries the password and the
+    /// response body carries the session token, so neither reaches the error or
+    /// the logs at any level.
     pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
         // Fail here rather than posting an empty credential pair to the venue.
         // The message names the variables, never their values.
@@ -195,6 +375,7 @@ impl TastyTrade {
             &config.password,
             config.remember_me,
             &config.base_url,
+            config.environment(),
         )
         .await?;
 
@@ -241,10 +422,16 @@ impl TastyTrade {
         password: &str,
         remember_me: bool,
         base_url: &str,
+        environment: crate::error::Environment,
     ) -> TastyResult<LoginResponse> {
         let client = reqwest::Client::default();
 
-        let resp = client
+        // The endpoint is fixed and account-free, so there is nothing to
+        // redact; the base URL is not included because it says nothing the
+        // environment does not.
+        let report = RequestReport::new("POST", "/sessions".to_string(), environment);
+
+        let response = client
             .post(format!("{base_url}/sessions"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::USER_AGENT, "tastytrade")
@@ -254,18 +441,12 @@ impl TastyTrade {
                 remember_me,
             })
             .send()
-            .await?;
-        let json = resp
-            //.inspect_json::<TastyApiResponse<LoginResponse>, TastyError>(|text| println!("{text}"))
-            .json()
-            .await?;
-        let response = match json {
-            TastyApiResponse::Success(s) => Ok(s),
-            TastyApiResponse::Error { error } => Err(error),
-        }?
-        .data;
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
 
-        Ok(response)
+        decode_response::<LoginResponse, LoginResponse>(&report, response)
+            .await
+            .map_err(as_authentication_failure)
     }
 
     /// Performs a GET with query parameters and decodes the response.
@@ -299,26 +480,21 @@ impl TastyTrade {
         // Errors travel wherever the caller sends them, and every account-scoped
         // path carries the account number in the URL, so error context uses the
         // redacted form. The full URL stays at DEBUG.
-        let request_info = redact_account_path(&full_request);
-        let started = std::time::Instant::now();
-
-        // A timeout or a refused connection is the failure most worth
-        // retrying, and it used to exit through From<reqwest::Error> before any
-        // context existed, so the caller lost the method, the endpoint and the
-        // environment on exactly those. Same shape as every other failure.
-        let transport_context = |status| crate::error::RequestContext {
-            method: "GET",
-            operation: request_info.clone(),
-            environment: self.config.environment(),
-            status,
-        };
-
+        let report = RequestReport::new(
+            "GET",
+            redact_account_path(&full_request),
+            self.config.environment(),
+        );
+        // A timeout or a refused connection is the failure most worth retrying,
+        // and it used to exit through From<reqwest::Error> before any context
+        // existed, so the caller lost the method, the endpoint and the
+        // environment on exactly those.
         let response: reqwest::Response = if query.is_empty() {
             self.client
                 .get(&full_url)
                 .send()
                 .await
-                .map_err(|e| transport_failure(transport_context(None), e))?
+                .map_err(|e| transport_failure(&report, e))?
         } else {
             let mut url_with_query = reqwest::Url::parse(&full_url).map_err(|e| {
                 crate::TastyTradeError::Unknown(format!("Failed to parse URL: {}", e))
@@ -333,75 +509,10 @@ impl TastyTrade {
                 .get(url_with_query)
                 .send()
                 .await
-                .map_err(|e| transport_failure(transport_context(None), e))?
+                .map_err(|e| transport_failure(&report, e))?
         };
 
-        let status = response.status();
-
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-
-            // The body is not logged at any level. An error response comes
-            // from an endpoint this code does not control, /sessions included,
-            // so it can echo a credential; the secrecy invariant has no DEBUG
-            // exemption. What is safe is the shape of it.
-            let parsed = serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body);
-            debug!(
-                "GET {} -> {} ({} bytes, {})",
-                request_info,
-                status.as_u16(),
-                body.len(),
-                match &parsed {
-                    Ok(TastyApiResponse::Error { .. }) => "broker error document",
-                    Ok(TastyApiResponse::Success(_)) => "success envelope on a failure status",
-                    Err(_) => "unrecognised body",
-                }
-            );
-
-            // A tastytrade error document is the useful case: it carries the
-            // broker's own code and message, which is what a caller can act
-            // on. Anything else degrades to the status and the endpoint.
-            // One shape for every failed request: sanitised context plus the
-            // broker's own document when it sent one. The body never travels.
-            return Err(crate::TastyTradeError::Request {
-                context: crate::error::RequestContext {
-                    method: "GET",
-                    operation: request_info,
-                    environment: self.config.environment(),
-                    status: Some(status.as_u16()),
-                },
-                api: match serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body) {
-                    Ok(TastyApiResponse::Error { error }) => Some(sanitize_api_error(error)),
-                    _ => None,
-                },
-            });
-        }
-
-        let text = response.text().await?;
-        // A successful body is account numbers, balances, positions and order
-        // contents. Nothing about it belongs in a consumer's logs, so this
-        // reports the shape of the exchange and not its contents.
-        debug!(
-            "GET {} -> {} ({} bytes in {:?})",
-            request_info,
-            status.as_u16(),
-            text.len(),
-            started.elapsed()
-        );
-        let result = serde_json::from_str::<TastyApiResponse<T>>(text.as_str()).map_err(|e| {
-            // The body is already available at DEBUG above. Keeping it out of the
-            // error means a caller that logs or reports the error cannot leak
-            // account data it never asked to handle.
-            crate::TastyTradeError::Unknown(format!(
-                "Failed to parse JSON response for request {}: {}",
-                request_info, e
-            ))
-        })?;
-
-        match result {
-            TastyApiResponse::Success(s) => R::from_tasty(s),
-            TastyApiResponse::Error { error } => Err(error.into()),
-        }
+        decode_response::<T, R>(&report, response).await
     }
 
     /// Performs a GET with no query parameters.
@@ -425,28 +536,33 @@ impl TastyTrade {
     ///
     /// # Errors
     ///
-    /// Propagates a payload that fails to serialize, and the venue's error
-    /// otherwise.
+    /// Fails without contacting the venue when the payload cannot be
+    /// serialized. Otherwise as [`TastyTrade::get_with_query`]: a non-2xx
+    /// response becomes [`crate::TastyTradeError::Request`] carrying a redacted
+    /// endpoint, the environment and the status, and no response body reaches
+    /// the error or the logs.
     pub async fn post<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
     where
         R: DeserializeOwned + Serialize + std::fmt::Debug,
         P: Serialize,
         U: AsRef<str>,
     {
-        let url = format!("{}{}", self.config.base_url, url.as_ref());
-        let result = self
+        let full_url = format!("{}{}", self.config.base_url, url.as_ref());
+        let report = RequestReport::new(
+            "POST",
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let response = self
             .client
-            .post(url)
+            .post(&full_url)
             .body(serde_json::to_string(&payload)?)
             .send()
-            .await?
-            .json::<TastyApiResponse<R>>()
-            .await?;
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
 
-        match result {
-            TastyApiResponse::Success(s) => Ok(s.data),
-            TastyApiResponse::Error { error } => Err(error.into()),
-        }
+        decode_response::<R, R>(&report, response).await
     }
 
     /// Performs a DELETE.
@@ -455,28 +571,29 @@ impl TastyTrade {
     ///
     /// # Errors
     ///
-    /// Propagates the venue's error.
+    /// As [`TastyTrade::get_with_query`]. A `404` here usually means the target
+    /// is already gone, which the status in the error tells apart from a
+    /// request that never arrived.
     pub async fn delete<R, U>(&self, url: U) -> TastyResult<R>
     where
         R: DeserializeOwned + Serialize + std::fmt::Debug,
         U: AsRef<str>,
     {
-        let url = format!("{}{}", self.config.base_url, url.as_ref());
-        let result = self
-            .client
-            .delete(url)
-            .send()
-            .await?
-            // .inspect_json::<TastyApiResponse<R>, TastyError>(move |text| {
-            //     println!("{text}");
-            // })
-            .json::<TastyApiResponse<R>>()
-            .await?;
+        let full_url = format!("{}{}", self.config.base_url, url.as_ref());
+        let report = RequestReport::new(
+            "DELETE",
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
 
-        match result {
-            TastyApiResponse::Success(s) => Ok(s.data),
-            TastyApiResponse::Error { error } => Err(error.into()),
-        }
+        let response = self
+            .client
+            .delete(&full_url)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        decode_response::<R, R>(&report, response).await
     }
 
     /// Every account on this session.
