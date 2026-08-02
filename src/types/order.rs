@@ -885,29 +885,34 @@ impl OrderBuilder {
             return Ok(());
         };
 
-        match order_type {
+        // Exhaustive on purpose, with no wildcard arm: OrderType is a closed
+        // set the broker owns, and a variant added later must break this build
+        // rather than inherit "any price is fine".
+        let needs_positive_price = match order_type {
             // A working price is the whole point of these.
-            OrderType::Limit | OrderType::StopLimit => {
-                if let Some(price) = self.price
-                    && price <= Decimal::ZERO
-                {
-                    return Err(format!(
-                        "a {order_type:?} order needs a price greater than zero, got {price}"
-                    ));
-                }
-            }
+            OrderType::Limit | OrderType::StopLimit | OrderType::MarketableLimit => true,
+            // The price field carries the trigger. A stop at zero or below is
+            // a trigger that either never fires or fires immediately.
+            OrderType::Stop => true,
+            // The price is the amount of money to spend, so it is the order.
+            OrderType::NotionalMarket => true,
             // The venue fills these at whatever the book offers, so a price is
             // at best ignored and at worst a misunderstanding worth flagging.
-            OrderType::Market => {
-                if let Some(price) = self.price
-                    && price != Decimal::ZERO
-                {
-                    return Err(format!(
-                        "a Market order takes no price, got {price}; use Limit to bound the fill"
-                    ));
-                }
+            OrderType::Market => false,
+        };
+
+        if let Some(price) = self.price {
+            if needs_positive_price && price <= Decimal::ZERO {
+                return Err(format!(
+                    "a {order_type:?} order needs a price greater than zero, got {price}"
+                ));
             }
-            _ => {}
+            if !needs_positive_price && price != Decimal::ZERO {
+                return Err(format!(
+                    "a {order_type:?} order takes no price, got {price}; \
+                     use Limit to bound the fill"
+                ));
+            }
         }
 
         Ok(())
@@ -1030,5 +1035,67 @@ mod builder_validation_tests {
             .legs(vec![leg()])
             .build()
             .expect("a limit order with a price and a leg is valid");
+    }
+}
+
+#[cfg(test)]
+mod order_type_price_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn leg() -> OrderLeg {
+        OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("AAPL")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .expect("a one-share buy is valid")
+    }
+
+    fn build_with(order_type: OrderType, price: &str) -> Result<Order, OrderBuilderError> {
+        OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(order_type)
+            .price(Decimal::from_str(price).unwrap())
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg()])
+            .build()
+    }
+
+    /// Every order type that carries a price needs a working one. The match in
+    /// the validator is exhaustive so a variant added later cannot quietly
+    /// inherit "any price is fine" — this table is the other half of that.
+    #[test]
+    fn every_priced_order_type_rejects_a_non_positive_price() {
+        for order_type in [
+            OrderType::Limit,
+            OrderType::StopLimit,
+            OrderType::MarketableLimit,
+            OrderType::Stop,
+            OrderType::NotionalMarket,
+        ] {
+            for price in ["0", "-1"] {
+                let error = build_with(order_type.clone(), price)
+                    .expect_err("a non-positive price must not build");
+                assert!(
+                    error.to_string().contains("greater than zero"),
+                    "{order_type:?} at {price} should be rejected: {error}"
+                );
+            }
+
+            build_with(order_type.clone(), "1.25")
+                .unwrap_or_else(|e| panic!("{order_type:?} at 1.25 should build: {e}"));
+        }
+    }
+
+    /// Market is the one type where a price means the caller misunderstood.
+    #[test]
+    fn a_market_order_is_the_only_one_that_takes_no_price() {
+        build_with(OrderType::Market, "0").expect("a market order with no price builds");
+
+        let error =
+            build_with(OrderType::Market, "100").expect_err("a market order with a price must not");
+        assert!(error.to_string().contains("takes no price"), "{error}");
     }
 }
