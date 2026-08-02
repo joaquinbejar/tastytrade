@@ -75,15 +75,22 @@ where
                 Ok(item) => items.push(item),
                 Err(e) => {
                     error_count += 1;
-                    // The serde error names the offending field, which is what makes
-                    // these diagnosable. The value itself is user data (account
-                    // numbers, balances, order contents) and stays at DEBUG, where
-                    // it is only emitted if the consumer deliberately asks for it.
+                    // The serde error is not metadata: a type mismatch renders as
+                    // `invalid type: string "Retirement", expected a boolean`, so
+                    // the message itself carries the rejected value. WARN gets the
+                    // value-free classification and position; the error and the raw
+                    // item stay at DEBUG, where they are only emitted if the
+                    // consumer deliberately asks for them.
                     if error_count <= MAX_ITEM_WARNINGS {
-                        warn!("failed to deserialize item {} in Items<T>: {}", index, e);
-                    } else {
-                        debug!("failed to deserialize item {} in Items<T>: {}", index, e);
+                        warn!(
+                            "failed to deserialize item {} in Items<T>: {:?} error at line {}, column {}; enable DEBUG for details",
+                            index,
+                            e.classify(),
+                            e.line(),
+                            e.column()
+                        );
                     }
+                    debug!("item {} serde error: {}", index, e);
                     debug!(
                         "raw item {}: {}",
                         index,
@@ -188,13 +195,17 @@ mod tests {
 
     #[test]
     #[serial]
-    fn warn_level_names_the_field_but_never_the_payload() {
+    fn warn_level_is_diagnosable_without_the_payload() {
         let (_, logs) = logs_for(PAYLOAD, Level::WARN);
 
-        // Diagnosable: the missing field is what makes this actionable.
+        // Diagnosable: which item, what class of failure, where in the body.
         assert!(
-            logs.contains("is-test-drive"),
-            "the serde error must survive: {logs}"
+            logs.contains("failed to deserialize item 0"),
+            "the failing item must be identified: {logs}"
+        );
+        assert!(
+            logs.contains("Data error"),
+            "the serde category must survive: {logs}"
         );
         assert!(
             logs.contains("1 failed"),
@@ -213,6 +224,31 @@ mod tests {
         assert!(
             !logs.contains("Margin"),
             "raw payload leaked into WARN logs: {logs}"
+        );
+    }
+
+    /// A missing field renders without any value, but a type mismatch renders as
+    /// `invalid type: string "5WX12345", expected a boolean` — the serde error
+    /// carries the rejected value, so it cannot be logged at WARN either.
+    #[test]
+    #[serial]
+    fn a_type_mismatch_does_not_leak_the_rejected_value() {
+        let payload = format!(
+            r#"{{"items":[{{"account-number":"{ACCOUNT_NUMBER}","nickname":"{NICKNAME}","is-test-drive":"{ACCOUNT_NUMBER}"}}]}}"#
+        );
+
+        let (parsed, warn_logs) = logs_for(&payload, Level::WARN);
+        assert!(parsed.is_empty(), "the item fails on the boolean");
+        assert!(
+            !warn_logs.contains(ACCOUNT_NUMBER),
+            "the rejected value reached WARN through the serde error: {warn_logs}"
+        );
+
+        // Still diagnosable one level down.
+        let (_, debug_logs) = logs_for(&payload, Level::DEBUG);
+        assert!(
+            debug_logs.contains("invalid type"),
+            "the full serde error must remain at DEBUG: {debug_logs}"
         );
     }
 
@@ -253,7 +289,7 @@ mod tests {
         // The suppressed failures are still diagnosable when asked for.
         let (_, debug_logs) = logs_for(&payload, Level::DEBUG);
         assert_eq!(
-            debug_logs.matches("failed to deserialize item").count(),
+            debug_logs.matches("serde error:").count(),
             10,
             "DEBUG must keep every failure: {debug_logs}"
         );
