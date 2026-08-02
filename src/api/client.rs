@@ -71,6 +71,26 @@ fn redact_account_path(url: &str) -> String {
     out
 }
 
+/// Joins the configured base URL and a request path.
+///
+/// The verbs take a path, not a URL. Passing an absolute one produced
+/// `http://host:8080http://elsewhere/...`, which fails to parse and surfaces
+/// as a transport error with no status and nothing pointing at the cause. It
+/// is a caller mistake, so it is reported as one, before anything is sent.
+fn endpoint_url(base_url: &str, path: &str) -> TastyResult<String> {
+    let lowered = path.trim_start().to_ascii_lowercase();
+    if lowered.starts_with("http://") || lowered.starts_with("https://") {
+        return Err(crate::TastyTradeError::Precondition(format!(
+            "expected a path such as \"/accounts\", got an absolute URL; \
+             the base URL comes from the configuration and decides which \
+             deployment the request reaches (redacted path: {})",
+            redact_account_path(path)
+        )));
+    }
+
+    Ok(format!("{base_url}{path}"))
+}
+
 /// What a request needs in order to report itself without leaking anything.
 ///
 /// Built once per request and carried through both the transport failure and
@@ -155,10 +175,25 @@ where
     R: FromTastyResponse<T>,
 {
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| transport_failure(report, e))?;
+    // The status is known before the body is: a response whose body fails
+    // mid-read still answered, and that answer is what a caller retries on.
+    // Routing this through transport_failure would report `None` and lose it.
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            debug!(
+                "{} {}: reading the body failed after {}: {}",
+                report.method,
+                report.operation,
+                status.as_u16(),
+                e.without_url()
+            );
+            return Err(crate::TastyTradeError::Request {
+                context: report.context(Some(status.as_u16())),
+                api: None,
+            });
+        }
+    };
 
     if !status.is_success() {
         // The body is not logged at any level. An error response comes from an
@@ -466,7 +501,7 @@ impl TastyTrade {
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
-        let full_url = format!("{}{}", self.config.base_url, url.as_ref());
+        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
         let query_string = query
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -547,7 +582,7 @@ impl TastyTrade {
         P: Serialize,
         U: AsRef<str>,
     {
-        let full_url = format!("{}{}", self.config.base_url, url.as_ref());
+        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
         let report = RequestReport::new(
             "POST",
             redact_account_path(&full_url),
@@ -579,7 +614,7 @@ impl TastyTrade {
         R: DeserializeOwned + Serialize + std::fmt::Debug,
         U: AsRef<str>,
     {
-        let full_url = format!("{}{}", self.config.base_url, url.as_ref());
+        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
         let report = RequestReport::new(
             "DELETE",
             redact_account_path(&full_url),

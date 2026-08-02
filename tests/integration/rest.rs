@@ -1104,6 +1104,69 @@ mod every_verb_reports_failures_alike {
         assert_no_secret_leaked(&logs);
     }
 
+    /// The verbs take a path. An absolute URL used to be concatenated onto the
+    /// base URL, producing `http://host:1234http://elsewhere/...`, which does
+    /// not parse — so the caller got a transport error with no status and
+    /// nothing pointing at the mistake, and could not tell it from an outage.
+    #[tokio::test]
+    async fn an_absolute_url_is_refused_before_anything_is_sent() {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        let venue = MockVenue::start(routes).await;
+        let config = config_for(&venue);
+
+        let client = TastyTrade::login(&config).await.expect("login");
+        let before = venue.requests().len();
+
+        let error = client
+            .get::<serde_json::Value, _>(format!(
+                "https://api.tastyworks.com/accounts/{}/balances",
+                sentinel::ACCOUNT_NUMBER
+            ))
+            .await
+            .expect_err("an absolute URL is a caller mistake, not a request");
+
+        assert!(
+            matches!(error, TastyTradeError::Precondition(_)),
+            "nothing was sent, so this is a precondition: {error:?}"
+        );
+        assert!(
+            !error.is_retryable(),
+            "a mistake in the call does not improve on a retry"
+        );
+        assert_eq!(
+            venue.requests().len(),
+            before,
+            "the guard must fire before anything reaches the venue"
+        );
+        assert!(
+            !format!("{error}").contains(sentinel::ACCOUNT_NUMBER),
+            "even a rejected path is redacted: {error}"
+        );
+
+        // The same guard on the verbs that mutate.
+        assert!(matches!(
+            client
+                .delete::<serde_json::Value, _>("http://elsewhere.example/orders/1")
+                .await
+                .expect_err("absolute"),
+            TastyTradeError::Precondition(_)
+        ));
+        assert!(matches!(
+            client
+                .post::<serde_json::Value, _, _>(
+                    "https://elsewhere.example/orders",
+                    serde_json::json!({}),
+                )
+                .await
+                .expect_err("absolute"),
+            TastyTradeError::Precondition(_)
+        ));
+    }
+
     /// A venue that is not there at all. This used to exit through
     /// `From<reqwest::Error>`, whose `Display` renders the URL it was trying to
     /// reach — account number included.
@@ -1119,12 +1182,17 @@ mod every_verb_reports_failures_alike {
 
         let client = TastyTrade::login(&config).await.expect("login");
 
-        // A port nothing listens on, reached through a path that carries an
-        // account number.
+        // The venue goes away with the session still open, which is the shape
+        // of a real outage: the client is configured for a host that has
+        // stopped answering. Reaching a dead port by passing an absolute URL
+        // instead would test URL joining, not connectivity — and it did, until
+        // review caught that the joined string never parsed at all.
+        drop(venue);
+
         let (result, logs) = capture_logs_at(Level::TRACE, async {
             client
                 .delete::<serde_json::Value, _>(format!(
-                    "http://127.0.0.1:1/accounts/{}/orders/17",
+                    "/accounts/{}/orders/17",
                     sentinel::ACCOUNT_NUMBER
                 ))
                 .await
@@ -1132,7 +1200,7 @@ mod every_verb_reports_failures_alike {
         })
         .await;
 
-        let error = result.expect_err("nothing is listening on that port");
+        let error = result.expect_err("nothing is listening on that port any more");
         let TastyTradeError::Request { context, .. } = &error else {
             panic!("a transport failure must still be a typed request error, got {error:?}");
         };
