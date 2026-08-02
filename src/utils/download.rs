@@ -73,6 +73,23 @@ pub struct DownloadFailure {
     pub underlying: String,
     /// Why, as text. Never contains a credential or an account.
     pub reason: String,
+    /// Whether asking again could plausibly work.
+    ///
+    /// Carried rather than left for the caller to infer from `reason`:
+    /// deciding what to retry by matching on prose is how the old code
+    /// classified failures, and it was wrong the moment the venue reworded
+    /// anything.
+    pub retryable: bool,
+}
+
+impl DownloadFailure {
+    fn from_error(underlying: String, error: &TastyTradeError) -> Self {
+        Self {
+            underlying,
+            reason: error.to_string(),
+            retryable: error.is_retryable(),
+        }
+    }
 }
 
 /// How complete a download is.
@@ -124,9 +141,26 @@ impl DownloadReport {
 /// Fails only when the download could not start: missing credentials, a
 /// refused login, or no underlyings discovered at all. An underlying whose
 /// chain fails is recorded in the report rather than failing the run.
-pub async fn download_options_symbols() -> TastyResult<DownloadReport> {
+pub async fn download_options_report() -> TastyResult<DownloadReport> {
     let config = TastyTradeConfig::new();
     download_options_symbols_with(&config, &DownloadLimits::default()).await
+}
+
+/// Downloads every option symbol, discarding the report.
+///
+/// # Errors
+///
+/// As [`download_options_report`].
+#[deprecated(
+    since = "0.4.0",
+    note = "use download_options_report: this signature cannot tell a complete \
+            answer from one missing half its underlyings"
+)]
+pub async fn download_options_symbols() -> Result<Vec<SymbolEntry>, Box<dyn std::error::Error>> {
+    // Kept signature-compatible on purpose. The report is the improvement, but
+    // a caller who only wants the symbols should not have to be broken to keep
+    // getting them.
+    Ok(download_options_report().await?.symbols)
 }
 
 /// Downloads every equity-option and future-option symbol.
@@ -142,9 +176,32 @@ pub async fn download_options_symbols_with(
     let tasty = TastyTrade::login(config).await?;
     let now = Utc::now();
 
-    let equities = discover_equities(&tasty, limits).await?;
-    let products = discover_future_products(&tasty, limits).await?;
+    // The two sources are independent, so one failing must not discard the
+    // other's work or stop it from running at all.
+    let mut failures = Vec::new();
 
+    let equities = match discover_equities(&tasty, limits).await {
+        Ok(found) => found,
+        Err(e) => {
+            failures.push(DownloadFailure::from_error(
+                "equity discovery".to_string(),
+                &e,
+            ));
+            Vec::new()
+        }
+    };
+    let products = match discover_future_products(&tasty, limits).await {
+        Ok(found) => found,
+        Err(e) => {
+            failures.push(DownloadFailure::from_error(
+                "future product discovery".to_string(),
+                &e,
+            ));
+            Vec::new()
+        }
+    };
+
+    // Both failing is not a partial answer, it is no answer.
     if equities.is_empty() && products.is_empty() {
         return Err(TastyTradeError::Unknown(
             "no equity or future underlyings were discovered; check connectivity and that the \
@@ -161,7 +218,6 @@ pub async fn download_options_symbols_with(
     );
 
     let mut symbols = Vec::new();
-    let mut failures = Vec::new();
 
     let (equity_symbols, equity_failures) =
         fetch_equity_chains(&tasty, &equities, limits, now).await;
@@ -184,6 +240,15 @@ pub async fn download_options_symbols_with(
             .cmp(&b.symbol)
             .then_with(|| a.epic.cmp(&b.epic))
             .then_with(|| a.expiry.cmp(&b.expiry))
+    });
+
+    // Sorted for the same reason the symbols are: buffer_unordered decides the
+    // order failures arrive in, and a report that differs between identical
+    // runs is not the deterministic report this claims to be.
+    failures.sort_unstable_by(|a, b| {
+        a.underlying
+            .cmp(&b.underlying)
+            .then_with(|| a.reason.cmp(&b.reason))
     });
 
     if failures.is_empty() {
@@ -295,10 +360,7 @@ async fn fetch_equity_chains(
                     symbols.extend(equity_chain_to_symbols(chain, last_update));
                 }
             }
-            Err(e) => failures.push(DownloadFailure {
-                underlying,
-                reason: e.to_string(),
-            }),
+            Err(e) => failures.push(DownloadFailure::from_error(underlying, &e)),
         }
     }
 
@@ -332,10 +394,7 @@ async fn fetch_future_chains(
                     symbols.extend(futures_chain_to_symbols(chain, last_update));
                 }
             }
-            Err(e) => failures.push(DownloadFailure {
-                underlying,
-                reason: e.to_string(),
-            }),
+            Err(e) => failures.push(DownloadFailure::from_error(underlying, &e)),
         }
     }
 
@@ -446,6 +505,7 @@ mod tests {
                 failures: vec![DownloadFailure {
                     underlying: "AAPL".to_string(),
                     reason: "HTTP 503".to_string(),
+                    retryable: true,
                 }],
             },
             underlyings_requested: 2,
@@ -454,6 +514,53 @@ mod tests {
         assert!(!report.is_complete());
         assert_eq!(report.failures().len(), 1);
         assert_eq!(report.failures()[0].underlying, "AAPL");
+        assert!(
+            report.failures()[0].retryable,
+            "a caller must not have to parse the reason to decide what to retry"
+        );
+    }
+
+    /// The retry verdict comes from the error's own classification, not from
+    /// matching on its prose, which is how the old code got it wrong.
+    #[test]
+    fn a_failure_carries_the_errors_own_retry_verdict() {
+        let transient = DownloadFailure::from_error(
+            "AAPL".to_string(),
+            &TastyTradeError::Connection("refused".to_string()),
+        );
+        let fatal = DownloadFailure::from_error(
+            "MSFT".to_string(),
+            &TastyTradeError::Auth("rejected".to_string()),
+        );
+
+        assert!(transient.retryable);
+        assert!(!fatal.retryable, "a rejected credential does not improve");
+    }
+
+    /// buffer_unordered decides the order failures arrive in, so a report that
+    /// differs between identical runs would not be the deterministic report
+    /// this claims to be.
+    #[test]
+    fn failures_are_ordered_deterministically() {
+        let mut failures = [
+            DownloadFailure {
+                underlying: "MSFT".to_string(),
+                reason: "b".to_string(),
+                retryable: true,
+            },
+            DownloadFailure {
+                underlying: "AAPL".to_string(),
+                reason: "a".to_string(),
+                retryable: false,
+            },
+        ];
+        failures.sort_unstable_by(|a, b| {
+            a.underlying
+                .cmp(&b.underlying)
+                .then_with(|| a.reason.cmp(&b.reason))
+        });
+
+        assert_eq!(failures[0].underlying, "AAPL");
     }
 
     /// Interest-rate futures carry no option chains, so asking costs a round
