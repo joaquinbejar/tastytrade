@@ -1,7 +1,11 @@
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{RwLock, oneshot};
 
 use crate::TastyTradeError;
+use crate::accounts::AccountNumber;
+use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 use crate::types::balance::Balance;
 use crate::{BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, accounts::Account};
 use futures_util::{SinkExt, StreamExt};
@@ -195,6 +199,16 @@ pub struct AccountStreamer {
     pub action_sender: flume::Sender<HandlerAction>,
     /// The transport this streamer connected over.
     transport: AccountTransport,
+    /// Where the connection stands, shared with the supervisor task.
+    state: Arc<RwLock<ConnectionState>>,
+    /// Ends the supervisor when this streamer is dropped.
+    cancel: Option<oneshot::Sender<()>>,
+    /// Accounts to resubscribe after a reconnect.
+    ///
+    /// A reconnect that silently forgets what it was watching is worse than
+    /// one that fails, because the caller keeps waiting for events that will
+    /// never come.
+    subscribed: Arc<Mutex<BTreeSet<AccountNumber>>>,
 }
 
 impl AccountStreamer {
@@ -217,113 +231,126 @@ impl AccountStreamer {
     /// * `tasty` - A reference to the `TastyTrade` client, containing
     ///   authentication and configuration details.
     pub async fn connect(tasty: &TastyTrade) -> TastyResult<AccountStreamer> {
-        let writer_token = tasty.session_token.clone();
+        Self::connect_with_policy(tasty, BackoffPolicy::default()).await
+    }
+
+    /// Connects with an explicit reconnection policy.
+    ///
+    /// The first connection is established before returning, so a caller that
+    /// cannot reach the venue at all learns immediately rather than through a
+    /// stream that never produces anything. Every later drop is handled by a
+    /// supervisor: it waits out the backoff, logs in again to get a fresh
+    /// session token, reconnects, and resubscribes the accounts that were
+    /// subscribed before.
+    pub async fn connect_with_policy(
+        tasty: &TastyTrade,
+        policy: BackoffPolicy,
+    ) -> TastyResult<AccountStreamer> {
         let (event_sender, event_receiver) = flume::unbounded();
         let (action_sender, action_receiver): (
             flume::Sender<HandlerAction>,
             flume::Receiver<HandlerAction>,
         ) = flume::unbounded();
 
-        let (ws_stream, _response) = connect_async(tasty.config.websocket_url.clone()).await?;
+        // Prove the venue is reachable before handing back a streamer.
+        let session = connect_session(&tasty.config.websocket_url).await?;
         debug!("Account websocket connected");
 
-        let (mut write, mut read) = ws_stream.split();
+        let state = Arc::new(RwLock::new(ConnectionState::Connected));
+        let subscribed: Arc<Mutex<BTreeSet<AccountNumber>>> = Arc::new(Mutex::new(BTreeSet::new()));
 
-        // The reader owns the only path from the venue to the caller, so every
-        // way it can end has to be visible. A malformed frame is skipped and
-        // reported; a dead socket or a dropped receiver ends the task, and the
-        // receiver closing is how the caller learns.
-        tokio::spawn(async move {
-            while let Some(message) = read.next().await {
-                let frame = match message {
-                    Ok(frame) => frame,
-                    Err(e) => {
-                        error!("Account websocket read failed, ending the stream: {}", e);
-                        break;
-                    }
-                };
-
-                // Control frames are protocol noise, not account data.
-                // Feeding them to serde produced a warning per heartbeat.
-                let data = match frame {
-                    Message::Text(text) => text.as_bytes().to_vec(),
-                    Message::Binary(bytes) => bytes.to_vec(),
-                    Message::Close(_) => {
-                        debug!("Account websocket closed by the venue");
-                        break;
-                    }
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-                };
-
-                let Some(event) = decode_account_frame(&data) else {
-                    continue;
-                };
-
-                if event_sender.send_async(event).await.is_err() {
-                    debug!("Account event receiver dropped, ending the reader");
-                    break;
-                }
-            }
-            debug!("Account websocket reader ended");
-        });
+        let supervisor_state = state.clone();
+        let supervisor_subscribed = subscribed.clone();
+        let supervisor_actions = action_sender.clone();
+        // The supervisor holds its own action sender, so the receiver never
+        // closes on its own and a quiet socket would keep the loop alive after
+        // its owner is gone. Only the streamer holds this.
+        let (cancel_tx, mut cancelled) = oneshot::channel::<()>();
+        let config = tasty.config.clone();
+        let mut token = tasty.session_token.clone();
+        let mut session = Some(session);
 
         tokio::spawn(async move {
-            while let Ok(action) = action_receiver.recv_async().await {
-                let ack = action.ack;
-                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token: writer_token.clone(),
-                    action: action.action,
-                    value: action.value,
-                };
-                let text = match serde_json::to_string(&message) {
-                    Ok(text) => text,
-                    Err(e) => {
-                        // A caller's own Serialize failed. Their action is
-                        // lost, which they must be told about, but it is not a
-                        // reason to tear down the connection.
-                        error!("Dropping an account action that could not be serialized: {e}");
-                        report(
-                            ack,
-                            Err(TastyTradeError::Streaming(
-                                "the action could not be serialized".to_string(),
-                            )),
-                        );
-                        continue;
-                    }
-                };
+            let mut attempt = 0u32;
 
-                match write.send(Message::Text(text.into())).await {
-                    Ok(()) => report(ack, Ok(())),
-                    Err(e) => {
-                        debug!("Account websocket writer ended: {e}");
-                        report(
-                            ack,
-                            Err(TastyTradeError::Streaming(
-                                "the account stream closed before the action was sent".to_string(),
-                            )),
-                        );
-                        break;
-                    }
-                }
-            }
-        });
-
-        let sender_clone = action_sender.clone();
-        tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
-                if sender_clone
-                    .send_async(HandlerAction {
-                        action: SubRequestAction::Heartbeat,
-                        value: None,
-                        // Nobody is waiting on a heartbeat: if it fails the
-                        // socket is gone and the writer's own exit says so.
-                        ack: None,
-                    })
-                    .await
-                    .is_err()
-                {
-                    break;
+                let live = match session.take() {
+                    Some(live) => live,
+                    None => match connect_session(&config.websocket_url).await {
+                        Ok(live) => live,
+                        Err(e) => {
+                            if !policy.should_retry(&e) {
+                                terminal(&supervisor_state, format!("reconnect refused: {e}"))
+                                    .await;
+                                return;
+                            }
+                            match schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled)
+                                .await
+                            {
+                                true => continue,
+                                false => return,
+                            }
+                        }
+                    },
+                };
+
+                *supervisor_state.write().await = ConnectionState::Connected;
+
+                let worked = run_session(
+                    live,
+                    &token,
+                    &event_sender,
+                    &action_receiver,
+                    &mut cancelled,
+                )
+                .await;
+
+                // Reset only for a session the venue actually accepted a write
+                // on. Resetting on a successful handshake let a venue that
+                // takes the socket and rejects the session loop forever at
+                // attempt one.
+                if worked {
+                    attempt = 0;
+                }
+
+                if cancelled.try_recv().is_ok() || event_sender.is_disconnected() {
+                    debug!("Account streamer dropped, ending the supervisor");
+                    return;
+                }
+
+                if !schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled).await {
+                    return;
+                }
+
+                // The session token may be why the socket dropped, so take a
+                // fresh one rather than presenting the same one again.
+                match TastyTrade::login(&config).await {
+                    Ok(client) => token = client.session_token.clone(),
+                    Err(e) => {
+                        if !policy.should_retry(&e) {
+                            terminal(
+                                &supervisor_state,
+                                "re-authentication was refused; the credentials no longer work"
+                                    .to_string(),
+                            )
+                            .await;
+                            return;
+                        }
+                        // Keep the old token and try the socket anyway: the
+                        // login endpoint being briefly unavailable does not
+                        // mean the session is invalid.
+                        warn!("Could not re-authenticate before reconnecting: {e}");
+                    }
+                }
+
+                // Connected is claimed only once what was being watched is
+                // watched again. Reporting it before restoration leaves a
+                // caller believing they are receiving events they are not.
+                if !resubscribe(&supervisor_actions, &supervisor_subscribed).await {
+                    warn!("Could not restore every subscription; reconnecting again");
+                    if !schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled).await {
+                        return;
+                    }
                 }
             }
         });
@@ -332,7 +359,18 @@ impl AccountStreamer {
             event_receiver,
             action_sender,
             transport: AccountTransport::Websocket,
+            cancel: Some(cancel_tx),
+            state,
+            subscribed,
         })
+    }
+
+    /// Where the connection currently stands.
+    ///
+    /// Carries counts and durations only, never a token or an account, so it
+    /// is safe to log or surface to a user.
+    pub async fn state(&self) -> ConnectionState {
+        self.state.read().await.clone()
     }
 
     /// Which transport this streamer connected over.
@@ -353,11 +391,18 @@ impl AccountStreamer {
     ///
     /// * `account` - A reference to the `Account` object to subscribe to.
     pub async fn subscribe_to_account<'a>(&self, account: &'a Account<'a>) -> TastyResult<()> {
-        self.send(
-            SubRequestAction::Connect,
-            Some(vec![account.inner.account.account_number.clone()]),
-        )
-        .await
+        let number = account.inner.account.account_number.clone();
+
+        self.send(SubRequestAction::Connect, Some(vec![number.clone()]))
+            .await?;
+
+        // Recorded only after the venue accepted it, and it is what a
+        // reconnect replays. A reconnect that silently forgets what it was
+        // watching is worse than one that fails, because the caller keeps
+        // waiting for events that will never come.
+        subscribed_of(&self.subscribed).insert(number);
+
+        Ok(())
     }
 
     /// Sends an action to the account streamer.
@@ -413,6 +458,256 @@ impl AccountStreamer {
     pub async fn get_event(&self) -> std::result::Result<AccountEvent, flume::RecvError> {
         self.event_receiver.recv_async().await
     }
+}
+
+/// One live websocket, split for reading and writing.
+type Session = (
+    futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+    futures_util::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+);
+
+/// Opens one websocket session.
+async fn connect_session(url: &str) -> TastyResult<Session> {
+    let (stream, _response) = connect_async(url.to_string()).await?;
+    Ok(stream.split())
+}
+
+/// Marks the connection as finished, with a reason a caller can act on.
+async fn terminal(state: &Arc<RwLock<ConnectionState>>, reason: String) {
+    warn!("Account stream gave up: {reason}");
+    *state.write().await = ConnectionState::Disconnected { reason };
+}
+
+/// Waits out the backoff for the next attempt.
+///
+/// Returns false when the policy says to stop, having recorded why.
+async fn schedule(
+    policy: &BackoffPolicy,
+    attempt: &mut u32,
+    state: &Arc<RwLock<ConnectionState>>,
+    cancelled: &mut oneshot::Receiver<()>,
+) -> bool {
+    *attempt = attempt.saturating_add(1);
+
+    // Jitter source. A clock read is enough entropy to stop a fleet of
+    // clients synchronising on the same venue restart, and it costs no
+    // dependency.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+
+    let Some(delay) = policy.delay_for(*attempt, nanos) else {
+        terminal(state, format!("gave up after {} attempts", *attempt - 1)).await;
+        return false;
+    };
+
+    debug!("Account stream reconnecting, attempt {attempt} in {delay:?}");
+    *state.write().await = ConnectionState::Reconnecting {
+        attempt: *attempt,
+        delay,
+    };
+    // Cancellable: a caller who drops the streamer should not wait out a
+    // thirty-second backoff for a task nobody is listening to.
+    tokio::select! {
+        _ = &mut *cancelled => false,
+        _ = tokio::time::sleep(delay) => true,
+    }
+}
+
+/// Re-sends a Connect for every account that was subscribed before the drop.
+/// Replays every account that was subscribed before the drop.
+///
+/// Returns whether all of them landed. Each replay is acknowledged: a session
+/// that fails partway leaves the rest queued, and the next full replay would
+/// then append duplicates on top of them.
+async fn resubscribe(
+    actions: &flume::Sender<HandlerAction>,
+    subscribed: &Arc<Mutex<BTreeSet<AccountNumber>>>,
+) -> bool {
+    let accounts: Vec<AccountNumber> = {
+        let guard = subscribed
+            .lock()
+            .expect("subscription set is never poisoned");
+        guard.iter().cloned().collect()
+    };
+
+    for account in accounts {
+        let (ack, answered) = oneshot::channel();
+        let action = HandlerAction {
+            action: SubRequestAction::Connect,
+            value: Some(Box::new(vec![account]) as Box<dyn erased_serde::Serialize + Send + Sync>),
+            ack: Some(ack),
+        };
+
+        if actions.send_async(action).await.is_err() {
+            return false;
+        }
+        match answered.await {
+            Ok(Ok(())) => {}
+            _ => return false,
+        }
+    }
+
+    true
+}
+
+/// Runs one session until either half ends.
+/// Runs one session until either half ends.
+///
+/// Returns whether the venue ever accepted a write. A socket that connects and
+/// is then dropped never gets that far, which is what stops a venue that
+/// accepts connections and rejects sessions from looping forever at attempt
+/// one.
+async fn run_session(
+    session: Session,
+    token: &str,
+    events: &flume::Sender<AccountEvent>,
+    actions: &flume::Receiver<HandlerAction>,
+    cancelled: &mut oneshot::Receiver<()>,
+) -> bool {
+    let (mut write, mut read) = session;
+
+    // Owned by the session rather than by a task of its own, so it dies with
+    // the socket it is keeping alive instead of ticking on against a
+    // connection that is gone.
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    heartbeat.tick().await; // the first tick is immediate
+    let mut wrote_successfully = false;
+
+    loop {
+        tokio::select! {
+            _ = &mut *cancelled => {
+                debug!("Account streamer dropped, ending the session");
+                return wrote_successfully;
+            }
+            _ = heartbeat.tick() => {
+                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
+                    auth_token: token.to_string(),
+                    action: SubRequestAction::Heartbeat,
+                    value: None,
+                };
+                let Ok(text) = serde_json::to_string(&message) else {
+                    continue;
+                };
+                if write.send(Message::Text(text.into())).await.is_err() {
+                    debug!("Account websocket heartbeat failed, ending the session");
+                    return wrote_successfully;
+                }
+                // The venue accepted an authenticated write, so this is a
+                // session that actually worked.
+                wrote_successfully = true;
+            }
+            frame = read.next() => {
+                let Some(message) = frame else {
+                    debug!("Account websocket stream ended");
+                    return wrote_successfully;
+                };
+                let frame = match message {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        error!("Account websocket read failed, ending the session: {e}");
+                        return wrote_successfully;
+                    }
+                };
+
+                // Control frames are protocol noise, not account data.
+                let data = match frame {
+                    Message::Text(text) => text.as_bytes().to_vec(),
+                    Message::Binary(bytes) => bytes.to_vec(),
+                    Message::Close(_) => {
+                        debug!("Account websocket closed by the venue");
+                        return wrote_successfully;
+                    }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                };
+
+                let Some(event) = decode_account_frame(&data) else {
+                    continue;
+                };
+
+                if events.send_async(event).await.is_err() {
+                    debug!("Account event receiver dropped, ending the session");
+                    return wrote_successfully;
+                }
+            }
+            action = actions.recv_async() => {
+                let Ok(action) = action else {
+                    debug!("Account action sender dropped, ending the session");
+                    return wrote_successfully;
+                };
+                let ack = action.ack;
+                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
+                    auth_token: token.to_string(),
+                    action: action.action,
+                    value: action.value,
+                };
+                let text = match serde_json::to_string(&message) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        // A caller's own Serialize failed. Their action is
+                        // lost, which they must be told, but it is not a
+                        // reason to drop the connection.
+                        error!("Dropping an account action that could not be serialized: {e}");
+                        report(ack, Err(TastyTradeError::Streaming(
+                            "the action could not be serialized".to_string(),
+                        )));
+                        continue;
+                    }
+                };
+
+                match write.send(Message::Text(text.into())).await {
+                    Ok(()) => {
+                        wrote_successfully = true;
+                        report(ack, Ok(()));
+                    }
+                    Err(e) => {
+                        debug!("Account websocket write failed: {e}");
+                        report(ack, Err(TastyTradeError::Streaming(
+                            "the account stream closed before the action was sent".to_string(),
+                        )));
+                        return wrote_successfully;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Drop for AccountStreamer {
+    /// Ends the supervisor.
+    ///
+    /// A oneshot send is synchronous, so this works outside a Tokio runtime,
+    /// where spawning would panic. Without it the supervisor outlives its
+    /// owner: it holds its own action sender, so the receiver never closes on
+    /// its own, and a quiet socket keeps the heartbeat and the reconnect loop
+    /// running for nobody.
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
+/// Recovers a poisoned lock rather than panicking.
+///
+/// The value behind it is a set of account numbers. A thread panicking while
+/// holding the lock cannot leave that set in a state the next reader cannot
+/// understand, so poisoning carries nothing worth aborting a caller's process
+/// over.
+fn subscribed_of(
+    set: &Arc<Mutex<BTreeSet<AccountNumber>>>,
+) -> std::sync::MutexGuard<'_, BTreeSet<AccountNumber>> {
+    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Sends the outcome back to whoever is waiting, if anyone still is.
