@@ -219,15 +219,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = account.review_order(&order).await?;
     let dry_run_result = receipt.result();
 
-    info!("Dry run successful:");
-    info!(
+    info!("Dry run successful");
+    // The figures are the account's, so they go to the operator rather than
+    // into a trace that gets pasted somewhere.
+    println!("Dry run successful:");
+    println!(
         "  Buying power effect: ${} {}",
         dry_run_result.buying_power_effect.change_in_buying_power,
         dry_run_result
             .buying_power_effect
             .change_in_buying_power_effect
     );
-    info!(
+    println!(
         "  Estimated fees: ${} {}",
         dry_run_result.fee_calculation.total_fees, dry_run_result.fee_calculation.total_fees_effect
     );
