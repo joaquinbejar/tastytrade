@@ -132,6 +132,12 @@ pub enum TastyTradeError {
     Unknown(String),
     /// Represents an error within the client configuration. This variant contains a `String` describing the configuration error.
     ConfigError(String),
+    /// A precondition this crate enforces was not met.
+    ///
+    /// Nothing was sent: the request was refused locally because the caller
+    /// asked for something the crate will not do on their behalf, such as
+    /// placing an order reviewed against a different account or venue.
+    Precondition(String),
 }
 
 impl Display for TastyTradeError {
@@ -152,6 +158,7 @@ impl Display for TastyTradeError {
             TastyTradeError::Streaming(msg) => write!(f, "Streaming error: {}", msg),
             TastyTradeError::Unknown(msg) => write!(f, "Unknown error: {}", msg),
             TastyTradeError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
+            TastyTradeError::Precondition(msg) => write!(f, "Precondition not met: {}", msg),
         }
     }
 }
@@ -182,7 +189,9 @@ impl TastyTradeError {
             | TastyTradeError::DxFeed(_)
             | TastyTradeError::Auth(_)
             | TastyTradeError::Unknown(_)
-            | TastyTradeError::ConfigError(_) => false,
+            | TastyTradeError::ConfigError(_)
+            // Nothing was sent, so there is nothing to send again.
+            | TastyTradeError::Precondition(_) => false,
         }
     }
 }
@@ -237,6 +246,7 @@ impl Error for TastyTradeError {
             Self::Streaming(_) => None,
             Self::Unknown(_) => None,
             Self::ConfigError(_) => None,
+            Self::Precondition(_) => None,
         }
     }
 }

@@ -525,3 +525,211 @@ async fn a_listing_where_nothing_decodes_is_reported_not_returned_empty() {
     );
     logs.assert_absent(sentinel::ACCOUNT_NUMBER, "the account number");
 }
+
+/// Placement evidence: the receipt is bound to the account it was reviewed
+/// against, and the warnings cannot be skipped past without saying so.
+mod reviewed_placement {
+    use super::*;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+    use tastytrade::{
+        Action, InstrumentType, Order, OrderBuilder, OrderLegBuilder, OrderType, PriceEffect,
+        TimeInForce,
+    };
+
+    fn an_order() -> Order {
+        let leg = OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("AAPL")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .expect("a one-share buy is valid");
+
+        OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Limit)
+            .price(Decimal::from_str("1.25").unwrap())
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg])
+            .build()
+            .expect("a limit order with a price and a leg is valid")
+    }
+
+    fn dry_run_body(warnings: &str) -> String {
+        format!(
+            r#"{{"data":{{
+                "order":{{"account-number":"5WX00001","time-in-force":"Day","order-type":"Limit",
+                          "size":1,"underlying-symbol":"AAPL","price":1.25,
+                          "price-effect":"Debit","status":"Received","cancellable":true,
+                          "editable":true,"edited":false,"legs":[]}},
+                "warnings":[{warnings}],
+                "buying-power-effect":{{"change-in-margin-requirement":125.0,
+                    "change-in-margin-requirement-effect":"Debit",
+                    "change-in-buying-power":125.0,"change-in-buying-power-effect":"Debit",
+                    "current-buying-power":1000.0,"current-buying-power-effect":"Credit",
+                    "new-buying-power":875.0,"new-buying-power-effect":"Credit",
+                    "isolated-order-margin-requirement":125.0,
+                    "isolated-order-margin-requirement-effect":"Debit",
+                    "is-spread":false,"impact":125.0,"effect":"Debit"}},
+                "fee-calculation":{{"regulatory-fees":0.0,"regulatory-fees-effect":"None",
+                    "clearing-fees":0.0,"clearing-fees-effect":"None","commission":0.0,
+                    "commission-effect":"None","proprietary-index-option-fees":0.0,
+                    "proprietary-index-option-fees-effect":"None","total-fees":0.0,
+                    "total-fees-effect":"None"}}
+            }},"context":"/accounts/5WX00001/orders/dry-run"}}"#
+        )
+    }
+
+    async fn account_venue(warnings: &str) -> MockVenue {
+        let mut routes = HashMap::new();
+        routes.insert(
+            "POST /sessions".to_string(),
+            Route::ok(login_response_body()),
+        );
+        routes.insert(
+            "GET /customers/me/accounts".to_string(),
+            Route::ok(
+                r#"{"data":{"items":[
+                   {"account":{"account-number":"5WX00001","nickname":"Main",
+                    "account-type-name":"Individual","margin-or-cash":"Margin",
+                    "opened-at":"2025-01-14T10:22:41.000+00:00"},"authority-level":"owner"},
+                   {"account":{"account-number":"5WX00002","nickname":"Second",
+                    "account-type-name":"Individual","margin-or-cash":"Margin",
+                    "opened-at":"2025-02-01T10:22:41.000+00:00"},"authority-level":"owner"}]},
+                   "context":"/customers/me/accounts"}"#,
+            ),
+        );
+        routes.insert(
+            "POST /accounts/5WX00001/orders/dry-run".to_string(),
+            Route::ok(dry_run_body(warnings)),
+        );
+        MockVenue::start(routes).await
+    }
+
+    #[tokio::test]
+    async fn a_clean_dry_run_accepts_without_ceremony() {
+        let venue = account_venue("").await;
+        let config = config_for(&venue);
+        let client = TastyTrade::login(&config).await.expect("login");
+        let accounts = client.accounts().await.expect("accounts");
+        let account = accounts.first().expect("one account");
+
+        let receipt = account
+            .review_order(&an_order())
+            .await
+            .expect("the dry run succeeds");
+
+        assert!(receipt.warnings().is_empty());
+        receipt.accept().expect("a clean dry run accepts");
+    }
+
+    #[tokio::test]
+    async fn warnings_must_be_acknowledged_by_name() {
+        let venue = account_venue(
+            r#"{"code":"tif_next_valid_sesssion","message":"Placed at the next session."}"#,
+        )
+        .await;
+        let config = config_for(&venue);
+        let client = TastyTrade::login(&config).await.expect("login");
+        let accounts = client.accounts().await.expect("accounts");
+        let account = accounts.first().expect("one account");
+
+        let receipt = account
+            .review_order(&an_order())
+            .await
+            .expect("the dry run succeeds");
+
+        assert_eq!(receipt.warnings().len(), 1);
+        assert_eq!(receipt.warnings()[0].message, "Placed at the next session.");
+
+        assert!(!receipt.is_clean());
+
+        // Saying so out loud is the only way through.
+        let reviewed = receipt.accept_with_warnings();
+        assert_eq!(reviewed.account_number().0, "5WX00001");
+    }
+
+    /// Buying power, permissions and positions are per account, so a review
+    /// against one says nothing about another. The guard fires before any
+    /// request, which is what the request count asserts.
+    #[tokio::test]
+    async fn a_receipt_cannot_be_spent_on_another_account() {
+        let venue = account_venue("").await;
+        let config = config_for(&venue);
+        let client = TastyTrade::login(&config).await.expect("login");
+        let accounts = client.accounts().await.expect("accounts");
+        assert_eq!(accounts.len(), 2, "the fixture needs two accounts");
+
+        let reviewed = accounts[0]
+            .review_order(&an_order())
+            .await
+            .expect("the dry run succeeds")
+            .accept()
+            .expect("a clean dry run accepts");
+
+        let before = venue.requests().len();
+        let error = accounts[1]
+            .place_reviewed_order(reviewed)
+            .await
+            .expect_err("a receipt from another account must not place");
+
+        assert!(
+            format!("{error}").contains("different account"),
+            "the error should say what is wrong: {error}"
+        );
+        assert_eq!(
+            venue.requests().len(),
+            before,
+            "the guard must fire before anything reaches the venue"
+        );
+    }
+
+    /// An account number is text, and certification reuses production
+    /// numbering. Without binding the receipt to the venue that answered, a
+    /// sandbox dry run would authorise a real order against the same number.
+    #[tokio::test]
+    async fn a_receipt_cannot_be_spent_on_another_venue() {
+        let first = account_venue("").await;
+        let second = account_venue("").await;
+        assert_ne!(
+            first.base_url(),
+            second.base_url(),
+            "the two venues must be distinguishable"
+        );
+
+        let reviewed = {
+            let config = config_for(&first);
+            let client = TastyTrade::login(&config).await.expect("login");
+            let accounts = client.accounts().await.expect("accounts");
+            accounts[0]
+                .review_order(&an_order())
+                .await
+                .expect("the dry run succeeds")
+                .accept()
+                .expect("a clean dry run accepts")
+        };
+
+        // Same account number, different venue.
+        let config = config_for(&second);
+        let client = TastyTrade::login(&config).await.expect("login");
+        let accounts = client.accounts().await.expect("accounts");
+        assert_eq!(accounts[0].number().0, reviewed.account_number().0);
+
+        let before = second.requests().len();
+        let error = accounts[0]
+            .place_reviewed_order(reviewed)
+            .await
+            .expect_err("a receipt from another venue must not place");
+
+        assert!(
+            format!("{error}").contains("different venue"),
+            "the error should say what is wrong: {error}"
+        );
+        assert_eq!(
+            second.requests().len(),
+            before,
+            "the guard must fire before anything reaches the venue"
+        );
+    }
+}
