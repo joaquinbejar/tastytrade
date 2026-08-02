@@ -1,0 +1,53 @@
+name: Dependency Audit
+
+# This crate does not commit Cargo.lock, so a CI checkout has no lock file and
+# cargo resolves the graph from scratch on every run. That is exactly the graph
+# a consumer gets, and it is why this job is meaningful: a developer's stale
+# local lock can carry advisories that a fresh resolution never selects, and
+# the reverse drift happens silently between pushes.
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+  # Dependency risk changes without anyone touching this repository.
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      # Only the expiry markers are checked here; it needs no toolchain work
+      # and failing early keeps a stale exception from hiding behind a green
+      # advisory run.
+      - name: Check advisory exception expiry
+        run: make deny-expiry
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          # Report every class rather than stopping at the first: a single run
+          # should say whether the failure is a vulnerability, an unmaintained
+          # crate, a licence, or a source.
+          arguments: --all-features

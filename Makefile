@@ -135,6 +135,40 @@ create-doc:
 readme: check-cargo-readme create-doc
 	cargo readme > README.md
 
+# Dependency advisories, licences, sources and version skew. Kept out of
+# `check` on purpose: it needs the network and the RustSec database, and the
+# pre-push gate must stay usable offline. CI runs it on every push and weekly.
+.PHONY: check-cargo-deny
+check-cargo-deny:
+	@command -v cargo-deny > /dev/null || (echo "Installing cargo-deny..."; cargo install cargo-deny --locked)
+
+.PHONY: deny
+deny: check-cargo-deny deny-expiry
+	cargo deny check
+
+# cargo-deny has no expiring-ignore feature, so the `expires=YYYY-MM-DD` marker
+# in each exception's reason is enforced here. An exception that outlives its
+# date fails the build, which forces the decision to be taken again rather than
+# inherited. ISO dates compare correctly as strings, so no date arithmetic.
+.PHONY: deny-expiry
+deny-expiry:
+	@dates=$$(grep -oE 'expires=[0-9]{4}-[0-9]{2}-[0-9]{2}' deny.toml | cut -d= -f2); \
+	ignores=$$(grep -cE '^[[:space:]]*\{ id = "RUSTSEC' deny.toml); \
+	found=$$(printf '%s\n' "$$dates" | grep -c '[0-9]' || true); \
+	if [ "$$found" != "$$ignores" ]; then \
+		echo "deny-expiry: $$ignores exception(s) but $$found expiry marker(s)."; \
+		echo "Every ignore needs owner=<login> expires=<YYYY-MM-DD> in its reason."; \
+		exit 1; \
+	fi; \
+	today=$$(date -u +%Y-%m-%d); \
+	expired=$$(printf '%s\n' "$$dates" | awk -v today="$$today" 'length($$0) > 0 && $$0 < today'); \
+	if [ -n "$$expired" ]; then \
+		echo "deny-expiry: advisory exception(s) expired on: $$expired"; \
+		echo "Re-justify in deny.toml with a new date and owner, or drop the dependency."; \
+		exit 1; \
+	fi; \
+	echo "deny-expiry: $$ignores exception(s), none expired"
+
 .PHONY: check-cargo-readme
 check-cargo-readme:
 	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme)
