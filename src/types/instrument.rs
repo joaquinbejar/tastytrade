@@ -118,9 +118,11 @@ pub struct EquityInstrumentInfo {
 #[serde(rename_all = "kebab-case")]
 pub struct TickSize {
     /// The value of the tick size.
-    pub value: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub value: Decimal,
     /// An optional threshold associated with the tick size.
-    pub threshold: Option<String>,
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub threshold: Option<Decimal>,
 }
 
 /// Represents an equity instrument.
@@ -149,7 +151,8 @@ pub struct EquityInstrument {
     /// The lendability of the equity instrument.
     pub lendability: Option<String>,
     /// The borrow rate of the equity instrument.
-    pub borrow_rate: Option<String>,
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub borrow_rate: Option<Decimal>,
     /// The market time instrument collection.
     pub market_time_instrument_collection: String,
     /// Indicates whether the instrument is closing only.
@@ -379,11 +382,16 @@ pub struct FuturesExpiration {
 #[serde(rename_all = "kebab-case")]
 pub struct FuturesTickSize {
     /// The threshold value (optional).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub threshold: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::decimal_option"
+    )]
+    pub threshold: Option<Decimal>,
 
     /// The tick size value.
-    pub value: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub value: Decimal,
 }
 
 /// Represents a strike price and associated option symbols for futures.
@@ -466,17 +474,23 @@ pub struct Future {
     /// The product code of the future.
     pub product_code: String,
     /// The contract size of the future.
-    pub contract_size: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub contract_size: Decimal,
     /// The tick size of the future.
-    pub tick_size: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub tick_size: Decimal,
     /// The notional multiplier of the future.
-    pub notional_multiplier: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub notional_multiplier: Decimal,
     /// The main fraction of the future.
-    pub main_fraction: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub main_fraction: Decimal,
     /// The sub-fraction of the future.
-    pub sub_fraction: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub sub_fraction: Decimal,
     /// The display factor of the future.
-    pub display_factor: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub display_factor: Decimal,
     /// The last trade date of the future.
     pub last_trade_date: String,
     /// The expiration date of the future.
@@ -555,11 +569,14 @@ pub struct FutureProduct {
     /// A list of strings representing the active months for the future product.
     pub active_months: Vec<String>,
     /// The notional multiplier for the future product.
-    pub notional_multiplier: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub notional_multiplier: Decimal,
     /// The tick size for the future product.
-    pub tick_size: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub tick_size: Decimal,
     /// The display factor for the future product.
-    pub display_factor: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub display_factor: Decimal,
     /// The streamer exchange code for the future product.
     pub streamer_exchange_code: String,
     /// A boolean indicating whether the future product has a small notional value.
@@ -640,17 +657,22 @@ pub struct FutureOption {
     /// Indicates whether the option is the primary deliverable.
     pub is_primary_deliverable: bool,
     /// The future price ratio.
-    pub future_price_ratio: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub future_price_ratio: Decimal,
     /// The multiplier for the future option.
-    pub multiplier: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub multiplier: Decimal,
     /// The underlying count for the future option.
-    pub underlying_count: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub underlying_count: Decimal,
     /// Indicates whether the future option is confirmed.
     pub is_confirmed: bool,
     /// The notional value of the future option.
-    pub notional_value: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub notional_value: Decimal,
     /// The display factor for the future option.
-    pub display_factor: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub display_factor: Decimal,
     /// The security exchange for the future option.
     pub security_exchange: String,
     /// The SX ID of the future option.
@@ -658,7 +680,8 @@ pub struct FutureOption {
     /// The settlement type of the future option.
     pub settlement_type: String,
     /// The strike factor for the future option.
-    pub strike_factor: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub strike_factor: Decimal,
     /// The maturity date of the future option.
     pub maturity_date: String,
     /// Indicates whether the future option is exercisable weekly.
@@ -704,9 +727,11 @@ pub struct FutureOptionProduct {
     /// The clearing exchange code of the future option.
     pub clearing_exchange_code: String,
     /// The clearing price multiplier of the future option.
-    pub clearing_price_multiplier: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub clearing_price_multiplier: Decimal,
     /// The display factor of the future option.
-    pub display_factor: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub display_factor: Decimal,
     /// The exchange where the future option is traded.
     pub exchange: String,
     /// The type of the product (e.g., "future option").
@@ -748,7 +773,8 @@ pub struct Cryptocurrency {
     /// Indicates whether the cryptocurrency is currently active for trading.
     pub active: bool,
     /// The tick size for the cryptocurrency, represented as a string.
-    pub tick_size: String,
+    #[serde(with = "crate::types::wire::decimal")]
+    pub tick_size: Decimal,
     /// The symbol used by the data streamer (DxFeed).
     pub streamer_symbol: DxFeedSymbol,
     /// A vector of destination venue symbols for the cryptocurrency.
@@ -982,10 +1008,19 @@ mod tests {
 
         // Verify tick sizes
         assert_eq!(expiration.tick_sizes.len(), 2);
-        assert_eq!(expiration.tick_sizes[0].threshold, Some("10.0".to_string()));
-        assert_eq!(expiration.tick_sizes[0].value, "0.05");
+        assert_eq!(
+            expiration.tick_sizes[0].threshold,
+            Some(Decimal::from_str("10.0").unwrap())
+        );
+        assert_eq!(
+            expiration.tick_sizes[0].value,
+            Decimal::from_str("0.05").unwrap()
+        );
         assert_eq!(expiration.tick_sizes[1].threshold, None);
-        assert_eq!(expiration.tick_sizes[1].value, "0.25");
+        assert_eq!(
+            expiration.tick_sizes[1].value,
+            Decimal::from_str("0.25").unwrap()
+        );
 
         // Verify strikes
         assert_eq!(expiration.strikes.len(), 2);
@@ -1006,5 +1041,37 @@ mod tests {
         );
         assert_eq!(expiration.strikes[1].call_streamer_symbol, None);
         assert_eq!(expiration.strikes[1].put_streamer_symbol, None);
+    }
+}
+
+#[cfg(test)]
+mod numeric_field_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    /// The venue quotes these, the API documentation calls them numbers, and
+    /// the crate used to hand callers a `String` to parse themselves — which
+    /// invites comparing tick sizes lexically, where "0.9" sorts above "0.25".
+    #[test]
+    fn a_quoted_tick_size_becomes_a_decimal() {
+        let tick: TickSize = serde_json::from_str(r#"{"value":"0.05","threshold":"10.0"}"#)
+            .expect("tick sizes parse");
+
+        assert_eq!(tick.value, Decimal::from_str("0.05").unwrap());
+        assert_eq!(tick.threshold, Some(Decimal::from_str("10.0").unwrap()));
+
+        // The comparison that a String field got wrong.
+        let coarse: TickSize = serde_json::from_str(r#"{"value":"0.25"}"#).expect("parses");
+        assert!(coarse.value > tick.value, "0.25 must exceed 0.05");
+        assert_eq!(coarse.threshold, None);
+    }
+
+    /// The documentation says `number`, so an unquoted value has to work too.
+    #[test]
+    fn an_unquoted_tick_size_parses_the_same_way() {
+        let quoted: TickSize = serde_json::from_str(r#"{"value":"0.05"}"#).expect("parses");
+        let bare: TickSize = serde_json::from_str(r#"{"value":0.05}"#).expect("parses");
+
+        assert_eq!(quoted.value, bare.value);
     }
 }
