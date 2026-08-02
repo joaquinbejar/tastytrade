@@ -18,21 +18,63 @@ impl<T: AsRef<str>> From<T> for AccountNumber {
     }
 }
 
+/// Details of a single trading account.
+///
+/// The certification environment and production do not return the same set of
+/// keys, and either side gains fields over time. A strict field is not a safe
+/// default here: `Items<T>` skips items it cannot parse, so one missing key
+/// turns a live account into an empty list rather than an error.
+///
+/// Tolerance does not mean inventing an answer. A flag the venue did not send
+/// is `None`, never `false` — "the broker did not say whether this account is
+/// in a firm error state" and "this account is not in a firm error state" are
+/// different facts, and only one of them is safe to act on.
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct AccountDetails {
+    /// Broker-assigned account identifier.
     pub account_number: AccountNumber,
+    /// External identifier, when the account carries one.
     pub external_id: Option<String>,
+    /// Timestamp the account was opened, RFC 3339.
     pub opened_at: String,
+    /// User-facing name of the account.
     pub nickname: String,
+    /// Account type as named by the broker, e.g. `Individual`.
     pub account_type_name: String,
-    pub day_trader_status: bool,
-    pub is_firm_error: bool,
-    pub is_firm_proprietary: bool,
+    /// Whether the account is flagged as a pattern day trader. `None` when the
+    /// venue omits the flag, which is not the same as `false`.
+    pub day_trader_status: Option<bool>,
+    /// Whether the account is in a firm error state. `None` when the venue
+    /// omits the flag, which is not the same as `false`.
+    pub is_firm_error: Option<bool>,
+    /// Whether the account is firm proprietary. `None` when the venue omits
+    /// the flag, which is not the same as `false`.
+    pub is_firm_proprietary: Option<bool>,
+    /// Whether the account is a test-drive account.
+    ///
+    /// The only flag that defaults rather than reporting `None`: certification
+    /// never sends it, and every account it serves is a real one from the
+    /// caller's point of view, which is what `false` says.
+    #[serde(default)]
     pub is_test_drive: bool,
+    /// Whether the account is margin or cash.
     pub margin_or_cash: String,
-    pub is_foreign: bool,
+    /// Whether the account is foreign. `None` when the venue omits the flag,
+    /// which is not the same as `false`.
+    pub is_foreign: Option<bool>,
+    /// Date the account was funded, when it has been.
     pub funding_date: Option<String>,
+    /// Whether the account has been closed. `None` when the venue omits it.
+    pub is_closed: Option<bool>,
+    /// Timestamp the account record was created.
+    pub created_at: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// Stated investment objective, e.g. `SPECULATION`.
+    pub investment_objective: Option<String>,
+    /// Whether the account is approved to trade futures.
+    pub is_futures_approved: Option<bool>,
+    /// Options level the account is suitable for, e.g. `Defined Risk Spreads`.
+    pub suitable_options_level: Option<String>,
 }
 
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
@@ -142,5 +184,128 @@ impl Account<'_> {
                 self.inner.account.account_number.0, id.0
             ))
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exactly the keys `GET /customers/me/accounts` returns against
+    /// `api.cert.tastyworks.com`: no `is-test-drive`, no `external-id`, no
+    /// `funding-date`, plus five keys the struct used to ignore.
+    const CERT_ACCOUNT: &str = r#"{
+        "account-number": "5WX12345",
+        "account-type-name": "Individual",
+        "created-at": "2025-01-14T10:22:41.000+00:00",
+        "day-trader-status": false,
+        "investment-objective": "SPECULATION",
+        "is-closed": false,
+        "is-firm-error": false,
+        "is-firm-proprietary": false,
+        "is-foreign": false,
+        "is-futures-approved": true,
+        "margin-or-cash": "Margin",
+        "nickname": "Individual",
+        "opened-at": "2025-01-14T10:22:41.000+00:00",
+        "suitable-options-level": "Defined Risk Spreads"
+    }"#;
+
+    /// The production shape: `is-test-drive` present, none of the keys that
+    /// only certification was observed to send.
+    const PRODUCTION_ACCOUNT: &str = r#"{
+        "account-number": "5WX54321",
+        "external-id": "A1b2C3",
+        "opened-at": "2024-03-02T09:00:00.000+00:00",
+        "nickname": "Main",
+        "account-type-name": "Individual",
+        "day-trader-status": false,
+        "is-firm-error": false,
+        "is-firm-proprietary": false,
+        "is-test-drive": false,
+        "margin-or-cash": "Margin",
+        "is-foreign": false,
+        "funding-date": "2024-03-05"
+    }"#;
+
+    #[test]
+    fn parses_the_certification_payload() {
+        let account: AccountDetails =
+            serde_json::from_str(CERT_ACCOUNT).expect("certification accounts must parse");
+
+        assert_eq!(account.account_number.0, "5WX12345");
+        // Absent in certification, defaulted rather than fatal.
+        assert!(!account.is_test_drive);
+        assert_eq!(account.external_id, None);
+        assert_eq!(account.funding_date, None);
+        // Sent by certification, so reported as the venue stated it.
+        assert_eq!(account.day_trader_status, Some(false));
+        assert_eq!(account.is_firm_error, Some(false));
+        // Present in certification, previously discarded.
+        assert_eq!(account.is_closed, Some(false));
+        assert_eq!(account.is_futures_approved, Some(true));
+        assert_eq!(
+            account.suitable_options_level.as_deref(),
+            Some("Defined Risk Spreads")
+        );
+        assert_eq!(
+            account.created_at.map(|t| t.to_rfc3339()),
+            Some("2025-01-14T10:22:41+00:00".to_string()),
+            "the timestamp must be parsed, not carried as text"
+        );
+    }
+
+    /// A flag the venue did not send is unknown, not false. Reporting `false`
+    /// for an omitted firm-error or day-trader signal would let a caller act on
+    /// an answer the broker never gave.
+    #[test]
+    fn an_omitted_flag_is_unknown_rather_than_false() {
+        const WITHOUT_FLAGS: &str = r#"{
+            "account-number": "5WX12345",
+            "account-type-name": "Individual",
+            "margin-or-cash": "Margin",
+            "nickname": "Individual",
+            "opened-at": "2025-01-14T10:22:41.000+00:00"
+        }"#;
+
+        let account: AccountDetails =
+            serde_json::from_str(WITHOUT_FLAGS).expect("missing flags must not be fatal");
+
+        assert_eq!(account.is_firm_error, None);
+        assert_eq!(account.is_firm_proprietary, None);
+        assert_eq!(account.day_trader_status, None);
+        assert_eq!(account.is_foreign, None);
+    }
+
+    #[test]
+    fn parses_the_production_payload() {
+        let account: AccountDetails =
+            serde_json::from_str(PRODUCTION_ACCOUNT).expect("production accounts must parse");
+
+        assert_eq!(account.account_number.0, "5WX54321");
+        assert!(!account.is_test_drive);
+        assert_eq!(account.external_id.as_deref(), Some("A1b2C3"));
+        assert_eq!(account.is_firm_error, Some(false));
+        // Not sent by production, so absent rather than wrong.
+        assert_eq!(account.is_closed, None);
+        assert_eq!(account.investment_objective, None);
+        assert_eq!(account.created_at, None);
+    }
+
+    /// The bug as the caller experienced it: `Items<T>` skips what it cannot
+    /// parse, so one strict field turned a live sandbox account into an empty
+    /// list and `TastyTrade::account` reported the account as not on the
+    /// session.
+    #[test]
+    fn certification_accounts_survive_the_items_envelope() {
+        let body =
+            format!(r#"{{"items":[{{"account":{CERT_ACCOUNT},"authority-level":"owner"}}]}}"#);
+
+        let items: Items<AccountInner> =
+            serde_json::from_str(&body).expect("the envelope is well formed");
+
+        assert_eq!(items.items.len(), 1, "the sandbox account must survive");
+        assert_eq!(items.items[0].account.account_number.0, "5WX12345");
+        assert_eq!(items.items[0].authority_level, "owner");
     }
 }
