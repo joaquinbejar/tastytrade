@@ -89,6 +89,35 @@
 //! Logging in without `TASTYTRADE_USERNAME` and `TASTYTRADE_PASSWORD` fails
 //! locally with `TastyTradeError::ConfigError` and never reaches the network.
 //!
+//! ## Placing an order
+//!
+//! Placement goes through a review the venue's warnings cannot be skipped
+//! past silently:
+//!
+//! ```rust,no_run
+//! # use tastytrade::{Order, TastyTrade};
+//! # async fn place(account: &tastytrade::accounts::Account<'_>, order: &Order)
+//! #     -> Result<(), Box<dyn std::error::Error>> {
+//! let receipt = account.review_order(order).await?;
+//! println!("buying power effect: {}", receipt.result().buying_power_effect.change_in_buying_power);
+//!
+//! let reviewed = if receipt.is_clean() {
+//!     receipt.accept()?
+//! } else {
+//!     for warning in receipt.warnings() {
+//!         println!("warning: {}", warning.message);
+//!     }
+//!     receipt.accept_with_warnings()
+//! };
+//!
+//! account.place_reviewed_order(reviewed).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `Account::place_order` still exists for callers that manage the review
+//! themselves, but it carries no evidence that a review happened.
+//!
 //! ## Logging
 //!
 //! This crate emits `tracing` events and does **not** install a subscriber on

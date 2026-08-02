@@ -28,7 +28,9 @@ pub use crate::api::base::TastyResult;
 pub use crate::error::{ApiError, DxFeedError, Environment, RequestContext, TastyTradeError};
 
 // Re-export account types
-pub use crate::api::accounts::{Account, AccountDetails, AccountInner, AccountNumber};
+pub use crate::api::accounts::{
+    Account, AccountDetails, AccountInner, AccountNumber, DryRunReceipt, ReviewedOrder,
+};
 
 // Re-export order types
 pub use crate::types::order::{

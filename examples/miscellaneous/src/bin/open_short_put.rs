@@ -210,7 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 5: Do a dry run first to check for errors and see buying power effect
     info!("Performing dry run of order...");
-    let dry_run_result = account.dry_run(&order).await?;
+    // review_order carries the venue's answer forward as evidence, so the
+    // placement below cannot happen without it.
+    let receipt = account.review_order(&order).await?;
+    let dry_run_result = receipt.result();
 
     info!("Dry run successful:");
     info!(
@@ -264,8 +267,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         info!("Since this is demo mode, proceeding with order placement...");
 
-        // Place the order
-        match account.place_order(&order).await {
+        // The warnings, if any, have been printed above; saying so is what
+        // turns the receipt into something placeable.
+        let reviewed = if receipt.is_clean() {
+            receipt.accept()?
+        } else {
+            receipt.accept_with_warnings()
+        };
+
+        match account.place_reviewed_order(reviewed).await {
             Ok(result) => {
                 info!("Order placed successfully!");
                 info!("Order ID: {}", result.order.id.0);

@@ -1,7 +1,7 @@
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
-use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult};
+use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,101 @@ pub struct AccountInner {
     pub authority_level: String,
 }
 
+/// Evidence that a specific order was dry-run against a specific account.
+///
+/// Produced only by [`Account::review_order`], so it cannot be forged by
+/// constructing a value: the fields are private and there is no constructor.
+/// Turning it into a [`ReviewedOrder`] is a deliberate step, and when the
+/// venue attached warnings the only way through is the method that says so in
+/// its name.
+#[derive(Debug)]
+pub struct DryRunReceipt {
+    account_number: AccountNumber,
+    order: Order,
+    result: DryRunResult,
+}
+
+impl DryRunReceipt {
+    /// Everything the venue said about the order: buying-power effect, fees
+    /// and warnings.
+    pub fn result(&self) -> &DryRunResult {
+        &self.result
+    }
+
+    /// The warnings the venue attached, which is the part worth reading before
+    /// risking money.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.result.warnings
+    }
+
+    /// The order this receipt is about.
+    pub fn order(&self) -> &Order {
+        &self.order
+    }
+
+    /// Whether the venue attached anything that needs reading.
+    pub fn is_clean(&self) -> bool {
+        self.result.warnings.is_empty()
+    }
+
+    /// Accepts a clean dry run.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TastyTradeError::ConfigError`] when the venue attached
+    /// warnings. That is not a refusal to proceed — it is a refusal to proceed
+    /// *silently*. Read [`DryRunReceipt::warnings`] first, then use
+    /// [`DryRunReceipt::accept_with_warnings`] to say you did.
+    pub fn accept(self) -> TastyResult<ReviewedOrder> {
+        if !self.is_clean() {
+            return Err(crate::TastyTradeError::ConfigError(format!(
+                "the venue attached {} warning(s) to this order; read them and use \
+                 accept_with_warnings to proceed deliberately",
+                self.result.warnings.len()
+            )));
+        }
+
+        Ok(ReviewedOrder {
+            account_number: self.account_number,
+            order: self.order,
+        })
+    }
+
+    /// Accepts a dry run whose warnings the caller has read.
+    ///
+    /// Named so that the decision is visible at the call site rather than
+    /// buried in a boolean argument.
+    pub fn accept_with_warnings(self) -> ReviewedOrder {
+        ReviewedOrder {
+            account_number: self.account_number,
+            order: self.order,
+        }
+    }
+}
+
+/// An order that has been dry-run and accepted, ready for
+/// [`Account::place_reviewed_order`].
+///
+/// Like [`DryRunReceipt`], this has no public constructor: holding one means
+/// the review happened.
+#[derive(Debug, Clone)]
+pub struct ReviewedOrder {
+    account_number: AccountNumber,
+    order: Order,
+}
+
+impl ReviewedOrder {
+    /// The account this order was reviewed against.
+    pub fn account_number(&self) -> &AccountNumber {
+        &self.account_number
+    }
+
+    /// The order that was reviewed.
+    pub fn order(&self) -> &Order {
+        &self.order
+    }
+}
+
 pub struct Account<'t> {
     pub(crate) inner: AccountInner,
     pub(crate) tasty: &'t TastyTrade,
@@ -152,6 +247,50 @@ impl Account<'_> {
         resp.into_items()
     }
 
+    /// Dry-runs `order` and returns evidence bound to this account and this
+    /// exact order.
+    ///
+    /// This is the entry point to the reviewed-placement flow. The receipt
+    /// cannot be constructed any other way, so a `ReviewedOrder` is proof that
+    /// the venue was asked about *this* order against *this* account, and that
+    /// whoever holds it had the chance to read the answer.
+    pub async fn review_order(&self, order: &Order) -> TastyResult<DryRunReceipt> {
+        let result = self.dry_run(order).await?;
+
+        Ok(DryRunReceipt {
+            account_number: self.number(),
+            order: order.clone(),
+            result,
+        })
+    }
+
+    /// Places an order that came through [`Account::review_order`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TastyTradeError::ConfigError`] when the receipt belongs to a
+    /// different account. A receipt is bound to the account it was reviewed
+    /// against, and buying power, permissions and positions are all per
+    /// account, so a review against one says nothing about another.
+    pub async fn place_reviewed_order(
+        &self,
+        reviewed: ReviewedOrder,
+    ) -> TastyResult<OrderPlacedResult> {
+        if reviewed.account_number != self.number() {
+            return Err(crate::TastyTradeError::ConfigError(
+                "this order was reviewed against a different account; \
+                 review it again against the account you mean to trade"
+                    .to_string(),
+            ));
+        }
+
+        self.place_order(&reviewed.order).await
+    }
+
+    /// Dry-runs an order without producing a receipt.
+    ///
+    /// Useful for pricing and what-if questions. For actually placing
+    /// something, [`Account::review_order`] carries the answer forward.
     pub async fn dry_run(&self, order: &Order) -> TastyResult<DryRunResult> {
         let resp: DryRunResult = self
             .tasty
@@ -166,6 +305,12 @@ impl Account<'_> {
         Ok(resp)
     }
 
+    /// Places an order directly, with no evidence it was ever dry-run.
+    ///
+    /// Prefer [`Account::review_order`] followed by
+    /// [`Account::place_reviewed_order`]: that path makes the venue's warnings
+    /// impossible to skip past without saying so. This one remains for callers
+    /// that manage the review themselves.
     pub async fn place_order(&self, order: &Order) -> TastyResult<OrderPlacedResult> {
         let resp: OrderPlacedResult = self
             .tasty
