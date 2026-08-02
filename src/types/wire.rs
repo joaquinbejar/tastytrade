@@ -71,6 +71,31 @@ pub(crate) mod decimal {
     }
 }
 
+/// The same, for a field the venue may omit entirely.
+pub(crate) mod decimal_option {
+    use super::*;
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Option::<WireNumber>::deserialize(deserializer)? {
+            Some(raw) => raw.into_decimal().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn serialize<S>(value: &Option<Decimal>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => super::decimal::serialize(value, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
