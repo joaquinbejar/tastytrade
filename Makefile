@@ -191,7 +191,7 @@ readme-check: check-cargo-readme create-doc
 
 .PHONY: check-cargo-readme
 check-cargo-readme:
-	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme)
+	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme --locked)
 
 # Code and comments are English, across every crate this repository ships.
 # This replaces the old scripts/spanish.py, which was referenced by the

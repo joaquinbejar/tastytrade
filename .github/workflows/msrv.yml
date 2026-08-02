@@ -1,0 +1,62 @@
+name: MSRV
+
+# rust-version in Cargo.toml is a promise to consumers. Nothing else in CI
+# builds with it — every other job installs stable — so without this a
+# dependency update or a new piece of syntax raises the real floor while every
+# check stays green and the manifest keeps claiming otherwise.
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  msrv:
+    name: build on the declared MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read from the manifest rather than repeated here, so the two cannot
+      # disagree: a bump to rust-version moves this job with it.
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $version"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-msrv-${{ steps.msrv.outputs.version }}-
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y make libfontconfig1-dev pkg-config
+
+      # The library is what the MSRV promise covers. The CLI and examples are
+      # not published, so they are free to need a newer toolchain.
+      - name: Build the library on the declared MSRV
+        run: cargo build --lib --all-features
