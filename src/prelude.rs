@@ -52,6 +52,9 @@ pub use crate::types::instrument::{
     Warrant,
 };
 
+// Re-export forward-compatible wire enums
+pub use crate::types::wire::{ExerciseStyle, ExpirationType, SettlementType};
+
 // Re-export DxFeed types
 pub use crate::types::dxfeed::*;
 
