@@ -467,14 +467,125 @@ pub struct FeeCalculation {
     pub total_fees_effect: PriceEffect,
 }
 
-/// Represents a warning message.  This struct is currently empty, potentially
-/// serving as a placeholder for future warning information. The `#[serde(rename_all = "kebab-case")]`
-/// attribute indicates that during deserialization, the field names in the incoming data should be
-/// converted from kebab-case to snake_case. For example, a field named "warning-message" in the
-/// incoming data would be mapped to `warning_message` in the struct.
+/// A warning the venue attached to a dry run or a placement.
+///
+/// Warnings are the reason to dry-run at all: they are how the broker says
+/// "this will work, but not the way you probably meant". A caller is expected
+/// to read them before placing.
+///
+/// The prose in `message` is venue-supplied and can name the account, the
+/// order or a buying-power figure, so it belongs in front of a person who
+/// asked for it, not in a log.
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct Warning {}
+pub struct Warning {
+    /// Broker code identifying the warning, when it sends one.
+    ///
+    /// Codes are stable enough to branch on; the message is not.
+    pub code: Option<String>,
+    /// Human-readable description of what the broker is warning about.
+    ///
+    /// Defaulted rather than required: `warnings` is a plain `Vec`, so one
+    /// warning the venue shapes differently would otherwise fail the whole
+    /// dry-run response and take the buying-power effect down with it. A
+    /// warning that cannot be read is still better than no result at all, and
+    /// whatever the venue did send lands in `details`.
+    #[serde(default)]
+    pub message: String,
+    /// Any extra detail the broker attaches, kept as-is.
+    ///
+    /// The shape here is not documented and varies by warning, so it is
+    /// preserved rather than modelled. Forward compatibility matters more
+    /// than a typed view of something the venue can change at will.
+    #[serde(flatten)]
+    pub details: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Warning {
+    /// Whether the broker attached anything beyond a code and a message.
+    pub fn has_details(&self) -> bool {
+        !self.details.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    /// Shaped like a real dry-run warning: a code, a message, and extra keys
+    /// the API documentation does not describe.
+    const WARNING: &str = r#"{
+        "code": "tif_next_valid_sesssion",
+        "message": "Your order will be placed at the next valid session.",
+        "preflight-id": "9f3c",
+        "buying-power-required": "1250.00"
+    }"#;
+
+    #[test]
+    fn a_warning_keeps_its_code_and_message() {
+        let warning: Warning = serde_json::from_str(WARNING).expect("warnings must parse");
+
+        assert_eq!(warning.code.as_deref(), Some("tif_next_valid_sesssion"));
+        assert_eq!(
+            warning.message,
+            "Your order will be placed at the next valid session."
+        );
+    }
+
+    /// The venue adds keys without notice and their shape is undocumented, so
+    /// they are preserved rather than modelled or dropped.
+    #[test]
+    fn undocumented_keys_are_preserved_rather_than_discarded() {
+        let warning: Warning = serde_json::from_str(WARNING).expect("warnings must parse");
+
+        assert!(warning.has_details());
+        assert_eq!(
+            warning.details.get("preflight-id").and_then(|v| v.as_str()),
+            Some("9f3c")
+        );
+        assert_eq!(
+            warning
+                .details
+                .get("buying-power-required")
+                .and_then(|v| v.as_str()),
+            Some("1250.00")
+        );
+    }
+
+    /// `warnings` is a plain Vec, so a warning shaped differently must not take
+    /// the buying-power effect down with it.
+    #[test]
+    fn a_warning_without_a_message_is_not_fatal() {
+        let warning: Warning =
+            serde_json::from_str(r#"{"code":"odd","note":"venue changed shape"}"#)
+                .expect("a missing message must not fail the dry run");
+
+        assert_eq!(warning.code.as_deref(), Some("odd"));
+        assert!(warning.message.is_empty());
+        assert_eq!(
+            warning.details.get("note").and_then(|v| v.as_str()),
+            Some("venue changed shape")
+        );
+    }
+
+    /// The old empty struct swallowed everything, which is what this fixes.
+    #[test]
+    fn a_dry_run_response_surfaces_its_warnings() {
+        let body = format!(r#"{{"warnings":[{WARNING}]}}"#);
+
+        #[derive(serde::Deserialize)]
+        struct JustWarnings {
+            warnings: Vec<Warning>,
+        }
+
+        let parsed: JustWarnings = serde_json::from_str(&body).expect("the list must parse");
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            !parsed.warnings[0].message.is_empty(),
+            "a caller must be able to read the warning before risking money"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
