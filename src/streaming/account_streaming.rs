@@ -201,6 +201,8 @@ pub struct AccountStreamer {
     transport: AccountTransport,
     /// Where the connection stands, shared with the supervisor task.
     state: Arc<RwLock<ConnectionState>>,
+    /// Ends the supervisor when this streamer is dropped.
+    cancel: Option<oneshot::Sender<()>>,
     /// Accounts to resubscribe after a reconnect.
     ///
     /// A reconnect that silently forgets what it was watching is worse than
@@ -260,6 +262,10 @@ impl AccountStreamer {
         let supervisor_state = state.clone();
         let supervisor_subscribed = subscribed.clone();
         let supervisor_actions = action_sender.clone();
+        // The supervisor holds its own action sender, so the receiver never
+        // closes on its own and a quiet socket would keep the loop alive after
+        // its owner is gone. Only the streamer holds this.
+        let (cancel_tx, mut cancelled) = oneshot::channel::<()>();
         let config = tasty.config.clone();
         let mut token = tasty.session_token.clone();
         let mut session = Some(session);
@@ -278,7 +284,9 @@ impl AccountStreamer {
                                     .await;
                                 return;
                             }
-                            match schedule(&policy, &mut attempt, &supervisor_state).await {
+                            match schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled)
+                                .await
+                            {
                                 true => continue,
                                 false => return,
                             }
@@ -286,20 +294,31 @@ impl AccountStreamer {
                     },
                 };
 
-                // A successful session resets the budget: a connection that
-                // worked for hours should not inherit the attempt count of one
-                // that failed yesterday.
-                attempt = 0;
                 *supervisor_state.write().await = ConnectionState::Connected;
 
-                run_session(live, &token, &event_sender, &action_receiver).await;
+                let worked = run_session(
+                    live,
+                    &token,
+                    &event_sender,
+                    &action_receiver,
+                    &mut cancelled,
+                )
+                .await;
 
-                if event_sender.is_disconnected() {
-                    debug!("Account event receiver dropped, ending the supervisor");
+                // Reset only for a session the venue actually accepted a write
+                // on. Resetting on a successful handshake let a venue that
+                // takes the socket and rejects the session loop forever at
+                // attempt one.
+                if worked {
+                    attempt = 0;
+                }
+
+                if cancelled.try_recv().is_ok() || event_sender.is_disconnected() {
+                    debug!("Account streamer dropped, ending the supervisor");
                     return;
                 }
 
-                if !schedule(&policy, &mut attempt, &supervisor_state).await {
+                if !schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled).await {
                     return;
                 }
 
@@ -324,7 +343,15 @@ impl AccountStreamer {
                     }
                 }
 
-                resubscribe(&supervisor_actions, &supervisor_subscribed).await;
+                // Connected is claimed only once what was being watched is
+                // watched again. Reporting it before restoration leaves a
+                // caller believing they are receiving events they are not.
+                if !resubscribe(&supervisor_actions, &supervisor_subscribed).await {
+                    warn!("Could not restore every subscription; reconnecting again");
+                    if !schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled).await {
+                        return;
+                    }
+                }
             }
         });
 
@@ -332,6 +359,7 @@ impl AccountStreamer {
             event_receiver,
             action_sender,
             transport: AccountTransport::Websocket,
+            cancel: Some(cancel_tx),
             state,
             subscribed,
         })
@@ -372,10 +400,7 @@ impl AccountStreamer {
         // reconnect replays. A reconnect that silently forgets what it was
         // watching is worse than one that fails, because the caller keeps
         // waiting for events that will never come.
-        self.subscribed
-            .lock()
-            .expect("subscription set is never poisoned")
-            .insert(number);
+        subscribed_of(&self.subscribed).insert(number);
 
         Ok(())
     }
@@ -469,6 +494,7 @@ async fn schedule(
     policy: &BackoffPolicy,
     attempt: &mut u32,
     state: &Arc<RwLock<ConnectionState>>,
+    cancelled: &mut oneshot::Receiver<()>,
 ) -> bool {
     *attempt = attempt.saturating_add(1);
 
@@ -490,15 +516,24 @@ async fn schedule(
         attempt: *attempt,
         delay,
     };
-    tokio::time::sleep(delay).await;
-    true
+    // Cancellable: a caller who drops the streamer should not wait out a
+    // thirty-second backoff for a task nobody is listening to.
+    tokio::select! {
+        _ = &mut *cancelled => false,
+        _ = tokio::time::sleep(delay) => true,
+    }
 }
 
 /// Re-sends a Connect for every account that was subscribed before the drop.
+/// Replays every account that was subscribed before the drop.
+///
+/// Returns whether all of them landed. Each replay is acknowledged: a session
+/// that fails partway leaves the rest queued, and the next full replay would
+/// then append duplicates on top of them.
 async fn resubscribe(
     actions: &flume::Sender<HandlerAction>,
     subscribed: &Arc<Mutex<BTreeSet<AccountNumber>>>,
-) {
+) -> bool {
     let accounts: Vec<AccountNumber> = {
         let guard = subscribed
             .lock()
@@ -507,26 +542,39 @@ async fn resubscribe(
     };
 
     for account in accounts {
+        let (ack, answered) = oneshot::channel();
         let action = HandlerAction {
             action: SubRequestAction::Connect,
             value: Some(Box::new(vec![account]) as Box<dyn erased_serde::Serialize + Send + Sync>),
-            // Nobody is waiting: the original caller was told about the first
-            // subscription long ago.
-            ack: None,
+            ack: Some(ack),
         };
+
         if actions.send_async(action).await.is_err() {
-            break;
+            return false;
+        }
+        match answered.await {
+            Ok(Ok(())) => {}
+            _ => return false,
         }
     }
+
+    true
 }
 
 /// Runs one session until either half ends.
+/// Runs one session until either half ends.
+///
+/// Returns whether the venue ever accepted a write. A socket that connects and
+/// is then dropped never gets that far, which is what stops a venue that
+/// accepts connections and rejects sessions from looping forever at attempt
+/// one.
 async fn run_session(
     session: Session,
     token: &str,
     events: &flume::Sender<AccountEvent>,
     actions: &flume::Receiver<HandlerAction>,
-) {
+    cancelled: &mut oneshot::Receiver<()>,
+) -> bool {
     let (mut write, mut read) = session;
 
     // Owned by the session rather than by a task of its own, so it dies with
@@ -534,9 +582,14 @@ async fn run_session(
     // connection that is gone.
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.tick().await; // the first tick is immediate
+    let mut wrote_successfully = false;
 
     loop {
         tokio::select! {
+            _ = &mut *cancelled => {
+                debug!("Account streamer dropped, ending the session");
+                return wrote_successfully;
+            }
             _ = heartbeat.tick() => {
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
                     auth_token: token.to_string(),
@@ -548,19 +601,22 @@ async fn run_session(
                 };
                 if write.send(Message::Text(text.into())).await.is_err() {
                     debug!("Account websocket heartbeat failed, ending the session");
-                    return;
+                    return wrote_successfully;
                 }
+                // The venue accepted an authenticated write, so this is a
+                // session that actually worked.
+                wrote_successfully = true;
             }
             frame = read.next() => {
                 let Some(message) = frame else {
                     debug!("Account websocket stream ended");
-                    return;
+                    return wrote_successfully;
                 };
                 let frame = match message {
                     Ok(frame) => frame,
                     Err(e) => {
                         error!("Account websocket read failed, ending the session: {e}");
-                        return;
+                        return wrote_successfully;
                     }
                 };
 
@@ -570,7 +626,7 @@ async fn run_session(
                     Message::Binary(bytes) => bytes.to_vec(),
                     Message::Close(_) => {
                         debug!("Account websocket closed by the venue");
-                        return;
+                        return wrote_successfully;
                     }
                     Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
                 };
@@ -581,13 +637,13 @@ async fn run_session(
 
                 if events.send_async(event).await.is_err() {
                     debug!("Account event receiver dropped, ending the session");
-                    return;
+                    return wrote_successfully;
                 }
             }
             action = actions.recv_async() => {
                 let Ok(action) = action else {
                     debug!("Account action sender dropped, ending the session");
-                    return;
+                    return wrote_successfully;
                 };
                 let ack = action.ack;
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
@@ -610,18 +666,48 @@ async fn run_session(
                 };
 
                 match write.send(Message::Text(text.into())).await {
-                    Ok(()) => report(ack, Ok(())),
+                    Ok(()) => {
+                        wrote_successfully = true;
+                        report(ack, Ok(()));
+                    }
                     Err(e) => {
                         debug!("Account websocket write failed: {e}");
                         report(ack, Err(TastyTradeError::Streaming(
                             "the account stream closed before the action was sent".to_string(),
                         )));
-                        return;
+                        return wrote_successfully;
                     }
                 }
             }
         }
     }
+}
+
+impl Drop for AccountStreamer {
+    /// Ends the supervisor.
+    ///
+    /// A oneshot send is synchronous, so this works outside a Tokio runtime,
+    /// where spawning would panic. Without it the supervisor outlives its
+    /// owner: it holds its own action sender, so the receiver never closes on
+    /// its own, and a quiet socket keeps the heartbeat and the reconnect loop
+    /// running for nobody.
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
+/// Recovers a poisoned lock rather than panicking.
+///
+/// The value behind it is a set of account numbers. A thread panicking while
+/// holding the lock cannot leave that set in a state the next reader cannot
+/// understand, so poisoning carries nothing worth aborting a caller's process
+/// over.
+fn subscribed_of(
+    set: &Arc<Mutex<BTreeSet<AccountNumber>>>,
+) -> std::sync::MutexGuard<'_, BTreeSet<AccountNumber>> {
+    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Sends the outcome back to whoever is waiting, if anyone still is.

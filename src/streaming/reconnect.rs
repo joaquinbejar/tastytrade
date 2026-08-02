@@ -105,11 +105,17 @@ impl BackoffPolicy {
         // Saturating: a long-lived connection can rack up attempts, and
         // 2^attempt overflows well before the ceiling stops mattering.
         let factor = 2u32.saturating_pow(attempt.saturating_sub(1));
-        let base = self
-            .initial
-            .saturating_mul(factor)
-            .min(self.max_delay)
-            .as_nanos() as u64;
+        // as_nanos is u128 and these fields are public, so a caller can set a
+        // delay that does not fit in u64. Truncating would wrap a very long
+        // backoff into a very short one, which is the opposite of the
+        // intention.
+        let base = u64::try_from(
+            self.initial
+                .saturating_mul(factor)
+                .min(self.max_delay)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
 
         if self.jitter <= 0.0 {
             return Some(Duration::from_nanos(base));
@@ -206,6 +212,25 @@ mod tests {
                 "jitter must not collapse the delay to nothing: {delay:?}"
             );
         }
+    }
+
+    /// `as_nanos` is `u128` and these fields are public, so a caller can set a
+    /// delay that does not fit in `u64`. Truncating would wrap a very long
+    /// backoff into a very short one, which is the opposite of the intention.
+    #[test]
+    fn an_enormous_delay_saturates_rather_than_wrapping() {
+        let p = BackoffPolicy {
+            initial: Duration::from_secs(u64::MAX / 1_000),
+            max_delay: Duration::MAX,
+            max_attempts: None,
+            jitter: 0.0,
+        };
+
+        let delay = p.delay_for(64, 0).expect("no attempt limit");
+        assert!(
+            delay >= Duration::from_secs(1),
+            "a huge delay must not wrap to a tiny one: {delay:?}"
+        );
     }
 
     #[test]
