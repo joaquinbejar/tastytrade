@@ -308,9 +308,9 @@ pub struct LiveOrderLeg {
 /// `derive_builder` crate to provide a convenient builder pattern for constructing
 /// order instances.  The `serde` attributes control how the struct is serialized
 /// and deserialized, ensuring compatibility with external APIs or data formats.
-#[derive(Builder, Serialize)]
+#[derive(Builder, Serialize, Debug, Clone)]
 #[serde(rename_all = "kebab-case")]
-#[builder(setter(into))]
+#[builder(setter(into), build_fn(validate = "OrderBuilder::validate_order"))]
 pub struct Order {
     /// Specifies how long the order remains active before being canceled or expiring.
     time_in_force: TimeInForce,
@@ -336,7 +336,7 @@ pub struct Order {
 ///
 #[derive(Builder, Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "kebab-case")]
-#[builder(setter(into))]
+#[builder(setter(into), build_fn(validate = "OrderLegBuilder::validate_leg"))]
 pub struct OrderLeg {
     /// The type of instrument (e.g., Equity, Option).
     instrument_type: InstrumentType,
@@ -352,14 +352,14 @@ pub struct OrderLeg {
     action: Action,
 }
 
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 /// Represents the result of placing an order.
 ///
 /// This structure encapsulates the details of a placed order, including the order record itself,
 /// any warnings generated during order placement, the effect of the order on buying power, and
 /// the fee calculation associated with the order.  The `#[serde(...)]` attributes control how
 /// the struct is serialized and deserialized, ensuring compatibility with the Tastyworks API.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct OrderPlacedResult {
     /// The details of the placed order.
     pub order: LiveOrderRecord,
@@ -667,12 +667,22 @@ mod tests {
 
     #[test]
     fn test_order_builder() {
+        // A leg is required now: an order with none does nothing, and the
+        // builder rejects it rather than letting the venue say so.
+        let leg = OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("AAPL")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .unwrap();
+
         let order = OrderBuilder::default()
             .time_in_force(TimeInForce::Day)
             .order_type(OrderType::Limit)
             .price(Decimal::from_str("150.50").unwrap())
             .price_effect(PriceEffect::Debit)
-            .legs(vec![])
+            .legs(vec![leg])
             .build()
             .unwrap();
 
@@ -826,5 +836,266 @@ mod tests {
             OrderStatus::Removed,
             OrderStatus::PartiallyRemoved,
         ];
+    }
+}
+
+impl OrderLegBuilder {
+    /// Rejects a leg the venue would reject, before it can reach the venue.
+    ///
+    /// A quantity is a count of things being traded, so zero means "do
+    /// nothing" and a negative means the direction belongs in `action`, not in
+    /// the number. Both are round trips to the broker to be told something
+    /// this crate already knew.
+    fn validate_leg(&self) -> Result<(), String> {
+        if let Some(quantity) = self.quantity
+            && quantity <= Decimal::ZERO
+        {
+            return Err(format!(
+                "order leg quantity must be greater than zero, got {quantity}; \
+                 use the action field to express direction"
+            ));
+        }
+
+        if let Some(symbol) = &self.symbol
+            && symbol.0.trim().is_empty()
+        {
+            return Err("order leg symbol must not be empty".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+impl OrderBuilder {
+    /// Rejects an order the venue would reject.
+    ///
+    /// The rules encoded here hold regardless of instrument or account: an
+    /// order with no legs does nothing, a limit or stop-limit order needs a
+    /// price the venue can work, and a market order takes no price at all.
+    /// Anything account-specific — buying power, permissions, suitability — is
+    /// the venue's to judge, and `dry_run` is how you ask.
+    fn validate_order(&self) -> Result<(), String> {
+        if let Some(legs) = &self.legs
+            && legs.is_empty()
+        {
+            return Err("an order must have at least one leg".to_string());
+        }
+
+        let Some(order_type) = &self.order_type else {
+            return Ok(());
+        };
+
+        // Exhaustive on purpose, with no wildcard arm: OrderType is a closed
+        // set the broker owns, and a variant added later must break this build
+        // rather than inherit "any price is fine".
+        let needs_positive_price = match order_type {
+            // A working price is the whole point of these.
+            OrderType::Limit | OrderType::StopLimit | OrderType::MarketableLimit => true,
+            // The price field carries the trigger. A stop at zero or below is
+            // a trigger that either never fires or fires immediately.
+            OrderType::Stop => true,
+            // The price is the amount of money to spend, so it is the order.
+            OrderType::NotionalMarket => true,
+            // The venue fills these at whatever the book offers, so a price is
+            // at best ignored and at worst a misunderstanding worth flagging.
+            OrderType::Market => false,
+        };
+
+        if let Some(price) = self.price {
+            if needs_positive_price && price <= Decimal::ZERO {
+                return Err(format!(
+                    "a {order_type:?} order needs a price greater than zero, got {price}"
+                ));
+            }
+            if !needs_positive_price && price != Decimal::ZERO {
+                return Err(format!(
+                    "a {order_type:?} order takes no price, got {price}; \
+                     use Limit to bound the fill"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod builder_validation_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn leg() -> OrderLeg {
+        OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("AAPL")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .expect("a one-share buy is valid")
+    }
+
+    /// Zero means "do nothing" and a negative means the direction was put in
+    /// the wrong field. Both are round trips to the broker to be told
+    /// something this crate already knew.
+    #[test]
+    fn a_leg_needs_a_positive_quantity() {
+        for quantity in ["0", "-1", "-0.5"] {
+            let error = OrderLegBuilder::default()
+                .instrument_type(InstrumentType::Equity)
+                .symbol("AAPL")
+                .quantity(Decimal::from_str(quantity).unwrap())
+                .action(Action::BuyToOpen)
+                .build()
+                .expect_err("a non-positive quantity must not build");
+
+            assert!(
+                error.to_string().contains("greater than zero"),
+                "the error should say what is wrong: {error}"
+            );
+        }
+    }
+
+    /// Fractional quantities are legitimate — crypto trades in them — so the
+    /// rule is "positive", not "whole".
+    #[test]
+    fn a_fractional_quantity_is_allowed() {
+        OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Cryptocurrency)
+            .symbol("BTC/USD")
+            .quantity(Decimal::from_str("0.0001").unwrap())
+            .action(Action::BuyToOpen)
+            .build()
+            .expect("a fractional crypto quantity is valid");
+    }
+
+    #[test]
+    fn a_leg_needs_a_symbol() {
+        let error = OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("   ")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .expect_err("a blank symbol must not build");
+
+        assert!(error.to_string().contains("symbol"), "{error}");
+    }
+
+    #[test]
+    fn an_order_needs_at_least_one_leg() {
+        let error = OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Market)
+            .price(Decimal::ZERO)
+            .price_effect(PriceEffect::None)
+            .legs(Vec::<OrderLeg>::new())
+            .build()
+            .expect_err("an order with no legs does nothing");
+
+        assert!(error.to_string().contains("at least one leg"), "{error}");
+    }
+
+    #[test]
+    fn a_limit_order_needs_a_working_price() {
+        let error = OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Limit)
+            .price(Decimal::ZERO)
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg()])
+            .build()
+            .expect_err("a limit order at zero is not a price");
+
+        assert!(error.to_string().contains("greater than zero"), "{error}");
+    }
+
+    /// A price on a market order is either ignored or a misunderstanding about
+    /// what the order does, and the second is worth catching.
+    #[test]
+    fn a_market_order_takes_no_price() {
+        let error = OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Market)
+            .price(Decimal::from(100))
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg()])
+            .build()
+            .expect_err("a market order with a price must not build");
+
+        assert!(error.to_string().contains("takes no price"), "{error}");
+    }
+
+    #[test]
+    fn a_well_formed_order_still_builds() {
+        OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(OrderType::Limit)
+            .price(Decimal::from_str("1.25").unwrap())
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg()])
+            .build()
+            .expect("a limit order with a price and a leg is valid");
+    }
+}
+
+#[cfg(test)]
+mod order_type_price_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn leg() -> OrderLeg {
+        OrderLegBuilder::default()
+            .instrument_type(InstrumentType::Equity)
+            .symbol("AAPL")
+            .quantity(Decimal::from(1))
+            .action(Action::BuyToOpen)
+            .build()
+            .expect("a one-share buy is valid")
+    }
+
+    fn build_with(order_type: OrderType, price: &str) -> Result<Order, OrderBuilderError> {
+        OrderBuilder::default()
+            .time_in_force(TimeInForce::Day)
+            .order_type(order_type)
+            .price(Decimal::from_str(price).unwrap())
+            .price_effect(PriceEffect::Debit)
+            .legs(vec![leg()])
+            .build()
+    }
+
+    /// Every order type that carries a price needs a working one. The match in
+    /// the validator is exhaustive so a variant added later cannot quietly
+    /// inherit "any price is fine" — this table is the other half of that.
+    #[test]
+    fn every_priced_order_type_rejects_a_non_positive_price() {
+        for order_type in [
+            OrderType::Limit,
+            OrderType::StopLimit,
+            OrderType::MarketableLimit,
+            OrderType::Stop,
+            OrderType::NotionalMarket,
+        ] {
+            for price in ["0", "-1"] {
+                let error = build_with(order_type.clone(), price)
+                    .expect_err("a non-positive price must not build");
+                assert!(
+                    error.to_string().contains("greater than zero"),
+                    "{order_type:?} at {price} should be rejected: {error}"
+                );
+            }
+
+            build_with(order_type.clone(), "1.25")
+                .unwrap_or_else(|e| panic!("{order_type:?} at 1.25 should build: {e}"));
+        }
+    }
+
+    /// Market is the one type where a price means the caller misunderstood.
+    #[test]
+    fn a_market_order_is_the_only_one_that_takes_no_price() {
+        build_with(OrderType::Market, "0").expect("a market order with no price builds");
+
+        let error =
+            build_with(OrderType::Market, "100").expect_err("a market order with a price must not");
+        assert!(error.to_string().contains("takes no price"), "{error}");
     }
 }
