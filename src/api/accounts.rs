@@ -169,7 +169,7 @@ impl DryRunReceipt {
     ///
     /// # Errors
     ///
-    /// Returns [`TastyTradeError::ConfigError`] when the venue attached
+    /// Returns [`crate::TastyTradeError::Precondition`] when the venue attached
     /// warnings. That is not a refusal to proceed — it is a refusal to proceed
     /// *silently*. Read [`DryRunReceipt::warnings`] first, then use
     /// [`DryRunReceipt::accept_with_warnings`] to say you did.
@@ -348,7 +348,7 @@ impl Account<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`TastyTradeError::ConfigError`] when the receipt belongs to a
+    /// Returns [`crate::TastyTradeError::Precondition`] when the receipt belongs to a
     /// different account. A receipt is bound to the account it was reviewed
     /// against, and buying power, permissions and positions are all per
     /// account, so a review against one says nothing about another.

@@ -53,7 +53,18 @@ pub struct QuoteSubscription {
 }
 
 impl QuoteSubscription {
-    /// Add symbols to subscription. See the "Note on symbology" section in [`QuoteSubscription`]
+    /// Subscribes this subscription to `symbols`.
+    ///
+    /// Returns once the venue has accepted the subscription, not merely once
+    /// the command was queued. Symbols already subscribed are skipped, so
+    /// calling twice with the same symbol subscribes once.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer has no open channel, when it is closed, or when
+    /// the venue refuses. On any of those the symbols are not recorded, so a
+    /// later close does not try to unsubscribe something that was never
+    /// subscribed.
     pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
         let requested: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
 

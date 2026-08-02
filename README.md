@@ -41,7 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get account information
     let accounts = tasty.accounts().await?;
     for account in accounts {
-        println!("Account: {}", account.number().0);
+        // Redacted: doc examples get copied, and an account number in a
+        // log is the thing this crate spends most of its care avoiding.
+        println!("Account: {}", account.number().redacted());
 
         // Get positions
         let positions = account.positions().await?;
@@ -65,9 +67,7 @@ use tastytrade::dxfeed;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TastyTradeConfig::from_env();
-    let tasty = TastyTrade::login(&config)
-           .await
-           .unwrap();
+    let tasty = TastyTrade::login(&config).await?;
     let mut quote_streamer = tasty.create_quote_streamer().await?;
     let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
 
@@ -122,7 +122,11 @@ if !receipt.is_clean() {
 }
 let reviewed = receipt.accept()?;
 
-account.place_reviewed_order(reviewed).await?;
+// Certification only. An example that places on production is an example
+// somebody runs on production.
+if config.use_demo {
+    account.place_reviewed_order(reviewed).await?;
+}
 ```
 
 `Account::place_order` still exists for callers that manage the review

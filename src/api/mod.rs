@@ -1,9 +1,9 @@
 //! The REST surface of the tastytrade API.
 //!
-//! Every module here is a thin layer over the generic verbs in [`client`]: it
+//! Every module here is a thin layer over the generic verbs in [`crate::api::client`]: it
 //! names an endpoint, gives its arguments types, and returns a
 //! [`crate::TastyResult`]. The decisions about status handling, redaction and
-//! error shape live in [`client`] and [`base`], not here.
+//! error shape live in [`crate::api::client`] and [`crate::api::base`], not here.
 
 /// Accounts: balances, positions, live orders and the reviewed-placement flow.
 pub mod accounts;
