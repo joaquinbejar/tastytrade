@@ -35,7 +35,7 @@ impl TastyTrade {
         let resp: Items<EquityInstrument> = self
             .get_with_query("/instruments/equities", &query_refs)
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn list_active_equities(
@@ -67,7 +67,7 @@ impl TastyTrade {
                 underlying_symbol.as_symbol().0
             ))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_compact_option_chain(
@@ -104,7 +104,7 @@ impl TastyTrade {
                 underlying_symbol.as_symbol().0
             ))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn list_equity_options(
@@ -131,7 +131,7 @@ impl TastyTrade {
         let resp: Items<EquityOption> = self
             .get_with_query("/instruments/equity-options", &query)
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_equity_option(&self, symbol: impl AsSymbol) -> TastyResult<EquityOption> {
@@ -201,7 +201,7 @@ impl TastyTrade {
 
         let resp: Items<crate::types::instrument::Future> =
             self.get_with_query("/instruments/futures", &query).await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_future(
@@ -215,7 +215,7 @@ impl TastyTrade {
 
     pub async fn list_future_products(&self) -> TastyResult<Vec<FutureProduct>> {
         let resp: Items<FutureProduct> = self.get("/instruments/future-products").await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_future_product(
@@ -233,7 +233,7 @@ impl TastyTrade {
     pub async fn list_future_option_products(&self) -> TastyResult<Vec<FutureOptionProduct>> {
         let resp: Items<FutureOptionProduct> =
             self.get("/instruments/future-option-products").await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_future_option_product_by_exchange(
@@ -266,7 +266,7 @@ impl TastyTrade {
         let resp: Items<FutureOption> = self
             .get(format!("/futures-option-chains/{}", product_code))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn list_nested_futures_option_chains(
@@ -300,7 +300,7 @@ impl TastyTrade {
         let resp: Items<FutureOption> = self
             .get_with_query("/instruments/future-options", &query)
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_future_option(&self, symbol: impl AsSymbol) -> TastyResult<FutureOption> {
@@ -332,7 +332,7 @@ impl TastyTrade {
         let resp: Items<Cryptocurrency> = self
             .get_with_query("/instruments/cryptocurrencies", &query)
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_cryptocurrency(&self, symbol: impl AsSymbol) -> TastyResult<Cryptocurrency> {
@@ -359,7 +359,7 @@ impl TastyTrade {
         }
 
         let resp: Items<Warrant> = self.get_with_query("/instruments/warrants", &query).await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_warrant(&self, symbol: impl AsSymbol) -> TastyResult<Warrant> {
@@ -372,6 +372,6 @@ impl TastyTrade {
     ) -> TastyResult<Vec<QuantityDecimalPrecision>> {
         let resp: Items<QuantityDecimalPrecision> =
             self.get("/instruments/quantity-decimal-precisions").await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 }

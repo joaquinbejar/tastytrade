@@ -16,7 +16,7 @@ impl TastyTrade {
         let resp: Items<NestedOptionChain> = self
             .get(format!("/option-chains/{}/nested", symbol.0))
             .await?;
-        resp.items.into_iter().next().ok_or_else(|| {
+        resp.into_items()?.into_iter().next().ok_or_else(|| {
             crate::TastyTradeError::Unknown(format!(
                 "No nested option chain found for symbol {}",
                 symbol.0
@@ -31,7 +31,7 @@ impl TastyTrade {
         let resp: Items<OptionChain> = self
             .get(format!("/option-chains/{}", symbol.into().0))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn get_option_info(&self, symbol: impl AsSymbol) -> TastyResult<OptionInfo> {

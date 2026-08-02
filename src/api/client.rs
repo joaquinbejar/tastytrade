@@ -136,7 +136,7 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
         );
 
         Ok(Paginated {
-            items: resp.data.items,
+            items: resp.data.into_items()?,
             pagination,
         })
     }
@@ -393,7 +393,7 @@ impl TastyTrade {
     pub async fn accounts(&self) -> TastyResult<Vec<Account<'_>>> {
         let resp: Items<AccountInner> = self.get("/customers/me/accounts").await?;
         Ok(resp
-            .items
+            .into_items()?
             .into_iter()
             .map(|inner| Account { inner, tasty: self })
             .collect())

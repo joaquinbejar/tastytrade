@@ -138,7 +138,7 @@ impl Account<'_> {
                 self.inner.account.account_number.0
             ))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn live_orders(&self) -> TastyResult<Vec<LiveOrderRecord>> {
@@ -149,7 +149,7 @@ impl Account<'_> {
                 self.inner.account.account_number.0
             ))
             .await?;
-        Ok(resp.items)
+        resp.into_items()
     }
 
     pub async fn dry_run(&self, order: &Order) -> TastyResult<DryRunResult> {

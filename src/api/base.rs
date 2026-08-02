@@ -43,9 +43,28 @@ pub struct Pagination {
     pub paging_link_template: Option<String>,
 }
 
+/// A venue listing, tolerant of items this crate cannot model yet.
+///
+/// The venue adds fields without notice, so one unparseable item must not lose
+/// a listing of five thousand. What the caller still needs is to be able to
+/// tell two situations apart that used to look identical: the venue genuinely
+/// returned nothing, and everything it returned was unparseable. The first is
+/// normal; the second is a defect in this crate.
 #[derive(Debug, Serialize)]
 pub struct Items<T: DeserializeOwned + Serialize + std::fmt::Debug> {
+    /// The items that decoded successfully.
     pub items: Vec<T>,
+    /// How many items were dropped because they could not be decoded.
+    ///
+    /// Zero on a healthy response. Non-zero means this crate's model has
+    /// drifted from what the venue sends, and the dropped items are invisible
+    /// to everything downstream.
+    ///
+    /// Client-side decode metadata, never part of the wire shape, so it is not
+    /// serialized: round-tripping an `Items` value must not invent a field the
+    /// venue does not have.
+    #[serde(skip_serializing)]
+    pub skipped: usize,
 }
 
 /// How many per-item deserialization failures are worth a warning. Schema drift
@@ -109,7 +128,34 @@ where
             );
         }
 
-        Ok(Items { items })
+        Ok(Items {
+            items,
+            skipped: error_count,
+        })
+    }
+}
+
+impl<T: DeserializeOwned + Serialize + std::fmt::Debug> Items<T> {
+    /// The decoded items, or an error when every item was dropped.
+    ///
+    /// Tolerating an unparseable item is right; silently answering "nothing
+    /// here" when *no* item could be decoded is not. That state is a defect in
+    /// this crate rather than a thin response, and it is what made a single
+    /// missing field read as an authentication problem.
+    ///
+    /// The check cannot live in the `Deserialize` implementation: the response
+    /// envelope is an untagged enum, and untagged deserialization discards the
+    /// inner error in favour of "data did not match any variant", so the
+    /// explanation would never reach the caller.
+    pub fn into_items(self) -> TastyResult<Vec<T>> {
+        if self.items.is_empty() && self.skipped > 0 {
+            return Err(TastyTradeError::Unknown(format!(
+                "all {} item(s) in the listing failed to deserialize; this crate's model \
+                 does not match what the venue returned (raise the log level for diagnostics)",
+                self.skipped
+            )));
+        }
+        Ok(self.items)
     }
 }
 
@@ -144,7 +190,12 @@ mod tests {
     /// that must never reach a log: the account number and the nickname.
     const ACCOUNT_NUMBER: &str = "5WX12345";
     const NICKNAME: &str = "Retirement";
-    const PAYLOAD: &str = r#"{"items":[{"account-number":"5WX12345","nickname":"Retirement","margin-or-cash":"Margin"}]}"#;
+    /// One item that decodes and one that cannot. The healthy item is what
+    /// keeps this in the tolerated-skip path rather than the all-failed one.
+    const PAYLOAD: &str = r#"{"items":[
+        {"account-number":"5WX00001","nickname":"Healthy","is-test-drive":false},
+        {"account-number":"5WX12345","nickname":"Retirement","margin-or-cash":"Margin"}
+    ]}"#;
 
     #[derive(Clone, Default)]
     struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
@@ -168,7 +219,7 @@ mod tests {
 
     /// Deserializes `payload` with the subscriber capturing everything up to
     /// `max_level`, and returns what was logged.
-    fn logs_for(payload: &str, max_level: Level) -> (Vec<StrictAccount>, String) {
+    fn logs_for(payload: &str, max_level: Level) -> (Items<StrictAccount>, String) {
         let logs = CapturedLogs::default();
         let writer = logs.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -179,8 +230,7 @@ mod tests {
 
         let items = tracing::subscriber::with_default(subscriber, || {
             serde_json::from_str::<Items<StrictAccount>>(payload)
-                .expect("the envelope itself is well formed")
-                .items
+                .expect("at least one item decodes in these fixtures")
         });
 
         (items, logs.contents())
@@ -188,9 +238,49 @@ mod tests {
 
     #[test]
     #[serial]
-    fn failed_item_is_skipped_not_fatal() {
+    fn a_failed_item_is_skipped_and_counted() {
         let (items, _) = logs_for(PAYLOAD, Level::WARN);
-        assert!(items.is_empty(), "the only item cannot deserialize");
+
+        assert_eq!(items.items.len(), 1, "the healthy item survives");
+        assert_eq!(
+            items.skipped, 1,
+            "the caller must be able to see that something was dropped"
+        );
+    }
+
+    /// The distinction this type could not express before: a venue that
+    /// returned nothing, and a venue whose every item this crate failed to
+    /// model. The second is a defect here, and returning an empty list for it
+    /// is what made a missing field read as an authentication problem.
+    #[test]
+    #[serial]
+    fn an_empty_listing_and_an_unparseable_one_are_not_the_same() {
+        let empty = serde_json::from_str::<Items<StrictAccount>>(r#"{"items":[]}"#)
+            .expect("an empty listing is a normal response");
+        assert_eq!(empty.skipped, 0);
+        assert!(
+            empty
+                .into_items()
+                .expect("nothing was dropped, so nothing is wrong")
+                .is_empty()
+        );
+
+        let all_failed = serde_json::from_str::<Items<StrictAccount>>(
+            r#"{"items":[{"account-number":"5WX1","nickname":"a"}]}"#,
+        )
+        .expect("decoding tolerates the failure; reporting it is into_items' job")
+        .into_items()
+        .expect_err("a listing where nothing decodes is an error");
+
+        let rendered = all_failed.to_string();
+        assert!(
+            rendered.contains("all 1 item(s)"),
+            "the error must say how many were lost: {rendered}"
+        );
+        assert!(
+            !rendered.contains("5WX1"),
+            "the error must not carry the payload: {rendered}"
+        );
     }
 
     #[test]
@@ -200,7 +290,7 @@ mod tests {
 
         // Diagnosable: which item, what class of failure, where in the body.
         assert!(
-            logs.contains("failed to deserialize item 0"),
+            logs.contains("failed to deserialize item 1"),
             "the failing item must be identified: {logs}"
         );
         assert!(
@@ -234,11 +324,14 @@ mod tests {
     #[serial]
     fn a_type_mismatch_does_not_leak_the_rejected_value() {
         let payload = format!(
-            r#"{{"items":[{{"account-number":"{ACCOUNT_NUMBER}","nickname":"{NICKNAME}","is-test-drive":"{ACCOUNT_NUMBER}"}}]}}"#
+            r#"{{"items":[
+                {{"account-number":"5WX00001","nickname":"Healthy","is-test-drive":false}},
+                {{"account-number":"{ACCOUNT_NUMBER}","nickname":"{NICKNAME}","is-test-drive":"{ACCOUNT_NUMBER}"}}
+            ]}}"#
         );
 
         let (parsed, warn_logs) = logs_for(&payload, Level::WARN);
-        assert!(parsed.is_empty(), "the item fails on the boolean");
+        assert_eq!(parsed.skipped, 1, "the second item fails on the boolean");
         assert!(
             !warn_logs.contains(ACCOUNT_NUMBER),
             "the rejected value reached WARN through the serde error: {warn_logs}"
@@ -268,13 +361,18 @@ mod tests {
     #[test]
     #[serial]
     fn per_item_warnings_are_capped_but_the_summary_is_not() {
-        let items: Vec<String> = (0..10)
-            .map(|i| format!(r#"{{"account-number":"5WX0000{i}","nickname":"Account {i}"}}"#))
-            .collect();
+        let mut items = vec![
+            r#"{"account-number":"5WX00001","nickname":"Healthy","is-test-drive":false}"#
+                .to_string(),
+        ];
+        items.extend(
+            (0..10)
+                .map(|i| format!(r#"{{"account-number":"5WX0000{i}","nickname":"Account {i}"}}"#)),
+        );
         let payload = format!(r#"{{"items":[{}]}}"#, items.join(","));
 
         let (parsed, warn_logs) = logs_for(&payload, Level::WARN);
-        assert!(parsed.is_empty(), "none of the items can deserialize");
+        assert_eq!(parsed.skipped, 10, "ten of the eleven items fail");
 
         let warned = warn_logs.matches("failed to deserialize item").count();
         assert_eq!(
@@ -282,7 +380,7 @@ mod tests {
             "ten failures must not produce ten warnings: {warn_logs}"
         );
         assert!(
-            warn_logs.contains("0 succeeded, 10 failed"),
+            warn_logs.contains("1 succeeded, 10 failed"),
             "the summary must still report every failure: {warn_logs}"
         );
 
@@ -293,5 +391,23 @@ mod tests {
             10,
             "DEBUG must keep every failure: {debug_logs}"
         );
+    }
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    use super::*;
+
+    /// `skipped` is decode metadata this crate keeps for the caller. Emitting
+    /// it would invent a broker field in anything that re-serializes a listing.
+    #[test]
+    fn the_skipped_count_is_not_part_of_the_wire_shape() {
+        let items = Items::<String> {
+            items: vec!["a".to_string()],
+            skipped: 3,
+        };
+
+        let json = serde_json::to_string(&items).expect("Items serializes");
+        assert_eq!(json, r#"{"items":["a"]}"#);
     }
 }
