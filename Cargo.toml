@@ -64,7 +64,7 @@ members = [
 tastytrade = { path = "." }
 derive_builder = "0.20"
 reqwest = { version = "0.13", features = ["json"] }
-rust_decimal = { version = "1.40", features = [
+rust_decimal = { version = "1.42", features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
 ] }
@@ -72,11 +72,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 flume = "0.12"
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
-tokio = { version = "1.49", features = ["full"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
+tokio = { version = "1.53", features = ["full"] }
 futures-util = "0.3"
 erased-serde = "0.4"
-dxlink = "0.1"
+dxlink = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
