@@ -106,19 +106,18 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
     for Paginated<T>
 {
     fn from_tasty(resp: Response<Items<T>>) -> Self {
-        // Debug logging to understand the conversion
-        debug!("🔍 FromTastyResponse conversion:");
-        debug!("🔍 resp.data.items.len(): {}", resp.data.items.len());
-        debug!("🔍 resp.pagination: {:?}", resp.pagination);
-
         let pagination = resp
             .pagination
             .expect("Pagination should be present for paginated responses");
+
+        // Counts and offsets describe the shape of the page, not its contents.
         debug!(
-            "🔍 pagination.current_item_count: {}",
-            pagination.current_item_count
+            "paginated page: {} items decoded, {} in page, {} total, offset {}",
+            resp.data.items.len(),
+            pagination.current_item_count,
+            pagination.total_items,
+            pagination.page_offset
         );
-        debug!("🔍 pagination.total_items: {}", pagination.total_items);
 
         Paginated {
             items: resp.data.items,
@@ -152,7 +151,9 @@ impl TastyTrade {
         )
         .await?;
 
-        debug!("Login successful for user: {}", creds.user.email);
+        // Deliberately not the email: it identifies the account holder, and
+        // the caller already knows which credentials it supplied.
+        debug!("Login successful");
         let client = Self::create_client(&creds);
 
         Ok(Self {
@@ -237,6 +238,7 @@ impl TastyTrade {
         // path carries the account number in the URL, so error context uses the
         // redacted form. The full URL stays at DEBUG.
         let request_info = redact_account_path(&full_request);
+        let started = std::time::Instant::now();
 
         let response: reqwest::Response = if query.is_empty() {
             self.client.get(&full_url).send().await?
@@ -290,7 +292,16 @@ impl TastyTrade {
         }
 
         let text = response.text().await?;
-        debug!("full response for {}: {}", full_request, text);
+        // A successful body is account numbers, balances, positions and order
+        // contents. Nothing about it belongs in a consumer's logs, so this
+        // reports the shape of the exchange and not its contents.
+        debug!(
+            "GET {} -> {} ({} bytes in {:?})",
+            request_info,
+            status.as_u16(),
+            text.len(),
+            started.elapsed()
+        );
         let result = serde_json::from_str::<TastyApiResponse<T>>(text.as_str()).map_err(|e| {
             // The body is already available at DEBUG above. Keeping it out of the
             // error means a caller that logs or reports the error cannot leak
