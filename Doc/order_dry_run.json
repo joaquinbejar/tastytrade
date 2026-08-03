@@ -1,0 +1,66 @@
+{
+  "data": {
+    "order": {
+      "account-number": "SENTINEL-5WX00042",
+      "time-in-force": "Day",
+      "order-type": "Limit",
+      "size": 1,
+      "underlying-symbol": "SPY",
+      "price": "2.0",
+      "price-effect": "Credit",
+      "status": "Received",
+      "cancellable": true,
+      "editable": true,
+      "edited": false,
+      "updated-at": 0,
+      "legs": [
+        {
+          "instrument-type": "Equity Option",
+          "symbol": "SPY   191018C00298000",
+          "quantity": 1,
+          "remaining-quantity": 1,
+          "action": "Buy to Open",
+          "fills": []
+        },
+        {
+          "instrument-type": "Equity Option",
+          "symbol": "SPY   191018C00295000",
+          "quantity": 1,
+          "remaining-quantity": 1,
+          "action": "Sell to Open",
+          "fills": []
+        }
+      ]
+    },
+    "warnings": [],
+    "buying-power-effect": {
+      "change-in-margin-requirement": "300.0",
+      "change-in-margin-requirement-effect": "Debit",
+      "change-in-buying-power": "102.302",
+      "change-in-buying-power-effect": "Debit",
+      "current-buying-power": "8995981.2613",
+      "current-buying-power-effect": "Credit",
+      "new-buying-power": "8995878.9593",
+      "new-buying-power-effect": "Credit",
+      "isolated-order-margin-requirement": "300.0",
+      "isolated-order-margin-requirement-effect": "Debit",
+      "is-spread": true,
+      "impact": "102.302",
+      "effect": "Debit"
+    },
+    "fee-calculation": {
+      "regulatory-fees": "0.102",
+      "regulatory-fees-effect": "Debit",
+      "clearing-fees": "0.2",
+      "clearing-fees-effect": "Debit",
+      "commission": "2.0",
+      "commission-effect": "Debit",
+      "proprietary-index-option-fees": "0.0",
+      "proprietary-index-option-fees-effect": "Debit",
+      "total-fees": "2.302",
+      "total-fees-effect": "Debit"
+    }
+  },
+  "api-version": "v1",
+  "context": "/accounts/SENTINEL-5WX00042/orders/dry-run"
+}

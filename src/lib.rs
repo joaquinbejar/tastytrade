@@ -163,6 +163,79 @@
 //! is `None` because the venue did not send one, which is not the same as a
 //! mark of zero.
 //!
+//! ### The order lifecycle
+//!
+//! Placing and cancelling were already here; reading an order back, searching
+//! the history, and amending a working order were not. Cancel-replace is how a
+//! resting order gets repriced — cancel-then-place loses queue position and
+//! leaves the account exposed in between.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn book(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
+//! let history = account
+//!     .search_orders(
+//!         &OrderFilter::new()
+//!             .with_statuses(&[OrderStatus::Filled, OrderStatus::Cancelled])
+//!             .with_page(PageRequest::first().with_per_page(50)),
+//!     )
+//!     .await?;
+//!
+//! // The live endpoint takes a **single** status, not an array — which is why
+//! // its filter is a different type. Sending the history filters there would
+//! // be ignored, and the listing would look narrowed when it was not.
+//! let working = account
+//!     .live_orders_matching(&LiveOrderFilter::new().with_status(OrderStatus::Live))
+//!     .await?;
+//! # let _ = (history, working);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Amending goes through the same discipline as placing: dry-run, read the
+//! answer, then apply the receipt.
+//!
+//! ```rust,no_run
+//! # use rust_decimal::Decimal;
+//! # use tastytrade::prelude::*;
+//! # async fn reprice(account: &Account<'_>, id: OrderId, price: Decimal)
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! let amendment = OrderAmendment::new(
+//!     OrderType::Limit,
+//!     TimeInForce::Day,
+//!     Decimal::ZERO,
+//!     PriceEffect::Debit,
+//!     PriceEffect::Debit,
+//! )
+//! .with_price(price);
+//!
+//! let receipt = account
+//!     .review_amendment(id, AmendmentIntent::Replace, &amendment)
+//!     .await?;
+//! for warning in receipt.warnings() {
+//!     println!("{warning}");
+//! }
+//! let replaced = account.place_reviewed_amendment(receipt.accept()?).await?;
+//! # let _ = replaced;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The intent is recorded **at review time**, so an amendment reviewed as a
+//! replacement cannot be applied as an edit: the venue treats them differently
+//! and a caller should not be able to swap them after reading the answer. The
+//! receipt is bound to the account **and** the deployment, because
+//! certification reuses production account numbering.
+//!
+//! A replacement is not atomic at the venue — a fill on the original aborts it
+//! — and this crate does not paper over that.
+//!
+//! [`prelude::OrderStatus`] keeps an unrecognised value verbatim. `Items<T>`
+//! skips what it cannot parse, so a strict enum would make an order carrying a
+//! new status vanish from a listing without an error, and
+//! [`prelude::OrderStatus::is_terminal`] answers `false` for it: a status this
+//! crate has not seen says nothing about whether the order is finished.
+//!
 //! ### Can this account trade?
 //!
 //! [`accounts::Account::trading_status`] is one request and answers before the

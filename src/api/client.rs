@@ -16,6 +16,8 @@ use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
 use crate::types::margin::{MarginConfiguration, SpanExchange, SpanRow};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
+use crate::types::order::LiveOrderRecord;
+use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
 use reqwest::ClientBuilder;
@@ -753,6 +755,83 @@ impl TastyTrade {
         decode_response::<R, R>(&report, response).await
     }
 
+    /// Performs a PUT with a JSON payload.
+    ///
+    /// **This can mutate account state**, including replacing a working order.
+    /// Prefer [`crate::accounts::Account::review_amendment`] and
+    /// [`crate::accounts::Account::place_reviewed_amendment`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::post`], including that a `401` is not retried with a
+    /// fresh token.
+    pub async fn put<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        self.mutate("PUT", url, payload, reqwest::Method::PUT).await
+    }
+
+    /// Performs a PATCH with a JSON payload.
+    ///
+    /// **This can mutate account state**, including editing a working order.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::put`].
+    pub async fn patch<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        self.mutate("PATCH", url, payload, reqwest::Method::PATCH)
+            .await
+    }
+
+    /// The body of `put` and `patch`, which differ only in the verb.
+    ///
+    /// Shared rather than copied so the two cannot drift apart on the parts
+    /// that matter: the deployment check, the pre-request refresh, the redacted
+    /// operation in the error, and the single place the status is inspected.
+    async fn mutate<R, P, U>(
+        &self,
+        method: &'static str,
+        url: U,
+        payload: P,
+        verb: reqwest::Method,
+    ) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        let full_url = self.request_url(url.as_ref())?;
+        let report = RequestReport::new(
+            method,
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let authorization = self.authorization().await?;
+        let response = self
+            .client
+            .request(verb, &full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(serde_json::to_string(&payload)?)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        decode_response::<R, R>(&report, response).await
+    }
+
     /// Performs a DELETE.
     ///
     /// **This can mutate account state**, including cancelling an order.
@@ -894,6 +973,38 @@ impl TastyTrade {
 
         self.get_with_query::<Items<SpanRow>, _, _>("/span/rows", &query.pairs())
             .await
+    }
+
+    /// One page of order history across several accounts.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// orders arrive but none can be decoded.
+    pub async fn customer_orders(
+        &self,
+        filter: &CustomerOrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<LiveOrderRecord>, _, _>("/customers/me/orders", &query.pairs())
+            .await
+    }
+
+    /// One page of working orders across several accounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::customer_orders`].
+    pub async fn customer_live_orders(
+        &self,
+        filter: &CustomerLiveOrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<LiveOrderRecord>, _, _>(
+            "/customers/me/orders/live",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// The full customer resource for this session.

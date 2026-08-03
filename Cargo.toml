@@ -20,6 +20,7 @@ include = [
     "Doc/trading_status.json",
     "Doc/margin_requirements.json",
     "Doc/margin_dry_run.json",
+    "Doc/order_dry_run.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -70,6 +71,7 @@ members = [
     "cli",
     "examples/miscellaneous",
     "examples/instruments",
+    "examples/orders",
 ]
 
 [workspace.dependencies]

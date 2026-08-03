@@ -45,6 +45,13 @@ pub use crate::types::order::{
     TimeInForce,
 };
 
+// Re-export the order lifecycle
+pub use crate::api::accounts::{AmendmentIntent, AmendmentReceipt, ReviewedAmendment};
+pub use crate::types::order::OrderAmendment;
+pub use crate::types::order_filter::{
+    CustomerLiveOrderFilter, CustomerOrderFilter, LiveOrderFilter, OrderFilter, OrderSort,
+};
+
 // Re-export position types
 pub use crate::types::position::{BriefPosition, FullPosition, QuantityDirection};
 

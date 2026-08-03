@@ -16,6 +16,7 @@ mod balances;
 mod customer;
 mod instrument_listings;
 mod margin;
+mod orders;
 mod paths;
 mod rest;
 mod search;
