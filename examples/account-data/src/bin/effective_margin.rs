@@ -30,10 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Values go to stdout, not through `tracing`. Margin, buying power,
+    // symbols, quantities and close prices are account financial data, and
+    // INFO is the default level that reaches whatever aggregator the consuming
+    // application configured. Stdout is the destination somebody chose by
+    // running this example.
 
     for underlying in UNDERLYINGS {
         match account.effective_margin_requirement(underlying).await {
-            Ok(requirement) => info!(
+            Ok(requirement) => println!(
                 "{underlying}: long initial {} / maintenance {}, short initial {} / maintenance {}, \
                  naked option standard {}",
                 show(requirement.long_equity_initial.as_ref()),
@@ -42,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 show(requirement.short_equity_maintenance.as_ref()),
                 show(requirement.naked_option_standard.as_ref())
             ),
-            Err(error) => info!("{underlying}: {error}"),
+            Err(error) => println!("{underlying}: {error}"),
         }
     }
 

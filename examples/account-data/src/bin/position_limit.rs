@@ -26,6 +26,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Values go to stdout, not through `tracing`. Margin, buying power,
+    // symbols, quantities and close prices are account financial data, and
+    // INFO is the default level that reaches whatever aggregator the consuming
+    // application configured. Stdout is the destination somebody chose by
+    // running this example.
 
     let limit = account.position_limit().await?;
 
@@ -53,13 +58,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         // `None` means the venue did not report a limit, which is not the same
         // as a limit of zero.
-        info!(
+        println!(
             "{name}: order {} / position {}",
             show(order.as_ref()),
             show(position.as_ref())
         );
     }
-    info!(
+    println!(
         "opening orders per underlying: {}",
         show(limit.underlying_opening_order_limit.as_ref())
     );

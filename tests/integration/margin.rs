@@ -49,10 +49,13 @@ fn leg() -> MarginOrderLeg {
         instrument_type: InstrumentType::Equity,
         quantity: Decimal::from(1),
         action: Action::BuyToOpen,
+        remaining_quantity: None,
     }
 }
 
 fn request(legs: Vec<MarginOrderLeg>) -> MarginOrderRequest {
+    // A `Limit` needs a working price, the same rule placement holds an order
+    // to. Estimating a limit order with no price estimates a different order.
     MarginOrderRequest::new(
         sentinel::ACCOUNT_NUMBER,
         "AAPL",
@@ -61,6 +64,7 @@ fn request(legs: Vec<MarginOrderLeg>) -> MarginOrderRequest {
         TimeInForce::Day,
         legs,
     )
+    .with_price(Decimal::from(100), PriceEffect::Debit)
 }
 
 /// The venue's own requirements payload, through the real transport.
@@ -211,7 +215,7 @@ async fn span_rows_sends_both_required_parameters_and_pages() {
     let rows = client
         .span_rows(
             NaiveDate::from_ymd_opt(2026, 8, 3).expect("a real date"),
-            "CME",
+            SpanExchange::Cme,
             &PageRequest::first().next_page().with_per_page(1),
         )
         .await

@@ -26,17 +26,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Values go to stdout, not through `tracing`. Margin, buying power,
+    // symbols, quantities and close prices are account financial data, and
+    // INFO is the default level that reaches whatever aggregator the consuming
+    // application configured. Stdout is the destination somebody chose by
+    // running this example.
 
     let report = account.margin_requirements().await?;
 
-    info!(
+    println!(
         "Total margin {} {}, maintenance {} {}",
         show(report.margin_requirement.as_ref()),
         show(report.margin_requirement_effect.as_ref()),
         show(report.maintenance_requirement.as_ref()),
         show(report.maintenance_requirement_effect.as_ref())
     );
-    info!(
+    println!(
         "Option buying power {}, maintenance excess {}",
         show(report.option_buying_power.as_ref()),
         show(report.maintenance_excess.as_ref())
@@ -45,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The nesting is the point: the per-strategy figures are what explain the
     // total, and flattening them would leave a number with no reason.
     for group in &report.groups {
-        info!(
+        println!(
             "  {} ({}): margin {}, maintenance {}",
             show(group.underlying_symbol.as_ref()),
             show(group.underlying_type.as_ref()),
@@ -53,14 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             show(group.maintenance_requirement.as_ref())
         );
         for strategy in &group.groups {
-            info!(
+            println!(
                 "    {}: margin {} over {} position(s)",
                 show(strategy.description.as_ref()),
                 show(strategy.margin_requirement.as_ref()),
                 strategy.position_entries.len()
             );
             for entry in &strategy.position_entries {
-                info!(
+                println!(
                     "      {} {} @ close {} (fixing {})",
                     show(entry.instrument_symbol.as_ref()),
                     show(entry.quantity.as_ref()),

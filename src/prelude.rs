@@ -60,7 +60,8 @@ pub use crate::types::margin::{
     EffectiveMarginRequirement, MAX_MARGIN_LEGS, MarginConfiguration, MarginDryRunLeg,
     MarginDryRunOrder, MarginEstimate, MarginGroup, MarginGroupResult, MarginImpact,
     MarginOrderLeg, MarginOrderRequest, MarginPositionEntry, MarginRequirementsReport,
-    MarginStrategy, MarginStrategyGroup, NetLiquidatingValues, PositionLimit, SpanRow,
+    MarginStrategy, MarginStrategyGroup, NetLiquidatingValues, PositionLimit, SpanExchange,
+    SpanRow,
 };
 
 // Re-export the account trading status

@@ -9,6 +9,7 @@
 //! impossible to omit, not a runtime 400.
 
 use chrono::Utc;
+use tastytrade::prelude::SpanExchange;
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
@@ -32,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut page = PageRequest::first().with_per_page(5);
     for _ in 0..MAX_PAGES {
         let rows = tasty
-            .span_rows(Utc::now().date_naive(), "CME", &page)
+            .span_rows(Utc::now().date_naive(), SpanExchange::Cme, &page)
             .await?;
 
         info!(

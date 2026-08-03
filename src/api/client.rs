@@ -14,7 +14,7 @@ use crate::api::url::encode_path_segment;
 use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
-use crate::types::margin::{MarginConfiguration, SpanRow};
+use crate::types::margin::{MarginConfiguration, SpanExchange, SpanRow};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
@@ -873,7 +873,9 @@ impl TastyTrade {
     ///
     /// Both parameters are required by the venue, so both are arguments rather
     /// than optional fields — a required query parameter should be impossible
-    /// to omit, not a runtime `400`.
+    /// to omit, not a runtime `400`. `exchange` is a closed set for the same
+    /// reason: the published contract admits two values, and a typo or a blank
+    /// string should not survive to an authenticated round trip.
     ///
     /// # Errors
     ///
@@ -882,12 +884,12 @@ impl TastyTrade {
     pub async fn span_rows(
         &self,
         date: NaiveDate,
-        exchange: &str,
+        exchange: SpanExchange,
         page: &PageRequest,
     ) -> TastyResult<Paginated<SpanRow>> {
         let mut query = QueryBuilder::new();
         query.push("date", date);
-        query.push("exchange", exchange);
+        query.push("exchange", exchange.as_wire());
         page.write_into(&mut query);
 
         self.get_with_query::<Items<SpanRow>, _, _>("/span/rows", &query.pairs())

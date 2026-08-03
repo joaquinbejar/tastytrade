@@ -18,17 +18,18 @@ use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use crate::api::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
 use crate::types::order::{Action, OrderType, PriceEffect, TimeInForce};
 
 /// The account's current margin and capital requirements, grouped by
 /// underlying.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MarginRequirementsReport {
     /// Which account this is about. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<AccountNumber>,
     /// What this row covers, e.g. `Total`.
     #[serde(default)]
     pub description: Option<String>,
@@ -429,7 +430,7 @@ pub struct NetLiquidatingValues {
 /// Not a [`crate::prelude::LiveOrderRecord`]: its `id` is a string like
 /// `dry-run-0` rather than the venue-assigned integer, because nothing was
 /// placed.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MarginDryRunOrder {
     /// The venue's placeholder identifier, e.g. `dry-run-0`.
@@ -437,7 +438,7 @@ pub struct MarginDryRunOrder {
     pub id: Option<String>,
     /// Which account it would be placed against. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<AccountNumber>,
     /// How long it would rest.
     #[serde(default)]
     pub time_in_force: Option<String>,
@@ -531,7 +532,7 @@ pub struct EffectiveMarginRequirement {
 }
 
 /// How much of each instrument type an account may order and hold.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct PositionLimit {
     /// The venue's identifier for this limit record.
@@ -539,7 +540,7 @@ pub struct PositionLimit {
     pub id: Option<i64>,
     /// Which account this is about. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<AccountNumber>,
     /// Largest single equity order.
     #[serde(default)]
     pub equity_order_size: Option<i64>,
@@ -606,6 +607,36 @@ pub struct SpanRow {
     pub row_data: Option<String>,
 }
 
+/// Which exchange's SPAN risk rows to ask for.
+///
+/// The published contract closes this parameter to two values. Accepting any
+/// `&str` made a typo and a blank string representable on a parameter the
+/// venue requires, so the mistake surfaced as a `400` after an authenticated
+/// round trip instead of at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanExchange {
+    /// CME Group.
+    Cme,
+    /// Cboe Futures Exchange.
+    Cfe,
+}
+
+impl SpanExchange {
+    /// The spelling the venue expects.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            SpanExchange::Cme => "CME",
+            SpanExchange::Cfe => "CFE",
+        }
+    }
+}
+
+impl std::fmt::Display for SpanExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_wire())
+    }
+}
+
 /// An order to estimate margin for.
 ///
 /// Deliberately **not** [`crate::prelude::Order`]. The margin endpoint requires
@@ -613,11 +644,11 @@ pub struct SpanRow {
 /// carry, and serialising an `Order` into this body would send a request
 /// missing two required fields. It also cannot route: there is no path from
 /// here to a placement.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct MarginOrderRequest {
     /// Which account to estimate against.
-    pub account_number: String,
+    pub account_number: AccountNumber,
     /// The underlying the order is on.
     pub underlying_symbol: String,
     /// What kind of instrument the underlying is.
@@ -634,6 +665,27 @@ pub struct MarginOrderRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub price_effect: Option<PriceEffect>,
+    /// When a `GTD` order would expire.
+    ///
+    /// The venue requires it for that time in force and ignores it otherwise.
+    /// Estimating a dated order without the date estimates a different order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub gtc_date: Option<NaiveDate>,
+    /// The trigger price, for the stop order types.
+    ///
+    /// Separate from `price`, which is the working price a `StopLimit` fills
+    /// at. An estimate that dropped this described an order with no trigger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub stop_trigger: Option<Decimal>,
+    /// The order this one would replace, when estimating a replacement.
+    ///
+    /// A replacement's margin is not a new order's margin: the venue nets it
+    /// against what the existing order already reserves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub replaces_order_id: Option<String>,
     /// The legs, one to four of them.
     pub legs: Vec<MarginOrderLeg>,
 }
@@ -651,6 +703,13 @@ pub struct MarginOrderLeg {
     pub quantity: Decimal,
     /// What the leg does to a position.
     pub action: Action,
+    /// How much of the leg is still working, when estimating a replacement.
+    ///
+    /// A partially filled leg reserves margin for what is left, not for what
+    /// was originally asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub remaining_quantity: Option<Decimal>,
 }
 
 /// The most legs the venue accepts on a margin estimate.
@@ -659,7 +718,7 @@ pub const MAX_MARGIN_LEGS: usize = 4;
 impl MarginOrderRequest {
     /// A request for `account_number` on `underlying_symbol`.
     pub fn new(
-        account_number: impl Into<String>,
+        account_number: impl Into<AccountNumber>,
         underlying_symbol: impl Into<String>,
         underlying_instrument_type: InstrumentType,
         order_type: OrderType,
@@ -674,6 +733,9 @@ impl MarginOrderRequest {
             order_type,
             price: None,
             price_effect: None,
+            gtc_date: None,
+            stop_trigger: None,
+            replaces_order_id: None,
             legs,
         }
     }
@@ -686,13 +748,34 @@ impl MarginOrderRequest {
         self
     }
 
+    /// Sets the day a `GTD` order would expire.
+    #[must_use]
+    pub fn with_gtc_date(mut self, gtc_date: NaiveDate) -> Self {
+        self.gtc_date = Some(gtc_date);
+        self
+    }
+
+    /// Sets the trigger price for a stop order type.
+    #[must_use]
+    pub fn with_stop_trigger(mut self, stop_trigger: Decimal) -> Self {
+        self.stop_trigger = Some(stop_trigger);
+        self
+    }
+
+    /// Estimates a replacement of an existing order rather than a new one.
+    #[must_use]
+    pub fn replacing(mut self, order_id: impl Into<String>) -> Self {
+        self.replaces_order_id = Some(order_id.into());
+        self
+    }
+
     /// Fails when the request cannot be what the venue accepts.
     ///
     /// Local checks only, all of them
     /// [`crate::TastyTradeError::Precondition`] and therefore not retryable:
     /// nothing was sent, and sending it again would fail the same way.
     pub(crate) fn validate(&self, account_number: &str) -> crate::TastyResult<()> {
-        if self.account_number != account_number {
+        if self.account_number.0 != account_number {
             // The body carries the account, and so does the path. If they
             // disagree the venue has to pick one, and which one it picks is not
             // something to find out on a margin figure somebody sizes a
@@ -732,6 +815,86 @@ impl MarginOrderRequest {
                      a repeated leg doubles the requirement it reports"
                 )));
             }
+            if let Some(remaining) = leg.remaining_quantity
+                && (remaining <= Decimal::ZERO || remaining > leg.quantity)
+            {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "leg {index} says {remaining} of {} is still working, which is not a \
+                     part of it; a replacement reserves margin for what is left",
+                    leg.quantity
+                )));
+            }
+        }
+
+        self.validate_price()?;
+
+        Ok(())
+    }
+
+    /// The price and trigger rules, matching what an order is held to.
+    ///
+    /// An estimate of an order the venue would refuse is not an estimate of
+    /// anything, and getting it wrong here produces a plausible buying-power
+    /// figure for an order that never existed. [`crate::prelude::Order`] checks
+    /// the same rules before placement; this is the same table.
+    fn validate_price(&self) -> crate::TastyResult<()> {
+        // Exhaustive with no wildcard arm, so a variant added later breaks
+        // this build rather than inheriting "any price is fine".
+        let (needs_price, needs_trigger) = match self.order_type {
+            OrderType::Limit | OrderType::MarketableLimit => (true, false),
+            OrderType::StopLimit => (true, true),
+            OrderType::Stop => (false, true),
+            OrderType::NotionalMarket => (true, false),
+            OrderType::Market => (false, false),
+        };
+
+        if let Some(price) = self.price {
+            if needs_price && price <= Decimal::ZERO {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "a {:?} order needs a price greater than zero, got {price}",
+                    self.order_type
+                )));
+            }
+            if !needs_price && price != Decimal::ZERO {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "a {:?} order carries no price, so price must be zero, got {price}",
+                    self.order_type
+                )));
+            }
+        } else if needs_price {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "a {:?} order needs a price, and this estimate has none",
+                self.order_type
+            )));
+        }
+
+        match (needs_trigger, self.stop_trigger) {
+            (true, None) => {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "a {:?} order is defined by its trigger, and this estimate has none",
+                    self.order_type
+                )));
+            }
+            (true, Some(trigger)) if trigger <= Decimal::ZERO => {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "a stop trigger of {trigger} either never fires or fires immediately"
+                )));
+            }
+            // A trigger on an order type that has none is a misunderstanding
+            // worth naming rather than a field the venue quietly ignores.
+            (false, Some(trigger)) => {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "a {:?} order has no trigger, and this estimate sets one ({trigger})",
+                    self.order_type
+                )));
+            }
+            _ => {}
+        }
+
+        if matches!(self.time_in_force, TimeInForce::Gtd) && self.gtc_date.is_none() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a GTD order expires on a day, and this estimate does not say which".to_string(),
+            ));
         }
 
         Ok(())
@@ -752,10 +915,12 @@ mod tests {
             instrument_type: InstrumentType::Equity,
             quantity: Decimal::from(1),
             action: Action::BuyToOpen,
+            remaining_quantity: None,
         }
     }
 
     fn request(legs: Vec<MarginOrderLeg>) -> MarginOrderRequest {
+        // A `Limit` needs a working price, the same rule an order is held to.
         MarginOrderRequest::new(
             "SENTINEL-5WX00042",
             "AAPL",
@@ -764,6 +929,7 @@ mod tests {
             TimeInForce::Day,
             legs,
         )
+        .with_price(Decimal::from(100), PriceEffect::Debit)
     }
 
     #[test]
@@ -926,9 +1092,153 @@ mod tests {
     /// no price, and `"price": null` is a different request from no price.
     #[test]
     fn an_absent_price_is_omitted_from_the_body() {
-        let body = serde_json::to_value(request(vec![leg("AAPL")])).expect("serialises");
+        // A market order, which is the case that actually carries no price.
+        // The shared helper builds a `Limit`, and a limit with no price is now
+        // refused before it is sent.
+        let body = serde_json::to_value(MarginOrderRequest::new(
+            "SENTINEL-5WX00042",
+            "AAPL",
+            InstrumentType::Equity,
+            OrderType::Market,
+            TimeInForce::Day,
+            vec![leg("AAPL")],
+        ))
+        .expect("serialises");
 
         assert!(body.get("price").is_none(), "{body}");
         assert!(body.get("price-effect").is_none(), "{body}");
+        assert!(body.get("stop-trigger").is_none(), "{body}");
+        assert!(body.get("gtc-date").is_none(), "{body}");
+        assert!(body.get("replaces-order-id").is_none(), "{body}");
+        assert!(
+            body["legs"][0].get("remaining-quantity").is_none(),
+            "{body}"
+        );
+    }
+
+    /// The estimate has to describe the order the caller means to place.
+    ///
+    /// The body the venue documents carries a trigger, an expiry day and a
+    /// replacement identifier, and this type could represent none of them: a
+    /// stop order was estimated with no trigger, a `GTD` order with no expiry,
+    /// and a replacement as if it were new. Each of those is a different order
+    /// from the one asked about, and the buying-power figure that comes back
+    /// looks exactly as plausible.
+    #[test]
+    fn a_dated_stop_or_replacement_can_be_described_and_is_checked() {
+        let day = NaiveDate::from_ymd_opt(2026, 12, 18).expect("a real day");
+        let base = || {
+            MarginOrderRequest::new(
+                "SENTINEL-5WX00042",
+                "AAPL",
+                InstrumentType::Equity,
+                OrderType::Stop,
+                TimeInForce::Gtd,
+                vec![leg("AAPL")],
+            )
+        };
+
+        let complete = base()
+            .with_stop_trigger(Decimal::from(180))
+            .with_gtc_date(day)
+            .replacing("order-991");
+        complete
+            .validate("SENTINEL-5WX00042")
+            .expect("a fully described stop must be accepted");
+
+        let body = serde_json::to_value(&complete).expect("must serialize");
+        assert_eq!(body["stop-trigger"], serde_json::json!(180));
+        assert_eq!(body["gtc-date"], serde_json::json!("2026-12-18"));
+        assert_eq!(body["replaces-order-id"], serde_json::json!("order-991"));
+
+        // A stop with no trigger is not a stop.
+        assert!(
+            base()
+                .with_gtc_date(day)
+                .validate("SENTINEL-5WX00042")
+                .is_err()
+        );
+        // A GTD order with no day does not expire on any day.
+        assert!(
+            base()
+                .with_stop_trigger(Decimal::from(180))
+                .validate("SENTINEL-5WX00042")
+                .is_err()
+        );
+        // And a trigger on an order type that has none.
+        assert!(
+            request(vec![leg("AAPL")])
+                .with_stop_trigger(Decimal::from(180))
+                .validate("SENTINEL-5WX00042")
+                .is_err()
+        );
+    }
+
+    /// A partially filled leg reserves margin for what is left of it.
+    #[test]
+    fn a_remaining_quantity_has_to_be_part_of_the_leg() {
+        let with_remaining = |remaining: Decimal| {
+            let mut only = leg("AAPL");
+            only.quantity = Decimal::from(10);
+            only.remaining_quantity = Some(remaining);
+            request(vec![only])
+        };
+
+        with_remaining(Decimal::from(4))
+            .validate("SENTINEL-5WX00042")
+            .expect("four of ten is a part of it");
+        assert!(
+            with_remaining(Decimal::from(11))
+                .validate("SENTINEL-5WX00042")
+                .is_err()
+        );
+        assert!(
+            with_remaining(Decimal::ZERO)
+                .validate("SENTINEL-5WX00042")
+                .is_err()
+        );
+    }
+
+    /// Neither the report nor the request renders its account number.
+    #[test]
+    fn the_margin_records_render_without_the_account_number() {
+        const ACCOUNT: &str = "SENTINEL-5WX00042";
+
+        let body: serde_json::Value = serde_json::from_str(REQUIREMENTS).expect("valid JSON");
+        let mut report: MarginRequirementsReport =
+            serde_json::from_value(body["data"].clone()).expect("the report must decode");
+        report.account_number = Some(AccountNumber(ACCOUNT.to_string()));
+
+        let outgoing = request(vec![leg("AAPL")]);
+
+        let rendered = format!("{report:?} {report} {outgoing:?} {outgoing}");
+        assert!(!rendered.contains(ACCOUNT), "rendered: {rendered}");
+        assert!(rendered.contains("{account}"), "{rendered}");
+        // The figures themselves still render: they are what the caller asked
+        // for, and the identifier is what they did not ask to have logged.
+        assert!(rendered.contains("AAPL"), "{rendered}");
+
+        // The request still serializes the real number: the venue requires it
+        // in the body.
+        let written = serde_json::to_string(&outgoing).expect("must serialize");
+        assert!(written.contains(ACCOUNT));
+    }
+
+    /// The SPAN exchange is a closed set, so a typo cannot reach the venue.
+    #[test]
+    fn the_span_exchange_only_spells_what_the_contract_admits() {
+        assert_eq!(SpanExchange::Cme.as_wire(), "CME");
+        assert_eq!(SpanExchange::Cfe.as_wire(), "CFE");
+        assert_eq!(SpanExchange::Cme.to_string(), "CME");
     }
 }
+
+// The records that carry an account number render through the redacting
+// helper rather than the derives, which go via `Serialize` and would print it
+// the moment anything wrote `{value:?}`. The nested rows come along: the
+// helper walks the whole serialized value, so a report's groups and a dry
+// run's legs cannot reintroduce the identifier.
+crate::types::wire::redacted_account_render!(MarginRequirementsReport);
+crate::types::wire::redacted_account_render!(MarginDryRunOrder);
+crate::types::wire::redacted_account_render!(PositionLimit);
+crate::types::wire::redacted_account_render!(MarginOrderRequest);

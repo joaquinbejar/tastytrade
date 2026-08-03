@@ -34,6 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Values go to stdout, not through `tracing`. Margin, buying power,
+    // symbols, quantities and close prices are account financial data, and
+    // INFO is the default level that reaches whatever aggregator the consuming
+    // application configured. Stdout is the destination somebody chose by
+    // running this example.
 
     let request = MarginOrderRequest::new(
         account.number().0,
@@ -46,18 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             instrument_type: InstrumentType::Equity,
             quantity: Decimal::from(1),
             action: Action::BuyToOpen,
+            remaining_quantity: None,
         }],
     )
     .with_price(Decimal::from_str("186.99")?, PriceEffect::Debit);
 
     let estimate = account.estimate_margin(&request).await?;
 
-    info!(
+    println!(
         "Buying power now {}, after {}",
         show(estimate.current_buying_power.as_ref()),
         show(estimate.new_buying_power.as_ref())
     );
-    info!(
+    println!(
         "Change in margin {} {}, change in buying power {} {}",
         show(estimate.change_in_margin_requirement.as_ref()),
         show(estimate.change_in_margin_requirement_effect.as_ref()),
@@ -65,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         show(estimate.change_in_buying_power_effect.as_ref())
     );
     if let Some(new) = &estimate.new_order_results {
-        info!(
+        println!(
             "With the order: margin {}, maintenance {}, impact {}",
             show(new.margin_requirement.as_ref()),
             show(new.maintenance_requirement.as_ref()),
@@ -86,12 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 instrument_type: InstrumentType::Equity,
                 quantity: Decimal::from(1),
                 action: Action::BuyToOpen,
+                remaining_quantity: None,
             })
             .collect(),
     );
     match account.estimate_margin(&five_legs).await {
-        Ok(_) => info!("five legs were accepted, which is a bug"),
-        Err(error) => info!(
+        Ok(_) => println!("five legs were accepted, which is a bug"),
+        Err(error) => println!(
             "five legs refused locally, retryable: {} — {error}",
             error.is_retryable()
         ),
