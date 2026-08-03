@@ -23,6 +23,7 @@ use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::types::order::LiveOrderRecord;
 use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
 use crate::types::quote_alert::{NewQuoteAlert, QuoteAlert};
+use crate::types::watchlist::{NewWatchlist, PairsWatchlist, Watchlist};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
 use reqwest::ClientBuilder;
@@ -1132,6 +1133,152 @@ impl TastyTrade {
             )
             .await?;
         resp.into_items()
+    }
+
+    /// tastytrade's own curated watchlists.
+    ///
+    /// `counts_only` asks the venue for the lists without their entries, which
+    /// is what the streaming half publishes alongside.
+    ///
+    /// # Errors
+    ///
+    /// Fails when lists arrive but none can be decoded.
+    pub async fn public_watchlists(&self, counts_only: bool) -> TastyResult<Vec<Watchlist>> {
+        let mut query = QueryBuilder::new();
+        // Sent only when asked for, so the venue's own default survives.
+        if counts_only {
+            query.push_flag("counts-only", Some(true));
+        }
+
+        let resp: Items<Watchlist> = self
+            .get_with_query("/public-watchlists", &query.pairs())
+            .await?;
+        resp.into_items()
+    }
+
+    /// The curated watchlists without their entries.
+    ///
+    /// The venue does not publish a schema for the counts-only response, so
+    /// what comes back decodes into [`Watchlist`] with whatever fields arrived
+    /// — the entry list simply ends up empty.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::public_watchlists`].
+    pub async fn public_watchlist_counts(&self) -> TastyResult<Vec<Watchlist>> {
+        self.public_watchlists(true).await
+    }
+
+    /// One curated watchlist by name.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404`.
+    pub async fn public_watchlist(&self, name: &str) -> TastyResult<Watchlist> {
+        self.get(format!("/public-watchlists/{}", encode_path_segment(name)))
+            .await
+    }
+
+    /// This user's own watchlists.
+    ///
+    /// # Errors
+    ///
+    /// Fails when lists arrive but none can be decoded.
+    pub async fn watchlists(&self) -> TastyResult<Vec<Watchlist>> {
+        let resp: Items<Watchlist> = self.get("/watchlists").await?;
+        resp.into_items()
+    }
+
+    /// One of this user's watchlists by name.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404`.
+    pub async fn watchlist(&self, name: &str) -> TastyResult<Watchlist> {
+        self.get(format!("/watchlists/{}", encode_path_segment(name)))
+            .await
+    }
+
+    /// Creates a watchlist.
+    ///
+    /// **Creates user data.**
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the name is blank or an
+    /// entry has a blank symbol. Propagates the venue's error otherwise,
+    /// including a refusal to create a list that already exists.
+    pub async fn create_watchlist(&self, watchlist: &NewWatchlist) -> TastyResult<Watchlist> {
+        watchlist.validate()?;
+
+        self.post("/watchlists", watchlist).await
+    }
+
+    /// **Replaces every property** of a watchlist.
+    ///
+    /// This is not an append and not a merge. The entries in `watchlist` are
+    /// the entries that survive: anything on the list and not in this request
+    /// is gone. To add a symbol, read the list, push onto its entries, and send
+    /// the whole thing back.
+    ///
+    /// **Destroys user data** when the entries are narrower than what is there.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::create_watchlist`].
+    pub async fn replace_watchlist(
+        &self,
+        name: &str,
+        watchlist: &NewWatchlist,
+    ) -> TastyResult<Watchlist> {
+        watchlist.validate()?;
+
+        self.put(
+            format!("/watchlists/{}", encode_path_segment(name)),
+            watchlist,
+        )
+        .await
+    }
+
+    /// Deletes a watchlist.
+    ///
+    /// **Destroys user data, irreversibly.** It is its own method taking its
+    /// own argument, so it cannot be reached from a listing or a read by
+    /// accident.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for a list that is
+    /// already gone.
+    pub async fn delete_watchlist(&self, name: &str) -> TastyResult<Watchlist> {
+        // The body's validation never ran on this path, because there is no
+        // body. A blank name went out as `DELETE /watchlists/` or an encoded
+        // blank segment, which is a request against a route nobody meant to
+        // call — on the one method here that destroys data irreversibly.
+        crate::types::watchlist::validate_watchlist_name(name)?;
+        self.delete(format!("/watchlists/{}", encode_path_segment(name)))
+            .await
+    }
+
+    /// Every pairs watchlist.
+    ///
+    /// # Errors
+    ///
+    /// Fails when lists arrive but none can be decoded.
+    pub async fn pairs_watchlists(&self) -> TastyResult<Vec<PairsWatchlist>> {
+        let resp: Items<PairsWatchlist> = self.get("/pairs-watchlists").await?;
+        resp.into_items()
+    }
+
+    /// One pairs watchlist by name.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404`.
+    pub async fn pairs_watchlist(&self, name: &str) -> TastyResult<PairsWatchlist> {
+        self.get(format!("/pairs-watchlists/{}", encode_path_segment(name)))
+            .await
     }
 
     /// Every quote alert this **user** has set.

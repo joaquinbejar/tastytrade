@@ -27,3 +27,4 @@ mod quote_alerts;
 mod rest;
 mod search;
 mod transactions;
+mod watchlists;
