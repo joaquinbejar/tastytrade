@@ -45,9 +45,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
-    if std::env::var(OPT_IN).is_err() {
+    // The exact value, not merely a set variable. An exported `=0`, an empty
+    // string left over from a shell profile, or a stale `=false` all read as
+    // present, and the usage text promises `=1` — consent that any value
+    // satisfies is not the consent that was asked for.
+    if std::env::var(OPT_IN)
+        .map(|value| value.trim() != "1")
+        .unwrap_or(true)
+    {
         info!(
-            "This would read from PRODUCTION. Set {OPT_IN}=1 to allow it. \
+            "This would read from PRODUCTION. Set {OPT_IN}=1 exactly to allow it. \
              Nothing is placed or modified either way."
         );
         return Ok(());
@@ -61,15 +68,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     info!("Account {} — READ ONLY", account.number().redacted());
 
+    // The equity curve goes to stdout. An account's total value and its
+    // drawdown are balance data, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
+
     // Relative to now. The window form is the other half of the enum, and the
     // two can never be sent together.
     let bars = account
         .net_liq_history(&NetLiqHistoryFilter::back(TimeBack::OneMonth))
         .await?;
 
-    info!("{} bar(s) over the last month", bars.len());
+    println!("{} bar(s) over the last month", bars.len());
     for bar in bars.iter().take(MAX_ROWS) {
-        info!(
+        println!(
             "  {}: o {} h {} l {} c {} (total close {})",
             // `time` is exactly what the venue sent: its schema gives it no
             // format, and the same service documents JVM `ZonedDateTime` for
@@ -87,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peak = bars.iter().filter_map(|bar| bar.high).max();
     let last = bars.iter().rev().find_map(|bar| bar.close);
     if let (Some(peak), Some(last)) = (peak, last) {
-        info!("Peak {peak}, latest {last}, drawdown {}", peak - last);
+        println!("Peak {peak}, latest {last}, drawdown {}", peak - last);
     }
 
     Ok(())
