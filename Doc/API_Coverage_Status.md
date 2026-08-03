@@ -6,7 +6,15 @@ crate implements.
 
 Source of truth: the swagger documents embedded in each `/open-api-spec/<area>/`
 page (`__NEXT_DATA__` → `props.pageProps.specData`), newest version per area.
-Snapshot taken 2026-08-03; the Orders spec was `order-api-swagger_20260427`.
+Snapshot taken 2026-08-03; the Orders spec was `order-api-swagger_20260427` and
+the Instruments spec `instruments-api-swagger_20250715`.
+
+Three states, not two. ✅ implemented · ❌ published and not yet implemented ·
+❔ **named somewhere official but not in the current public API document**, so
+there is no contract to implement against. Only the first two are counted in
+the totals; an endpoint in the third state is not a backlog item, and the
+difference is exactly what
+[#90](https://github.com/joaquinbejar/tastytrade/issues/90) is about.
 
 ## Summary
 
@@ -124,6 +132,65 @@ The crate also implements `GET /instruments/equity-options` and
 `GET /instruments/future-options` (the plural list forms) via
 `list_equity_options()` and `list_future_options()`. Both work against the
 venue but no longer appear in the published spec; keep them.
+
+### Named in a release note, absent from the spec — [#90](https://github.com/joaquinbejar/tastytrade/issues/90)
+
+Two routes are described by the official release notes and documented nowhere
+else. They are **not** counted in the totals above, in either column: counting
+them as missing would claim they exist, and counting them as retired would
+claim they do not.
+
+| Endpoint | State | Determined |
+|----------|-------|------------|
+| `GET /instruments/equity-deliverables` | ❔ not in the current public API document | 2026-08-03 |
+| `GET /instruments/future-spreads` | ❔ not in the current public API document | 2026-08-03 |
+
+**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ not in
+the current public API document, so there is no contract to implement against.
+The third state is the point of this section: it is not a backlog item.
+
+#### The evidence
+
+The release note stamped `20250715` at <https://developer.tastytrade.com/release-notes/>
+says response data is now paginated for eight endpoints, listing
+`GET /instruments/equity-deliverables` and `GET /instruments/future-spreads`
+among them. So both existed on 2025-07-15.
+
+The Instruments OpenAPI document currently served from
+<https://developer.tastytrade.com/open-api-spec/instruments/> is
+`instruments-api-swagger_20250715.json` — the **same date** — and contains 24
+paths, neither of them among them.
+
+#### Why that is not enough to declare them retired
+
+The same release note names two more endpoints that the same-day spec also
+omits: `GET /instruments/equity-options` and `GET /instruments/future-options`,
+the plural list forms. Both are present in the earlier spec capture kept at
+`Doc/Instruments.json`, both are implemented here as `list_equity_options()`
+and `list_future_options()`, and both answer.
+
+Four of the eight endpoints in that release note are missing from the spec
+published beside it, and at least two of those four demonstrably still work.
+Absence from the document is therefore evidence about the **document**, not
+about the API. Deriving a client contract for `equity-deliverables` or
+`future-spreads` from the release note alone would be inventing one — an
+`items` envelope and a pagination block is the entire published description,
+with no field list, no filters and no response schema.
+
+#### What would settle it
+
+One read-only GET per route against a live host. That is
+`examples/instruments/src/bin/probe_undocumented.rs`, which probes both routes
+plus the two controls above and reports the status and envelope shape:
+
+```shell
+TASTYTRADE_USE_DEMO=true cargo run -p instruments --bin probe_undocumented
+```
+
+It has **not been run**: this checkout has no OAuth application or grant, the
+same blocker as [#96](https://github.com/joaquinbejar/tastytrade/issues/96). A
+`404` retires the routes; anything else means they exist and the reply itself
+is the contract to model. Record the outcome here with its date either way.
 
 ## Margin Requirements
 
