@@ -25,18 +25,18 @@ difference is exactly what
 | Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
-| Margin Requirements | 2 | 0 | 2 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
+| Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
 | Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 0 | 1 | 0% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
 | Orders | 19 | 4 | 15 | 21% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
-| Risk Parameters | 4 | 0 | 4 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
+| Risk Parameters | 4 | 4 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **41** | **56** | **42%** | |
+| **TOTAL** | **97** | **47** | **50** | **48%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -236,10 +236,20 @@ is the contract to model. Record the outcome here with its date either way.
 
 ## Margin Requirements
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /margin/accounts/{account_number}/requirements` | ❌ |
-| `POST /margin/accounts/{account_number}/dry-run` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /margin/accounts/{account_number}/requirements` | `margin_requirements()` | ✅ |
+| `POST /margin/accounts/{account_number}/dry-run` | `estimate_margin()` | ✅ |
+
+`estimate_margin` routes nothing and is named to stay apart from
+`Account::dry_run`, the order preflight against `/accounts/{n}/orders/dry-run`.
+It takes `MarginOrderRequest`, which carries the account number and underlying
+symbol an `Order` does not — so an `Order` cannot be handed to it by accident,
+and there is no path from here to a placement.
+
+One to four unique legs, checked locally as a non-retryable `Precondition`. A
+repeated leg is almost always one leg written twice, and a doubled requirement
+is the kind of wrong that looks plausible.
 
 ## Market Data
 
@@ -327,12 +337,23 @@ streaming half exists with no way to create or list the alerts it delivers.
 
 ## Risk Parameters
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /accounts/{account_number}/margin-requirements/{underlying_symbol}/effective` | ❌ |
-| `GET /accounts/{account_number}/position-limit` | ❌ |
-| `GET /margin-requirements-public-configuration` | ❌ |
-| `GET /span/rows` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /accounts/{account_number}/margin-requirements/{underlying_symbol}/effective` | `effective_margin_requirement()` | ✅ |
+| `GET /accounts/{account_number}/position-limit` | `position_limit()` | ✅ |
+| `GET /margin-requirements-public-configuration` | `margin_requirements_configuration()` | ✅ |
+| `GET /span/rows` | `span_rows()` | ✅ |
+
+`span_rows` takes `date` and `exchange` as arguments because the venue marks
+both required — a required query parameter should be impossible to omit rather
+than a runtime 400. `row_data` stays text: a SPAN row is a fixed-width record in
+the exchange's own format, and parsing it is a different job from talking to
+this API.
+
+The margin report sends the literal string `NaN` for a fixing price that does
+not apply. `Decimal` is fixed-point and has no such value, so it decodes as
+`None` — without that the whole report fails to decode. Only `NaN` is forgiven;
+anything else unparseable is still an error.
 
 ## Symbol Search
 

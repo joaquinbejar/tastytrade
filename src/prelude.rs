@@ -55,6 +55,15 @@ pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
 // Re-export balance types
 pub use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 
+// Re-export the margin and risk-parameter surface
+pub use crate::types::margin::{
+    EffectiveMarginRequirement, MAX_MARGIN_LEGS, MarginConfiguration, MarginDryRunLeg,
+    MarginDryRunOrder, MarginEstimate, MarginGroup, MarginGroupResult, MarginImpact,
+    MarginOrderLeg, MarginOrderRequest, MarginPositionEntry, MarginRequirementsReport,
+    MarginStrategy, MarginStrategyGroup, NetLiquidatingValues, PositionLimit, SpanExchange,
+    SpanRow,
+};
+
 // Re-export the account trading status
 pub use crate::types::trading_status::TradingStatus;
 

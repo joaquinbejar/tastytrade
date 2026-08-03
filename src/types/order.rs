@@ -35,7 +35,7 @@ impl fmt::Display for PriceEffect {
 ///
 /// This enum defines the different actions that can be performed when placing an order.
 /// Each variant is serialized with a specific name for compatibility with the Tastyworks API.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     /// Represents a "Buy to Open" order action.
     #[serde(rename = "Buy to Open")]

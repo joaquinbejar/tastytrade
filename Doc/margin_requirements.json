@@ -1,0 +1,98 @@
+{
+  "data": {
+    "account-number": "SENTINEL-5WX00042",
+    "description": "Total",
+    "margin-calculation-type": "Reg T",
+    "option-level": "No Restrictions",
+    "margin-requirement": "4337.831401355",
+    "margin-requirement-effect": "Debit",
+    "maintenance-requirement": "3559.174330645",
+    "maintenance-requirement-effect": "Debit",
+    "margin-equity": "500007967.877802711",
+    "margin-equity-effect": "Credit",
+    "option-buying-power": "499976836.546401355",
+    "option-buying-power-effect": "Credit",
+    "reg-t-margin-requirement": "1557.31414142",
+    "reg-t-margin-requirement-effect": "Debit",
+    "reg-t-option-buying-power": "500006410.563661291",
+    "reg-t-option-buying-power-effect": "Credit",
+    "maintenance-excess": "499977615.203472065",
+    "maintenance-excess-effect": "Credit",
+    "groups": [
+      {
+        "description": "AAPL",
+        "code": "AAPL",
+        "underlying-symbol": "AAPL",
+        "underlying-type": "Equity",
+        "margin-calculation-type": "Reg T",
+        "margin-requirement": "4012.831401355",
+        "margin-requirement-effect": "Debit",
+        "maintenance-requirement": "3396.674330645",
+        "maintenance-requirement-effect": "Debit",
+        "buying-power": "4012.831401355",
+        "buying-power-effect": "Credit",
+        "groups": [
+          {
+            "description": "LONG_UNDERLYING",
+            "margin-requirement": "1232.31414142",
+            "margin-requirement-effect": "Debit",
+            "maintenance-requirement": "616.15707071",
+            "maintenance-requirement-effect": "Debit",
+            "includes-working-order": false,
+            "buying-power": "1232.31414142",
+            "buying-power-effect": "Credit",
+            "position-entries": [
+              {
+                "instrument-symbol": "AAPL",
+                "instrument-type": "Equity",
+                "quantity": "355.0",
+                "close-price": "0.0",
+                "fixing-price": "NaN"
+              }
+            ]
+          }
+        ],
+        "price-increase-percent": "0.5",
+        "price-decrease-percent": "-0.5"
+      },
+      {
+        "description": "UA",
+        "code": "UA",
+        "underlying-symbol": "UA",
+        "underlying-type": "Equity",
+        "margin-calculation-type": "Reg T",
+        "margin-requirement": "325.0",
+        "margin-requirement-effect": "Debit",
+        "maintenance-requirement": "162.5",
+        "maintenance-requirement-effect": "Debit",
+        "buying-power": "325.0",
+        "buying-power-effect": "Credit",
+        "groups": [
+          {
+            "description": "LONG_UNDERLYING",
+            "margin-requirement": "325.0",
+            "margin-requirement-effect": "Debit",
+            "maintenance-requirement": "162.5",
+            "maintenance-requirement-effect": "Debit",
+            "includes-working-order": true,
+            "buying-power": "325.0",
+            "buying-power-effect": "Credit",
+            "position-entries": [
+              {
+                "instrument-symbol": "UA",
+                "instrument-type": "Equity",
+                "quantity": "100.0",
+                "close-price": "0.0",
+                "fixing-price": "0.0"
+              }
+            ]
+          }
+        ],
+        "price-increase-percent": "0.5",
+        "price-decrease-percent": "-0.5"
+      }
+    ],
+    "last-state-timestamp": 1690830411014
+  },
+  "context": "/margin/accounts/SENTINEL-5WX00042/requirements"
+}

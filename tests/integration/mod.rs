@@ -15,6 +15,7 @@ mod account_stream;
 mod balances;
 mod customer;
 mod instrument_listings;
+mod margin;
 mod paths;
 mod rest;
 mod search;

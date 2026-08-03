@@ -96,6 +96,76 @@ pub(crate) mod decimal_option {
     }
 }
 
+/// A decimal the venue sometimes reports as the literal string `NaN`.
+///
+/// A fixing price that does not apply to an instrument comes back as `"NaN"`,
+/// which is not a number and never will be one. `Decimal` has no such value —
+/// it is a fixed-point type, which is the whole reason money uses it — so the
+/// only faithful answer is `None`.
+///
+/// Deliberately narrow: **only** `NaN` maps to `None`. Anything else
+/// unparseable is still an error, because a helper that swallowed every bad
+/// value would turn a decoding bug into a silently absent price on a margin
+/// report.
+pub(crate) mod decimal_option_nan {
+    use super::*;
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Option::<WireNumber>::deserialize(deserializer)? {
+            Some(WireNumber::Text(text)) if text.trim().eq_ignore_ascii_case("nan") => Ok(None),
+            Some(raw) => raw.into_decimal().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn serialize<S>(value: &Option<Decimal>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        super::decimal_option::serialize(value, serializer)
+    }
+}
+
+/// A map of symbol to price, as the margin report sends its marks.
+pub(crate) mod decimal_map {
+    use super::*;
+    use std::collections::HashMap;
+
+    pub(crate) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<HashMap<String, Decimal>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = match Option::<HashMap<String, WireNumber>>::deserialize(deserializer)? {
+            Some(raw) => raw,
+            None => return Ok(None),
+        };
+
+        let mut out = HashMap::with_capacity(raw.len());
+        for (symbol, number) in raw {
+            out.insert(symbol, number.into_decimal()?);
+        }
+        Ok(Some(out))
+    }
+
+    pub(crate) fn serialize<S>(
+        value: &Option<HashMap<String, Decimal>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(map) => serde::Serialize::serialize(map, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 /// A field the venue is inconsistent about the *shape* of, not just the
 /// encoding: a JSON string on one path and a JSON number on another, with no
 /// captured frame to settle which.

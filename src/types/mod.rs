@@ -10,6 +10,7 @@ pub(crate) mod customer;
 pub(crate) mod event;
 pub(crate) mod instrument;
 pub(crate) mod instrument_filter;
+pub(crate) mod margin;
 pub(crate) mod order;
 pub(crate) mod position;
 pub(crate) mod quote_alert;
