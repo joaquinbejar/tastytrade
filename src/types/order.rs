@@ -1,10 +1,11 @@
 use crate::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
+use crate::types::wire::wire_enum;
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use derive_builder::Builder;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 /// Represents the effect of a price on an account.
@@ -61,7 +62,7 @@ pub enum Action {
 /// marketable limit orders, stop orders, stop limit orders, and notional market orders.
 /// The `#[serde(rename = "...")]` attribute is used to ensure proper serialization
 /// and deserialization with external APIs that may use different naming conventions.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum OrderType {
     /// A limit order is an order to buy or sell a security at a specific price or better.
     Limit,
@@ -85,7 +86,7 @@ pub enum OrderType {
 /// This enum specifies how long an order remains active before it is canceled
 /// or expires.  It uses serde's `rename` attribute to map the Rust enum
 /// variants to specific string values expected by the Tastyworks API.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum TimeInForce {
     /// Day order: The order is valid only for the current trading day.
     #[serde(rename = "Day")]
@@ -108,63 +109,50 @@ pub enum TimeInForce {
     Ioc,
 }
 
-/// Represents the status of an order.
-///
-/// This enum defines the various states an order can transition through,
-/// from initial reception to final completion or cancellation.  The `serde`
-/// attributes provide custom renaming for certain variants to match the API
-/// specifications.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum OrderStatus {
-    /// The order has been received.
-    Received,
-    /// The order has been routed.
-    Routed,
-    /// The order is in flight.
-    #[serde(rename = "In Flight")]
-    InFlight,
-    /// The order is live.
-    Live,
-    /// A cancellation request has been submitted for the order.
-    #[serde(rename = "Cancel Requested")]
-    CancelRequested,
-    /// A replace request has been submitted for the order.
-    #[serde(rename = "Replace Requested")]
-    ReplaceRequested,
-    /// The order is contingent.
-    Contingent,
-    /// The order has been filled.
-    Filled,
-    /// The order has been cancelled.
-    Cancelled,
-    /// The order has expired.
-    Expired,
-    /// The order has been rejected.
-    Rejected,
-    /// The order has been removed.
-    Removed,
-    /// The order has been partially removed.
-    #[serde(rename = "Partially Removed")]
-    PartiallyRemoved,
+wire_enum! {
+    /// Represents the status of an order.
+    ///
+    /// The states an order moves through, from reception to a terminal one.
+    /// The thirteen values are the ones the venue documents.
+    ///
+    /// It gained an `Unknown(String)` arm because this is a **response** enum
+    /// and `Items<T>` skips what it cannot parse: a status the venue adds later
+    /// would have made the order carrying it vanish from a live-orders listing
+    /// without an error. An order disappearing quietly is the worst failure
+    /// mode available on this endpoint.
+    OrderStatus {
+        Received => "Received",
+        Routed => "Routed",
+        InFlight => "In Flight",
+        Live => "Live",
+        CancelRequested => "Cancel Requested",
+        ReplaceRequested => "Replace Requested",
+        Contingent => "Contingent",
+        Filled => "Filled",
+        Cancelled => "Cancelled",
+        Expired => "Expired",
+        Rejected => "Rejected",
+        Removed => "Removed",
+        PartiallyRemoved => "Partially Removed",
+    }
 }
 
-impl fmt::Display for OrderStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OrderStatus::Received => write!(f, "Received"),
-            OrderStatus::Routed => write!(f, "Routed"),
-            OrderStatus::InFlight => write!(f, "In Flight"),
-            OrderStatus::Live => write!(f, "Live"),
-            OrderStatus::CancelRequested => write!(f, "Cancel Requested"),
-            OrderStatus::ReplaceRequested => write!(f, "Replace Requested"),
-            OrderStatus::Contingent => write!(f, "Contingent"),
-            OrderStatus::Filled => write!(f, "Filled"),
-            OrderStatus::Cancelled => write!(f, "Cancelled"),
-            OrderStatus::Expired => write!(f, "Expired"),
-            OrderStatus::Rejected => write!(f, "Rejected"),
-            OrderStatus::Removed => write!(f, "Removed"),
-            OrderStatus::PartiallyRemoved => write!(f, "Partially Removed"),
-        }
+impl OrderStatus {
+    /// Whether the order can still change.
+    ///
+    /// The terminal states are the ones the venue will not move an order out
+    /// of. `Unknown` is **not** terminal: a status this crate has not seen says
+    /// nothing about whether the order is done, and guessing "finished" would
+    /// stop a caller watching an order that is still working.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            OrderStatus::Filled
+                | OrderStatus::Cancelled
+                | OrderStatus::Expired
+                | OrderStatus::Rejected
+                | OrderStatus::Removed
+        )
     }
 }
 
@@ -227,7 +215,7 @@ impl AsSymbol for &Symbol {
 /// This struct provides a transparent wrapper around a `u64` to represent an order ID.
 /// The `#[serde(transparent)]` attribute ensures that during serialization and deserialization,
 /// the `OrderId` is treated as if it were just a `u64`.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 pub struct OrderId(pub u64);
 
@@ -1260,15 +1248,15 @@ mod order_type_price_tests {
             OrderType::NotionalMarket,
         ] {
             for price in ["0", "-1"] {
-                let error = build_with(order_type.clone(), price)
-                    .expect_err("a non-positive price must not build");
+                let error =
+                    build_with(order_type, price).expect_err("a non-positive price must not build");
                 assert!(
                     error.to_string().contains("greater than zero"),
                     "{order_type:?} at {price} should be rejected: {error}"
                 );
             }
 
-            build_with(order_type.clone(), "1.25")
+            build_with(order_type, "1.25")
                 .unwrap_or_else(|e| panic!("{order_type:?} at 1.25 should build: {e}"));
         }
     }
@@ -1281,5 +1269,136 @@ mod order_type_price_tests {
         let error =
             build_with(OrderType::Market, "100").expect_err("a market order with a price must not");
         assert!(error.to_string().contains("price must be zero"), "{error}");
+    }
+}
+
+/// An amendment to a working order: price and execution properties.
+///
+/// The body of both `PUT /orders/{id}` (replace) and `PATCH /orders/{id}`
+/// (edit). The venue's schema gives the two **identical** property sets and
+/// neither carries legs, so one type serves both — what differs is the verb,
+/// and which one was intended is recorded on the receipt rather than left to
+/// the call site.
+///
+/// The five fields the venue marks required are not `Option`. A required field
+/// that could be omitted would compile and then 400.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct OrderAmendment {
+    /// What kind of order it becomes.
+    pub order_type: OrderType,
+    /// How long it rests.
+    pub time_in_force: TimeInForce,
+    /// The price trigger for a stop or stop-limit order.
+    #[serde(with = "crate::types::wire::decimal")]
+    pub stop_trigger: Decimal,
+    /// Whether the price is a debit or a credit.
+    pub price_effect: PriceEffect,
+    /// Whether the value is a debit or a credit.
+    pub value_effect: PriceEffect,
+    /// The price, for order types that take one.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::decimal_option"
+    )]
+    pub price: Option<Decimal>,
+    /// The notional value, for order types that take one.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::decimal_option"
+    )]
+    pub value: Option<Decimal>,
+    /// When a good-til-date order expires.
+    ///
+    /// The venue accepts this **only** when the time in force is `GTD`, which
+    /// is checked before anything is sent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::date_option"
+    )]
+    pub gtc_date: Option<NaiveDate>,
+}
+
+impl OrderAmendment {
+    /// An amendment that changes an order to `order_type` resting for
+    /// `time_in_force`.
+    pub fn new(
+        order_type: OrderType,
+        time_in_force: TimeInForce,
+        stop_trigger: Decimal,
+        price_effect: PriceEffect,
+        value_effect: PriceEffect,
+    ) -> Self {
+        Self {
+            order_type,
+            time_in_force,
+            stop_trigger,
+            price_effect,
+            value_effect,
+            price: None,
+            value: None,
+            gtc_date: None,
+        }
+    }
+
+    /// Sets the price.
+    #[must_use]
+    pub fn with_price(mut self, price: Decimal) -> Self {
+        self.price = Some(price);
+        self
+    }
+
+    /// Sets the notional value.
+    #[must_use]
+    pub fn with_value(mut self, value: Decimal) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    /// Sets the expiry of a good-til-date order.
+    #[must_use]
+    pub fn with_gtc_date(mut self, gtc_date: NaiveDate) -> Self {
+        self.gtc_date = Some(gtc_date);
+        self
+    }
+
+    /// Fails when the amendment cannot be what the venue accepts.
+    ///
+    /// Local checks, so [`crate::TastyTradeError::Precondition`] and not
+    /// retryable: nothing was sent and sending it again would fail the same
+    /// way.
+    pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        // "Can only be provided if time-in-force is GTD", says the venue. A
+        // date attached to a Day order is a caller who meant something else.
+        let is_gtd = matches!(self.time_in_force, TimeInForce::Gtd);
+        if self.gtc_date.is_some() && !is_gtd {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "a good-til-date expiry only applies to a GTD order, and this one \
+                 is {:?}",
+                self.time_in_force
+            )));
+        }
+        if is_gtd && self.gtc_date.is_none() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a GTD order needs the date it expires on".to_string(),
+            ));
+        }
+
+        // The venue documents `price` as required for limit and stop-limit.
+        // Sending one without it is a rejection that costs a round trip and, on
+        // a replacement, leaves the original order alone in an unclear state.
+        if matches!(self.order_type, OrderType::Limit | OrderType::StopLimit)
+            && self.price.is_none()
+        {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "a {:?} order needs a price",
+                self.order_type
+            )));
+        }
+
+        Ok(())
     }
 }

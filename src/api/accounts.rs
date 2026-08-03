@@ -9,7 +9,10 @@ use crate::types::margin::{
     PositionLimit,
 };
 use crate::types::net_liq::{NetLiqHistoryFilter, NetLiqOhlc};
-use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
+use crate::types::order::{
+    DryRunResult, Order, OrderAmendment, OrderId, OrderPlacedResult, Warning,
+};
+use crate::types::order_filter::{LiveOrderFilter, OrderFilter};
 use crate::types::trading_status::TradingStatus;
 use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
@@ -233,6 +236,130 @@ impl ReviewedOrder {
     /// The order that was reviewed.
     pub fn order(&self) -> &Order {
         &self.order
+    }
+}
+
+/// Which verb a reviewed amendment will be applied with.
+///
+/// Recorded on the receipt at review time, so an amendment reviewed as one
+/// cannot be applied as the other. The venue treats them differently, and a
+/// caller should not be able to swap them after reading the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmendmentIntent {
+    /// `PUT`: replace the working order.
+    Replace,
+    /// `PATCH`: edit its price and execution properties.
+    Edit,
+}
+
+/// Evidence that a specific amendment to a specific order was dry-run.
+///
+/// Produced only by [`Account::review_amendment`], so it cannot be forged by
+/// constructing a value. Not `Clone`: duplicable proof is not proof.
+#[derive(Debug)]
+pub struct AmendmentReceipt {
+    account_number: AccountNumber,
+    origin: String,
+    order_id: OrderId,
+    intent: AmendmentIntent,
+    amendment: OrderAmendment,
+    result: DryRunResult,
+}
+
+impl AmendmentReceipt {
+    /// Everything the venue said about the amendment.
+    pub fn result(&self) -> &DryRunResult {
+        &self.result
+    }
+
+    /// The warnings the venue attached, which is the part worth reading before
+    /// changing a live order.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.result.warnings
+    }
+
+    /// The amendment this receipt is about.
+    pub fn amendment(&self) -> &OrderAmendment {
+        &self.amendment
+    }
+
+    /// Which order it amends.
+    pub fn order_id(&self) -> OrderId {
+        self.order_id
+    }
+
+    /// Whether it will be applied as a replacement or an edit.
+    pub fn intent(&self) -> AmendmentIntent {
+        self.intent
+    }
+
+    /// Whether the venue attached anything that needs reading.
+    pub fn is_clean(&self) -> bool {
+        self.result.warnings.is_empty()
+    }
+
+    /// Accepts a clean dry run.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::Precondition`] when the venue attached
+    /// warnings. Not a refusal to proceed — a refusal to proceed *silently*.
+    pub fn accept(self) -> TastyResult<ReviewedAmendment> {
+        if !self.is_clean() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "the venue attached {} warning(s) to this amendment; read them and use \
+                 accept_with_warnings to proceed deliberately",
+                self.result.warnings.len()
+            )));
+        }
+
+        Ok(self.into_reviewed())
+    }
+
+    /// Accepts a dry run that carried warnings, having read them.
+    ///
+    /// The name is the point: a caller reaching for this is saying so.
+    pub fn accept_with_warnings(self) -> ReviewedAmendment {
+        self.into_reviewed()
+    }
+
+    fn into_reviewed(self) -> ReviewedAmendment {
+        ReviewedAmendment {
+            account_number: self.account_number,
+            origin: self.origin,
+            order_id: self.order_id,
+            intent: self.intent,
+            amendment: self.amendment,
+        }
+    }
+}
+
+/// An amendment that has been dry-run and accepted.
+///
+/// Not `Clone`, for the same reason [`ReviewedOrder`] is not.
+#[derive(Debug)]
+pub struct ReviewedAmendment {
+    account_number: AccountNumber,
+    origin: String,
+    order_id: OrderId,
+    intent: AmendmentIntent,
+    amendment: OrderAmendment,
+}
+
+impl ReviewedAmendment {
+    /// The account this was reviewed against.
+    pub fn account_number(&self) -> &AccountNumber {
+        &self.account_number
+    }
+
+    /// Which order it amends.
+    pub fn order_id(&self) -> OrderId {
+        self.order_id
+    }
+
+    /// Whether it will be applied as a replacement or an edit.
+    pub fn intent(&self) -> AmendmentIntent {
+        self.intent
     }
 }
 
@@ -711,6 +838,139 @@ impl Account<'_> {
     pub async fn place_order(&self, order: &Order) -> TastyResult<OrderPlacedResult> {
         let resp: OrderPlacedResult = self.tasty.post(&self.path("/orders"), order).await?;
         Ok(resp)
+    }
+
+    /// One order by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for an identifier this
+    /// account does not have.
+    pub async fn order(&self, id: OrderId) -> TastyResult<LiveOrderRecord> {
+        // `OrderId` is a `u64`, so its rendering is already path-safe.
+        self.tasty
+            .get(&self.path(&format!("/orders/{}", id.0)))
+            .await
+    }
+
+    /// One page of the account's order history.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// orders arrive but none can be decoded. A genuinely empty page is `Ok`.
+    pub async fn search_orders(
+        &self,
+        filter: &OrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.tasty
+            .get_with_query::<Items<LiveOrderRecord>, _, _>(&self.path("/orders"), &query.pairs())
+            .await
+    }
+
+    /// One page of working orders, filtered.
+    ///
+    /// The live endpoint takes a **single** status and an underlying symbol,
+    /// which is why [`LiveOrderFilter`] is not [`OrderFilter`]: sending the
+    /// history filters here would be ignored, and the caller would believe a
+    /// full listing had been narrowed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::search_orders`].
+    pub async fn live_orders_matching(
+        &self,
+        filter: &LiveOrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.tasty
+            .get_with_query::<Items<LiveOrderRecord>, _, _>(
+                &self.path("/orders/live"),
+                &query.pairs(),
+            )
+            .await
+    }
+
+    /// Dry-runs an amendment to a working order and returns evidence.
+    ///
+    /// The entry point to the reviewed path for replacing and editing, and the
+    /// only way to obtain an [`AmendmentReceipt`]. `intent` is recorded on the
+    /// receipt, so an amendment reviewed as a replacement cannot be applied as
+    /// an edit — the venue treats them differently and a caller should not be
+    /// able to swap one for the other after reading the answer.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the amendment cannot be
+    /// what the venue accepts — a good-til-date expiry on a non-GTD order, a
+    /// GTD order with no expiry, or a limit order with no price. Propagates the
+    /// venue's error otherwise.
+    pub async fn review_amendment(
+        &self,
+        id: OrderId,
+        intent: AmendmentIntent,
+        amendment: &OrderAmendment,
+    ) -> TastyResult<AmendmentReceipt> {
+        amendment.validate()?;
+
+        let result: DryRunResult = self
+            .tasty
+            .post(&self.path(&format!("/orders/{}/dry-run", id.0)), amendment)
+            .await?;
+
+        Ok(AmendmentReceipt {
+            account_number: self.number(),
+            origin: self.tasty.config.base_url.clone(),
+            order_id: id,
+            intent,
+            amendment: amendment.clone(),
+            result,
+        })
+    }
+
+    /// Applies a reviewed amendment.
+    ///
+    /// **Mutates account state.** `PUT` for [`AmendmentIntent::Replace`],
+    /// `PATCH` for [`AmendmentIntent::Edit`], chosen by what the receipt
+    /// records rather than by which method was called.
+    ///
+    /// A replacement is not atomic at the venue: a fill on the original order
+    /// aborts it. That is the venue's behaviour and this crate does not paper
+    /// over it — the error comes back as the venue sent it.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::Precondition`] when the receipt was produced
+    /// against a different account or a different deployment. Propagates the
+    /// venue's error otherwise.
+    pub async fn place_reviewed_amendment(
+        &self,
+        reviewed: ReviewedAmendment,
+    ) -> TastyResult<LiveOrderRecord> {
+        if reviewed.account_number != self.number() {
+            return Err(crate::TastyTradeError::Precondition(
+                "this amendment was reviewed against a different account;                  review it again against the account you mean to trade"
+                    .to_string(),
+            ));
+        }
+
+        // Certification reuses production account numbering, so without this a
+        // sandbox dry run would authorise a real amendment on the same number.
+        if reviewed.origin != self.tasty.config.base_url {
+            return Err(crate::TastyTradeError::Precondition(
+                "this amendment was reviewed against a different venue; \
+                 a dry run on one environment says nothing about another"
+                    .to_string(),
+            ));
+        }
+
+        let path = self.path(&format!("/orders/{}", reviewed.order_id.0));
+        match reviewed.intent {
+            AmendmentIntent::Replace => self.tasty.put(&path, &reviewed.amendment).await,
+            AmendmentIntent::Edit => self.tasty.patch(&path, &reviewed.amendment).await,
+        }
     }
 
     /// Cancels a working order.

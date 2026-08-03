@@ -13,6 +13,7 @@ pub(crate) mod instrument_filter;
 pub(crate) mod margin;
 pub(crate) mod net_liq;
 pub(crate) mod order;
+pub(crate) mod order_filter;
 pub(crate) mod position;
 pub(crate) mod quote_alert;
 pub(crate) mod search;

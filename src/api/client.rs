@@ -16,6 +16,8 @@ use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
 use crate::types::margin::{MarginConfiguration, SpanExchange, SpanRow};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
+use crate::types::order::LiveOrderRecord;
+use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
 use reqwest::ClientBuilder;
@@ -67,7 +69,30 @@ impl Display for TastyTrade {
 /// `/customers/me` is left alone. It is a literal the venue defines rather than
 /// an identifier, it is by far the most common form, and redacting it would
 /// make the ordinary path unreadable while hiding nothing.
+///
+/// The **query string** carries them too. The customer order endpoints take
+/// `account-numbers[]` as a repeated parameter, so redacting only the path left
+/// the identifiers in `RequestReport.operation` — and from there in every error
+/// the request produced. The parameter names are matched by
+/// [`crate::types::wire::names_an_account`], the same rule the JSON renderer
+/// uses, so a new spelling is handled in one place rather than two.
 fn redact_account_path(url: &str) -> String {
+    let (path, query) = match url.find('?') {
+        Some(at) => (&url[..at], Some(&url[at + 1..])),
+        None => (url, None),
+    };
+
+    let mut out = redact_path_identifiers(path);
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(&redact_query_identifiers(query));
+    }
+
+    out
+}
+
+/// The path half of [`redact_account_path`].
+fn redact_path_identifiers(path: &str) -> String {
     /// What the next segment is an identifier *of*, when it is one.
     enum Next {
         Nothing,
@@ -75,18 +100,17 @@ fn redact_account_path(url: &str) -> String {
         Customer,
     }
 
-    let mut out = String::with_capacity(url.len());
+    let mut out = String::with_capacity(path.len());
     let mut next = Next::Nothing;
 
-    for (index, segment) in url.split('/').enumerate() {
+    for (index, segment) in path.split('/').enumerate() {
         if index > 0 {
             out.push('/');
         }
-        // An identifier can be the last path segment, in which case the query
-        // string is part of the same split. Only the identifier is replaced:
-        // the query is request context worth keeping, and dropping it here
-        // would silently shorten every error about a paginated endpoint.
-        let (identifier, tail) = match segment.find(['?', '#']) {
+        // A fragment would end the path the way a query does. The verbs never
+        // build one, but the redaction is what stands between a URL and a log
+        // line, so it does not assume that.
+        let (identifier, tail) = match segment.find('#') {
             Some(at) => segment.split_at(at),
             None => (segment, ""),
         };
@@ -116,6 +140,24 @@ fn redact_account_path(url: &str) -> String {
     }
 
     out
+}
+
+/// The query half of [`redact_account_path`].
+///
+/// Only the value is replaced. The parameter names are what say which request
+/// was made, and an error that cannot name the request it failed on is worse
+/// than one that says too much.
+fn redact_query_identifiers(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if crate::types::wire::names_an_account(key) => {
+                format!("{key}={{account}}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// Joins the configured base URL and a request path.
@@ -753,6 +795,83 @@ impl TastyTrade {
         decode_response::<R, R>(&report, response).await
     }
 
+    /// Performs a PUT with a JSON payload.
+    ///
+    /// **This can mutate account state**, including replacing a working order.
+    /// Prefer [`crate::accounts::Account::review_amendment`] and
+    /// [`crate::accounts::Account::place_reviewed_amendment`].
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::post`], including that a `401` is not retried with a
+    /// fresh token.
+    pub async fn put<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        self.mutate("PUT", url, payload, reqwest::Method::PUT).await
+    }
+
+    /// Performs a PATCH with a JSON payload.
+    ///
+    /// **This can mutate account state**, including editing a working order.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::put`].
+    pub async fn patch<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        self.mutate("PATCH", url, payload, reqwest::Method::PATCH)
+            .await
+    }
+
+    /// The body of `put` and `patch`, which differ only in the verb.
+    ///
+    /// Shared rather than copied so the two cannot drift apart on the parts
+    /// that matter: the deployment check, the pre-request refresh, the redacted
+    /// operation in the error, and the single place the status is inspected.
+    async fn mutate<R, P, U>(
+        &self,
+        method: &'static str,
+        url: U,
+        payload: P,
+        verb: reqwest::Method,
+    ) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        let full_url = self.request_url(url.as_ref())?;
+        let report = RequestReport::new(
+            method,
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let authorization = self.authorization().await?;
+        let response = self
+            .client
+            .request(verb, &full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(serde_json::to_string(&payload)?)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        decode_response::<R, R>(&report, response).await
+    }
+
     /// Performs a DELETE.
     ///
     /// **This can mutate account state**, including cancelling an order.
@@ -894,6 +1013,38 @@ impl TastyTrade {
 
         self.get_with_query::<Items<SpanRow>, _, _>("/span/rows", &query.pairs())
             .await
+    }
+
+    /// One page of order history across several accounts.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// orders arrive but none can be decoded.
+    pub async fn customer_orders(
+        &self,
+        filter: &CustomerOrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<LiveOrderRecord>, _, _>("/customers/me/orders", &query.pairs())
+            .await
+    }
+
+    /// One page of working orders across several accounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::customer_orders`].
+    pub async fn customer_live_orders(
+        &self,
+        filter: &CustomerLiveOrderFilter,
+    ) -> TastyResult<Paginated<LiveOrderRecord>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<LiveOrderRecord>, _, _>(
+            "/customers/me/orders/live",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// The full customer resource for this session.
@@ -1066,6 +1217,41 @@ mod tests {
             redact_account_path("https://api.tastyworks.com/customers/78a1f0c2?per-page=100");
         assert!(!redacted.contains("78a1f0c2"), "{redacted}");
         assert!(redacted.contains("per-page=100"), "{redacted}");
+    }
+
+    /// The customer order endpoints take the identifiers as query parameters
+    /// rather than path segments, so redacting the path alone left them in
+    /// `RequestReport.operation` and from there in every error the request
+    /// produced. The parameter names survive: an error that cannot say which
+    /// request failed is worse than one that says too much.
+    #[test]
+    fn redacts_an_account_number_carried_in_the_query() {
+        let redacted = redact_account_path(
+            "https://api.tastyworks.com/orders?account-numbers[]=5WX12345&\
+             account-numbers[]=5WX00002&per-page=50",
+        );
+
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+        assert!(!redacted.contains("5WX00002"), "{redacted}");
+        assert_eq!(redacted.matches("{account}").count(), 2, "{redacted}");
+        // The names and the unrelated parameters are context worth keeping.
+        assert!(redacted.contains("account-numbers[]="), "{redacted}");
+        assert!(redacted.contains("per-page=50"), "{redacted}");
+
+        // The HTTP client percent-encodes the brackets, which is the form the
+        // redaction actually sees on a real request.
+        let redacted =
+            redact_account_path("https://api.tastyworks.com/orders?account-numbers%5B%5D=5WX12345");
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+
+        // The singular spelling and the qualified one the trading status uses.
+        let redacted = redact_account_path(
+            "https://api.tastyworks.com/x?account-number=5WX12345&\
+             clearing-account-number=99887&sort=Desc",
+        );
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+        assert!(!redacted.contains("99887"), "{redacted}");
+        assert!(redacted.contains("sort=Desc"), "{redacted}");
     }
 
     /// `me` is a literal the venue defines rather than an identifier. It is the

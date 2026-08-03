@@ -1,0 +1,11 @@
+[package]
+name = "orders"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tastytrade = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
