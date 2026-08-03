@@ -163,6 +163,42 @@
 //! is `None` because the venue did not send one, which is not the same as a
 //! mark of zero.
 //!
+//! ### Transactions
+//!
+//! The ledger: fills, fees, dividends, assignments, cash movements. It is the
+//! only place a P&L can be reconciled from — an order says what was asked for,
+//! a transaction says what happened and what it cost.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn ledger(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
+//! let page = account
+//!     .transactions(
+//!         &TransactionFilter::new()
+//!             .with_types(TransactionTypes::Several(vec![
+//!                 TransactionType::Trade,
+//!                 TransactionType::ReceiveDeliver,
+//!             ]))
+//!             .with_page(PageRequest::first().with_per_page(250)),
+//!     )
+//!     .await?;
+//!
+//! for row in &page {
+//!     // `None` means the venue sent nothing, never zero. A commission that
+//!     // defaults to zero is a P&L that is quietly wrong.
+//!     println!("{:?} {:?}", row.transaction_sub_type, row.net_value);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The venue documents `type` and `types` as mutually exclusive, so they are
+//! one enum here and a request carrying both cannot be built.
+//!
+//! [`accounts::Account::total_fees`] takes an `Option<NaiveDate>`; passing
+//! `None` omits the parameter and leaves the venue's own "today" in place,
+//! rather than substituting this machine's idea of the date.
+//!
 //! ## Instrument listings
 //!
 //! The instrument listings paginate, and each takes a typed filter rather than

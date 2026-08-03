@@ -482,6 +482,12 @@ macro_rules! wire_enum {
     };
 }
 
+// `macro_rules!` is textually scoped, so a macro defined here is invisible to
+// sibling modules without this. Re-exported at crate level rather than
+// `#[macro_export]`ed: the macro generates a **public** enum, and exporting it
+// from the crate root would make it part of the public API by accident.
+pub(crate) use wire_enum;
+
 wire_enum! {
     /// How an option series expires.
     ///

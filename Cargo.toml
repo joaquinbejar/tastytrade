@@ -13,9 +13,10 @@ repository = "https://github.com/joaquinbejar/tastytrade"
 include = [
     "benches/**/*",
     "src/**/*",
-    # The streaming tests `include_str!` these, so the package does not compile
-    # without them.
+    # The tests `include_str!` these, so the package does not compile without
+    # them.
     "Doc/frames/**/*.json",
+    "Doc/transactions_listing.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",

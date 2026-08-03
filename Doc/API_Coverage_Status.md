@@ -34,9 +34,9 @@ difference is exactly what
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
 | Risk Parameters | 4 | 0 | 4 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
-| Transactions | 3 | 0 | 3 | 0% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
+| Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **37** | **60** | **38%** | |
+| **TOTAL** | **97** | **40** | **57** | **41%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -342,11 +342,24 @@ both carry separators.
 
 ## Transactions
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /accounts/{account_number}/transactions` | ❌ |
-| `GET /accounts/{account_number}/transactions/total-fees` | ❌ |
-| `GET /accounts/{account_number}/transactions/{id}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /accounts/{account_number}/transactions` | `transactions()` | ✅ |
+| `GET /accounts/{account_number}/transactions/total-fees` | `total_fees()` | ✅ |
+| `GET /accounts/{account_number}/transactions/{id}` | `transaction()` | ✅ |
+
+`TransactionType`, `TransactionSubType` and `TransactionAction` are
+`wire_enum!` sets built from the value lists in the venue's own API guide, each
+with an `Unknown(String)` arm — a strict enum would make a new transaction kind
+disappear from a ledger through `Items<T>` without an error.
+
+`TransactionAction` is deliberately **not** `types::order::Action`. That one is
+the order-placement enum and is strict on purpose: an order with an action this
+crate does not recognise is an order nobody should be able to build. This is the
+read side, where tolerance keeps a ledger complete.
+
+`type` and `types` are mutually exclusive at the venue, so they are one enum
+(`TransactionTypes`) and a request carrying both cannot be built.
 
 Fills, fees, commissions, dividends, assignments. Nothing in the crate can
 reconstruct what an account actually did.
