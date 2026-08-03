@@ -1,7 +1,8 @@
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
 use crate::api::url::encode_path_segment;
-use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
+use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter};
+use crate::types::balance::{Balance, BalanceSnapshot};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use chrono::{DateTime, FixedOffset, NaiveDate};
@@ -258,44 +259,92 @@ impl Account<'_> {
         )
     }
 
-    /// Current balances: cash, buying power and margin requirements.
+    /// Every current balance row, one per currency the account holds.
     ///
     /// Every monetary field is `Decimal`.
     ///
     /// # Errors
     ///
-    /// Propagates the venue's error; the response body never reaches it.
-    pub async fn balance(&self) -> TastyResult<Balance> {
-        let resp = self.tasty.get(&self.path("/balances")).await?;
-        Ok(resp)
+    /// Fails when balances arrive but none can be decoded, which is a defect
+    /// in this crate rather than an account with no money. Propagates the
+    /// venue's error otherwise; the response body never reaches it.
+    pub async fn balances(&self) -> TastyResult<Vec<Balance>> {
+        let resp: Items<Balance> = self.tasty.get(&self.path("/balances")).await?;
+        resp.into_items()
     }
 
-    /// Historical balance snapshots for a date range.
+    /// The account's single balance row.
+    ///
+    /// The endpoint answers with an `items` envelope — it has since the venue
+    /// changed it on 2024-05-01 — so "the balance" only means something when
+    /// exactly one row came back. This decodes the envelope properly and says
+    /// so when it does not, rather than picking a currency for the caller.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::Precondition`] when the venue returned any
+    /// number of rows other than one: the request succeeded and the answer
+    /// does not fit the question, so retrying changes nothing. Use
+    /// [`Account::balances`] or [`Account::balance_in`] instead. Otherwise as
+    /// [`Account::balances`].
+    pub async fn balance(&self) -> TastyResult<Balance> {
+        let mut rows = self.balances().await?;
+
+        if rows.len() == 1 {
+            // `swap_remove` rather than indexing: the length is known and this
+            // moves the row out without a clone or an unwrap.
+            return Ok(rows.swap_remove(0));
+        }
+
+        // Currency codes are schema; the amounts beside them are not, and an
+        // error travels wherever the caller sends it.
+        let currencies: Vec<&str> = rows
+            .iter()
+            .map(|row| row.currency.as_deref().unwrap_or("unnamed"))
+            .collect();
+
+        Err(crate::TastyTradeError::Precondition(format!(
+            "the account returned {} balance row(s) ({}), so there is no single \
+             balance to return; use balances() for all of them or \
+             balance_in(currency) for one",
+            rows.len(),
+            currencies.join(", ")
+        )))
+    }
+
+    /// The balance row for one currency.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for a currency the
+    /// account does not hold.
+    pub async fn balance_in(&self, currency: &str) -> TastyResult<Balance> {
+        self.tasty
+            .get(&self.path(&format!("/balances/{}", encode_path_segment(currency))))
+            .await
+    }
+
+    /// Historical balance snapshots.
+    ///
+    /// `filter` carries the whole documented query: the time of day (which the
+    /// venue requires), a single day **or** a date range, a currency and a
+    /// page.
     ///
     /// # Errors
     ///
     /// Propagates the venue's error, and fails if the endpoint answers
     /// without a pagination block.
-    pub async fn balance_snapshot(
+    pub async fn balance_snapshots(
         &self,
-        start_date: chrono::NaiveDate,
-        end_date: chrono::NaiveDate,
-        tod: SnapshotTimeOfDay,
-        page_offset: usize,
+        filter: &BalanceSnapshotFilter,
     ) -> TastyResult<Paginated<BalanceSnapshot>> {
-        let resp: Paginated<BalanceSnapshot> = self
-            .tasty
+        let query = filter.to_query();
+        self.tasty
             .get_with_query::<Items<BalanceSnapshot>, _, _>(
                 &self.path("/balance-snapshots"),
-                &[
-                    ("start-date", &start_date.format("%Y-%m-%d").to_string()),
-                    ("end-date", &end_date.format("%Y-%m-%d").to_string()),
-                    ("page-offset", &page_offset.to_string()),
-                    ("time-of-day", &tod.to_string()),
-                ],
+                &query.pairs(),
             )
-            .await?;
-        Ok(resp)
+            .await
     }
 
     /// Open positions.
@@ -306,7 +355,28 @@ impl Account<'_> {
     /// in this crate rather than a flat account. A genuinely empty list is
     /// `Ok`.
     pub async fn positions(&self) -> TastyResult<Vec<FullPosition>> {
-        let resp: Items<FullPosition> = self.tasty.get(&self.path("/positions")).await?;
+        self.positions_matching(&PositionFilter::new()).await
+    }
+
+    /// Positions the venue selects, rather than every open one.
+    ///
+    /// The filters are applied at the venue: asking for one underlying
+    /// downloads one underlying. An empty [`PositionFilter`] sends no query
+    /// parameters at all, so it is byte for byte the request
+    /// [`Account::positions`] makes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::positions`].
+    pub async fn positions_matching(
+        &self,
+        filter: &PositionFilter,
+    ) -> TastyResult<Vec<FullPosition>> {
+        let query = filter.to_query();
+        let resp: Items<FullPosition> = self
+            .tasty
+            .get_with_query(&self.path("/positions"), &query.pairs())
+            .await?;
         resp.into_items()
     }
 

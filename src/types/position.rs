@@ -96,6 +96,45 @@ pub struct FullPosition {
     /// The date and time when the position was last updated.
     #[serde(with = "crate::types::wire::datetime")]
     pub updated_at: DateTime<FixedOffset>,
+
+    // Ten fields the venue's schema carries and this struct did not. `mark`
+    // and `mark_price` are the ones that mattered: `include-marks` is a
+    // documented query filter, so a caller could ask for marks and then have
+    // nowhere to read them.
+    //
+    // All `Option`: `mark` only arrives when it was asked for, `expires_at`
+    // only exists for an instrument that expires, and certification omits
+    // fields production sends.
+    /// Current quote mark, when `include-marks` asked for it.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub mark: Option<Decimal>,
+    /// Current quote mark price, when `include-marks` asked for it.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub mark_price: Option<Decimal>,
+    /// What the position delivers at expiration, for instruments that deliver.
+    #[serde(default)]
+    pub deliverable_type: Option<String>,
+    /// When the instrument expires, offset preserved.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub expires_at: Option<DateTime<FixedOffset>>,
+    /// Face value, for fixed income.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub face_value: Option<Decimal>,
+    /// Fixing price, for instruments that settle against one.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub fixing_price: Option<Decimal>,
+    /// Par size, for fixed income.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub par_size: Option<Decimal>,
+    /// The order that opened the position, when the venue attributes one.
+    #[serde(default)]
+    pub order_id: Option<OrderId>,
+    /// What to subscribe to on the streamer for this instrument.
+    #[serde(default)]
+    pub streamer_symbol: Option<String>,
+    /// How the position last changed, as the venue classifies it.
+    #[serde(default)]
+    pub update_type: Option<String>,
 }
 
 /// Represents a brief overview of a position.

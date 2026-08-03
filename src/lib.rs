@@ -67,6 +67,68 @@
 //! }
 //! ```
 //!
+//! ## Balances and positions
+//!
+//! `GET /balances` answers with a **list** — one row per currency the account
+//! holds — and has since 2024-05-01. [`accounts::Account::balance`] is the
+//! shortcut for the single-row case and refuses rather than picking a currency
+//! for you when there is more than one.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn money(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
+//! for row in account.balances().await? {
+//!     println!("{:?}: {}", row.currency, row.cash_balance);
+//! }
+//! let usd = account.balance_in("USD").await?;
+//! # let _ = usd;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Snapshots take a single day **or** a date range, never both — they are one
+//! enum, so the contradictory query cannot be written. `time-of-day` is
+//! required by the venue and is therefore a constructor argument:
+//!
+//! ```rust,no_run
+//! # use chrono::NaiveDate;
+//! # use tastytrade::prelude::*;
+//! # async fn history(account: &Account<'_>, from: NaiveDate, to: NaiveDate)
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! let page = account
+//!     .balance_snapshots(
+//!         &BalanceSnapshotFilter::at(SnapshotTimeOfDay::Eod)
+//!             .with_range(SnapshotRange::between(from, to))
+//!             .with_page(PageRequest::first().with_per_page(30)),
+//!     )
+//!     .await?;
+//! # let _ = page;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Positions filter at the venue. `positions()` is still every open position;
+//! `positions_matching` narrows the request itself rather than the result:
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn book(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
+//! let held = account
+//!     .positions_matching(
+//!         &PositionFilter::new()
+//!             .with_underlying_symbols(&["AAPL", "SPY"])
+//!             .with_marks(true),
+//!     )
+//!     .await?;
+//! # let _ = held;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `with_marks` is what fills in [`FullPosition::mark`]; without it the field
+//! is `None` because the venue did not send one, which is not the same as a
+//! mark of zero.
+//!
 //! ## Instrument listings
 //!
 //! The instrument listings paginate, and each takes a typed filter rather than
