@@ -198,6 +198,54 @@ pub struct Paginated<T> {
     pub pagination: Pagination,
 }
 
+impl<T> Paginated<T> {
+    /// How many items are on this page.
+    ///
+    /// The page, not the listing — [`Pagination::total_items`] is the listing.
+    /// Two numbers that are equal on a short result and are not the point at
+    /// which a caller should stop paging.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Whether this page carries nothing.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The items on this page, borrowed.
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.items.iter()
+    }
+
+    /// Whether the listing continues past this page.
+    ///
+    /// The condition a paging loop actually needs, and the one that is easy to
+    /// write off by one: page offsets count from zero, so the last page is
+    /// `total_pages - 1`.
+    pub fn has_more(&self) -> bool {
+        self.pagination.page_offset.saturating_add(1) < self.pagination.total_pages
+    }
+}
+
+impl<T> IntoIterator for Paginated<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Paginated<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
 /// The result type every fallible call in this crate returns.
 pub type TastyResult<T> = Result<T, TastyTradeError>;
 

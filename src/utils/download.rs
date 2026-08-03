@@ -12,8 +12,10 @@
 //! transformation stage is pure, and the report says which parts of the answer
 //! are missing rather than leaving that in the logs.
 
+use crate::api::query::PageRequest;
 use crate::prelude::{SymbolEntry, TastyTradeConfig};
 use crate::types::instrument::{FuturesNestedOptionChain, NestedOptionChain};
+use crate::types::instrument_filter::ActiveEquityFilter;
 use crate::utils::parse::expiration_instant;
 use crate::{InstrumentType, TastyResult, TastyTrade, TastyTradeError};
 use chrono::{DateTime, Utc};
@@ -24,6 +26,12 @@ use tracing::{debug, info, warn};
 
 /// The venue this crate labels downloaded symbols with.
 const EXCHANGE: &str = "TASTYTRADE";
+
+/// Items per page when walking a listing.
+///
+/// The value `list_active_equities` used to hard-code before the page size
+/// became the caller's decision.
+const EQUITY_PAGE_SIZE: u32 = 1000;
 
 /// Future products that do not carry option chains.
 ///
@@ -281,7 +289,15 @@ async fn discover_equities(
     let mut found = Vec::new();
 
     for page in 0..limits.max_equity_pages {
-        let paginated = tasty.list_active_equities(page).await?;
+        // The page size the walk has always used. Explicit now rather than
+        // buried in the endpoint method, because it is a decision about this
+        // downloader and not about the endpoint.
+        let request = PageRequest::new()
+            .with_per_page(EQUITY_PAGE_SIZE)
+            .with_page_offset(u32::try_from(page).unwrap_or(u32::MAX));
+        let paginated = tasty
+            .list_active_equities(&ActiveEquityFilter::new().with_page(request))
+            .await?;
         let pagination = &paginated.pagination;
         debug!(
             "active equities page {}/{}: {} items",
@@ -313,12 +329,35 @@ async fn discover_future_products(
     tasty: &TastyTrade,
     limits: &DownloadLimits,
 ) -> TastyResult<Vec<crate::types::instrument::FutureProduct>> {
-    let mut products: Vec<_> = tasty
-        .list_future_products()
-        .await?
-        .into_iter()
-        .filter(|product| !PRODUCTS_WITHOUT_OPTIONS.contains(&product.code.as_str()))
-        .collect();
+    // Future products paginate now, so this walks pages instead of assuming
+    // one response is the whole catalogue. Bounded by the same page budget as
+    // equities: a downloader that walks until the venue says stop is a
+    // downloader that hangs when the venue is wrong about that.
+    let mut products: Vec<crate::types::instrument::FutureProduct> = Vec::new();
+
+    for page in 0..limits.max_equity_pages {
+        let request = PageRequest::new()
+            .with_per_page(EQUITY_PAGE_SIZE)
+            .with_page_offset(u32::try_from(page).unwrap_or(u32::MAX));
+        let paginated = tasty.list_future_products(&request).await?;
+        let pagination = &paginated.pagination;
+        debug!(
+            "future products page {}/{}: {} items",
+            pagination.page_offset, pagination.total_pages, pagination.current_item_count
+        );
+
+        let last_page = pagination.page_offset + 1 >= pagination.total_pages;
+        products.extend(
+            paginated
+                .items
+                .into_iter()
+                .filter(|product| !PRODUCTS_WITHOUT_OPTIONS.contains(&product.code.as_str())),
+        );
+
+        if last_page {
+            break;
+        }
+    }
 
     if products.len() > limits.max_future_products {
         info!(

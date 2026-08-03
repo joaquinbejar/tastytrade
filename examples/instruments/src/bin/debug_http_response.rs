@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("\n🔍 Testing get_equity_option (individual lookup)...");
-    match tasty.get_equity_option("AAPL  241220C00200000").await {
+    match tasty.get_equity_option("AAPL  241220C00200000", None).await {
         Ok(option) => {
             info!(
                 "✅ get_equity_option works! Retrieved option: {}",

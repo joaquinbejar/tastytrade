@@ -38,7 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("📄 ==================== PAGE {} ====================", page);
 
-        match tasty.list_active_equities(page).await {
+        match tasty
+            .list_active_equities(
+                &ActiveEquityFilter::new().with_page(PageRequest::new().with_page_offset(page)),
+            )
+            .await
+        {
             Ok(paginated_result) => {
                 let items_count = paginated_result.items.len();
                 let pagination = &paginated_result.pagination;
@@ -85,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Stop if we've gone past the total pages
-                if page + 1 >= pagination.total_pages {
+                if !paginated_result.has_more() {
                     println!(
                         "🛑 Reached end of pages (page {} is the last page of {})",
                         page, pagination.total_pages

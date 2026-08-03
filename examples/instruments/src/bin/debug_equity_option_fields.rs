@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for symbol in &test_symbols {
-        match tasty.get_equity_option(symbol).await {
+        match tasty.get_equity_option(symbol, None).await {
             Ok(option) => {
                 info!("✅ Successfully deserialized equity option: {}", symbol);
                 info!(

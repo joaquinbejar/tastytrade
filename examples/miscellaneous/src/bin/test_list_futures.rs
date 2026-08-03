@@ -35,10 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📄 ==================== TEST 1: ALL FUTURES ====================");
     println!("📊 Getting all futures with no filters...");
 
-    match tasty
-        .list_futures(None::<&[&str]>, None, None, None, None)
-        .await
-    {
+    match tasty.list_futures(&FutureFilter::new()).await {
         Ok(futures) => {
             let futures_count = futures.len();
             println!("✅ Found {} total futures", futures_count);
@@ -124,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("📊 Getting futures for product code: {}", product_code);
 
         match tasty
-            .list_futures(None::<&[&str]>, Some(product_code), None, None, None)
+            .list_futures(&FutureFilter::for_product_codes(&[product_code]))
             .await
         {
             Ok(futures) => {
@@ -162,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // First get some symbols to test with
     match tasty
-        .list_futures(None::<&[&str]>, Some("ES"), None, None, None)
+        .list_futures(&FutureFilter::for_product_codes(&["ES"]))
         .await
     {
         Ok(es_futures) => {
@@ -174,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 match tasty
-                    .list_futures(Some(&test_symbols), None, None, None, None)
+                    .list_futures(&FutureFilter::for_symbols(&test_symbols))
                     .await
                 {
                     Ok(symbol_futures) => {

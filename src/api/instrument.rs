@@ -4,12 +4,14 @@
    Date: 9/3/25
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
+use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
 use crate::types::instrument::{
     CompactOptionChain, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption,
     FutureOption, FutureOptionProduct, FutureProduct, FuturesNestedOptionChain, NestedOptionChain,
     QuantityDecimalPrecision, Warrant,
 };
+use crate::types::instrument_filter::{ActiveEquityFilter, EquityFilter, FutureFilter};
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
@@ -30,29 +32,27 @@ impl TastyTrade {
         .await
     }
 
-    /// Equities by symbol.
+    /// One page of equities, filtered.
+    ///
+    /// [`EquityFilter::for_symbols`] is the common case; the default filter
+    /// walks the whole listing a page at a time.
     ///
     /// # Errors
     ///
-    /// Fails when the listing arrives but nothing in it can be decoded, which is a
-    /// defect in this crate's model rather than an empty result. A genuinely
-    /// empty listing is `Ok`.
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// the listing arrives but nothing in it can be decoded — a defect in this
+    /// crate's model rather than an empty result. A genuinely empty page is
+    /// `Ok`.
     pub async fn list_equities(
         &self,
-        symbols: &[impl AsSymbol],
-    ) -> TastyResult<Vec<EquityInstrument>> {
-        let mut query = Vec::<(&str, String)>::new();
-        for symbol in symbols {
-            let symbol_str = symbol.as_symbol().0.clone();
-            query.push(("symbol[]", symbol_str));
-        }
-
-        let query_refs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-
-        let resp: Items<EquityInstrument> = self
-            .get_with_query("/instruments/equities", &query_refs)
-            .await?;
-        resp.into_items()
+        filter: &EquityFilter,
+    ) -> TastyResult<Paginated<EquityInstrument>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<EquityInstrument>, _, _>(
+            "/instruments/equities",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// One page of currently active equities.
@@ -63,16 +63,14 @@ impl TastyTrade {
     /// other listings otherwise.
     pub async fn list_active_equities(
         &self,
-        page_offset: usize,
+        filter: &ActiveEquityFilter,
     ) -> TastyResult<Paginated<EquityInstrument>> {
-        let page_offset_str = page_offset.to_string();
-        let query = vec![
-            ("per-page", "1000"),
-            ("page-offset", page_offset_str.as_str()),
-        ];
-
-        self.get_with_query::<Items<EquityInstrument>, _, _>("/instruments/equities/active", &query)
-            .await
+        let query = filter.to_query();
+        self.get_with_query::<Items<EquityInstrument>, _, _>(
+            "/instruments/equities/active",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// One equity by symbol.
@@ -196,74 +194,49 @@ impl TastyTrade {
 
     /// One equity option by symbol.
     ///
+    /// `active` is the venue's documented filter for whether the option is
+    /// currently available for trading with the broker. `None` omits it, which
+    /// leaves the venue's own default in place.
+    ///
     /// # Errors
     ///
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
-    pub async fn get_equity_option(&self, symbol: impl AsSymbol) -> TastyResult<EquityOption> {
+    pub async fn get_equity_option(
+        &self,
+        symbol: impl AsSymbol,
+        active: Option<bool>,
+    ) -> TastyResult<EquityOption> {
         // The hand-rolled envelope this replaced was `{ data: EquityOption }`,
         // which is what the generic verb decodes anyway — minus the status
         // check it never did and the body it put into the error message.
-        self.get(format!(
-            "/instruments/equity-options/{}",
-            encode_path_segment(&symbol.as_symbol().0)
-        ))
+        let mut query = QueryBuilder::new();
+        query.push_flag("active", active);
+        self.get_with_query::<EquityOption, EquityOption, _>(
+            format!(
+                "/instruments/equity-options/{}",
+                encode_path_segment(&symbol.as_symbol().0)
+            ),
+            &query.pairs(),
+        )
         .await
     }
 
-    /// Futures contracts, optionally filtered by product code.
+    /// One page of futures, filtered.
     ///
     /// # Errors
     ///
-    /// Fails when the listing arrives but nothing in it can be decoded, which is a
-    /// defect in this crate's model rather than an empty result. A genuinely
-    /// empty listing is `Ok`.
+    /// As [`TastyTrade::list_equities`].
     pub async fn list_futures(
         &self,
-        symbols: Option<&[impl AsSymbol]>,
-        product_code: Option<&str>,
-        exchange: Option<&str>,
-        only_active_futures: Option<bool>,
-        security_ids: Option<&[&str]>,
-    ) -> TastyResult<Vec<crate::types::instrument::Future>> {
-        let mut query = Vec::new();
-
-        let mut symbol_strings = Vec::new();
-
-        if let Some(symbols) = symbols {
-            for symbol in symbols {
-                symbol_strings.push(symbol.as_symbol().0.clone());
-            }
-
-            for symbol_str in &symbol_strings {
-                query.push(("symbol[]", symbol_str.as_str()));
-            }
-        }
-
-        if let Some(code) = product_code {
-            query.push(("product-code", code));
-        }
-
-        if let Some(exchange_name) = exchange {
-            query.push(("exchange", exchange_name));
-        }
-
-        if let Some(only_active) = only_active_futures {
-            query.push((
-                "only-active-futures",
-                if only_active { "true" } else { "false" },
-            ));
-        }
-
-        if let Some(security_id_list) = security_ids {
-            for security_id in security_id_list {
-                query.push(("security-id[]", security_id));
-            }
-        }
-
-        let resp: Items<crate::types::instrument::Future> =
-            self.get_with_query("/instruments/futures", &query).await?;
-        resp.into_items()
+        filter: &FutureFilter,
+    ) -> TastyResult<Paginated<crate::types::instrument::Future>> {
+        let query = filter.to_query();
+        self.get_with_query::<Items<crate::types::instrument::Future>, _, _>(
+            "/instruments/futures",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// One futures contract by symbol.
@@ -283,16 +256,22 @@ impl TastyTrade {
         .await
     }
 
-    /// Every futures product the venue lists.
+    /// One page of futures products.
     ///
     /// # Errors
     ///
-    /// Fails when the listing arrives but nothing in it can be decoded, which is a
-    /// defect in this crate's model rather than an empty result. A genuinely
-    /// empty listing is `Ok`.
-    pub async fn list_future_products(&self) -> TastyResult<Vec<FutureProduct>> {
-        let resp: Items<FutureProduct> = self.get("/instruments/future-products").await?;
-        resp.into_items()
+    /// As [`TastyTrade::list_equities`].
+    pub async fn list_future_products(
+        &self,
+        page: &PageRequest,
+    ) -> TastyResult<Paginated<FutureProduct>> {
+        let mut query = QueryBuilder::new();
+        page.write_into(&mut query);
+        self.get_with_query::<Items<FutureProduct>, _, _>(
+            "/instruments/future-products",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// One futures product by exchange and code.
@@ -314,17 +293,22 @@ impl TastyTrade {
         .await
     }
 
-    /// Every futures-option product the venue lists.
+    /// One page of futures-option products.
     ///
     /// # Errors
     ///
-    /// Fails when the listing arrives but nothing in it can be decoded, which is a
-    /// defect in this crate's model rather than an empty result. A genuinely
-    /// empty listing is `Ok`.
-    pub async fn list_future_option_products(&self) -> TastyResult<Vec<FutureOptionProduct>> {
-        let resp: Items<FutureOptionProduct> =
-            self.get("/instruments/future-option-products").await?;
-        resp.into_items()
+    /// As [`TastyTrade::list_equities`].
+    pub async fn list_future_option_products(
+        &self,
+        page: &PageRequest,
+    ) -> TastyResult<Paginated<FutureOptionProduct>> {
+        let mut query = QueryBuilder::new();
+        page.write_into(&mut query);
+        self.get_with_query::<Items<FutureOptionProduct>, _, _>(
+            "/instruments/future-option-products",
+            &query.pairs(),
+        )
+        .await
     }
 
     /// One futures-option product, addressed by exchange and root symbol.

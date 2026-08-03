@@ -33,7 +33,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n📈 Demo 1: Equity Instruments");
     info!("==============================");
 
-    match tasty.list_active_equities(0).await {
+    match tasty
+        .list_active_equities(&ActiveEquityFilter::new().with_page(PageRequest::first()))
+        .await
+    {
         Ok(paginated_equities) => {
             info!(
                 "✅ Retrieved {} active equities (page 1)",
@@ -119,12 +122,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("==================");
 
     match tasty
-        .list_futures(None::<&[&str]>, Some("ES"), None, None, None)
+        .list_futures(&FutureFilter::for_product_codes(&["ES"]))
         .await
     {
         Ok(futures) => {
             info!("✅ Retrieved {} ES futures", futures.len());
-            if let Some(first_future) = futures.first() {
+            if let Some(first_future) = futures.items.first() {
                 debug!(
                     "   Sample future: {} - expires {}",
                     first_future.symbol.0, first_future.expiration_date
@@ -138,10 +141,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n🏭 Demo 4: Future Products");
     info!("==========================");
 
-    match tasty.list_future_products().await {
+    match tasty.list_future_products(&PageRequest::first()).await {
         Ok(products) => {
             info!("✅ Retrieved {} future products", products.len());
-            if let Some(first_product) = products.first() {
+            if let Some(first_product) = products.items.first() {
                 debug!(
                     "   Sample product: {} - {}",
                     first_product.code, first_product.description
@@ -155,10 +158,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("\n🔮 Demo 5: Future Option Products");
     info!("==================================");
 
-    match tasty.list_future_option_products().await {
+    match tasty
+        .list_future_option_products(&PageRequest::first())
+        .await
+    {
         Ok(products) => {
             info!("✅ Retrieved {} future option products", products.len());
-            if let Some(first_product) = products.first() {
+            if let Some(first_product) = products.items.first() {
                 debug!(
                     "   Sample product: {} on {}",
                     first_product.root_symbol, first_product.exchange

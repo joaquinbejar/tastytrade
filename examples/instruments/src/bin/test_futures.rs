@@ -32,10 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 1: List all futures without filters
     info!("\n📊 Test 1: Listing all futures (no filters)...");
 
-    match tasty
-        .list_futures(None::<&[&str]>, None, None, None, None)
-        .await
-    {
+    match tasty.list_futures(&FutureFilter::new()).await {
         Ok(futures) => {
             info!("✅ Found {} futures total", futures.len());
 
@@ -144,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for product_code in popular_products {
         match tasty
-            .list_futures(None::<&[&str]>, Some(product_code), None, None, None)
+            .list_futures(&FutureFilter::for_product_codes(&[product_code]))
             .await
         {
             Ok(futures) => {
@@ -191,7 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // First get some ES futures to test with
     match tasty
-        .list_futures(None::<&[&str]>, Some("ES"), None, None, None)
+        .list_futures(&FutureFilter::for_product_codes(&["ES"]))
         .await
     {
         Ok(es_futures) => {
@@ -199,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let test_symbols: Vec<_> = es_futures.iter().take(3).map(|f| &f.symbol).collect();
 
                 match tasty
-                    .list_futures(Some(&test_symbols), None, None, None, None)
+                    .list_futures(&FutureFilter::for_symbols(&test_symbols))
                     .await
                 {
                     Ok(specific_futures) => {

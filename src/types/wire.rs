@@ -514,6 +514,25 @@ wire_enum! {
     }
 }
 
+wire_enum! {
+    /// How hard an equity is to borrow, which is what decides whether it can
+    /// be shorted and at what rate.
+    ///
+    /// The three values are quoted verbatim from the `lendability` parameter's
+    /// own description in the Instruments OpenAPI document, so this is not the
+    /// usual case of guessing a variant set from a field name. `Easy To Borrow`
+    /// also appears in the captured equity payload in `Doc/`.
+    ///
+    /// It is the same type on both sides of the wire on purpose: a value read
+    /// off an [`crate::types::instrument::EquityInstrument`] can be handed
+    /// straight back to a listing filter without going through a string.
+    Lendability {
+        EasyToBorrow => "Easy To Borrow",
+        LocateRequired => "Locate Required",
+        Preborrow => "Preborrow",
+    }
+}
+
 #[cfg(test)]
 mod wire_enum_tests {
     use super::*;

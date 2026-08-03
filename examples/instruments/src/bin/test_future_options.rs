@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut verified_symbols = Vec::new();
 
     // Get future products to find available product codes
-    match tasty.list_future_products().await {
+    match tasty.list_future_products(&PageRequest::first()).await {
         Ok(products) => {
             info!("✅ Found {} future products", products.len());
 
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 match tasty
-                    .list_futures(None::<&[&str]>, Some(&product.code), None, None, None)
+                    .list_futures(&FutureFilter::for_product_codes(&[&product.code]))
                     .await
                 {
                     Ok(futures) => {
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test with only active futures
     match tasty
-        .list_futures(None::<&[&str]>, Some("MES"), None, Some(true), None)
+        .list_futures(&FutureFilter::for_product_codes(&["MES"]).with_only_active_futures(true))
         .await
     {
         Ok(active_futures) => {
@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test with exchange parameter
     match tasty
-        .list_futures(None::<&[&str]>, Some("GE"), Some("CME"), None, None)
+        .list_futures(&FutureFilter::for_product_codes(&["GE"]).with_exchange("CME"))
         .await
     {
         Ok(cme_futures) => {

@@ -57,8 +57,13 @@ pub use crate::types::instrument::{
     Warrant,
 };
 
+// Re-export the typed listing filters and the request side of pagination
+pub use crate::api::base::{Items, Paginated, Pagination};
+pub use crate::api::query::PageRequest;
+pub use crate::types::instrument_filter::{ActiveEquityFilter, EquityFilter, FutureFilter};
+
 // Re-export forward-compatible wire enums
-pub use crate::types::wire::{ExerciseStyle, ExpirationType, SettlementType};
+pub use crate::types::wire::{ExerciseStyle, ExpirationType, Lendability, SettlementType};
 
 // Re-export DxFeed types
 pub use crate::types::dxfeed::*;

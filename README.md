@@ -72,6 +72,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Instrument listings
+
+The instrument listings paginate, and each takes a typed filter rather than
+a row of positional `Option`s. A filter that sets nothing sends nothing, so
+the venue's own defaults are what answer.
+
+```rust
+use tastytrade::prelude::*;
+
+let mut filter = EquityFilter::new()
+    .with_is_etf(true)
+    .with_lendability(Lendability::EasyToBorrow)
+    .with_page(PageRequest::first().with_per_page(25));
+
+loop {
+    let page = tasty.list_equities(&filter).await?;
+    for equity in &page {
+        println!("{} — {}", equity.symbol.0, equity.description);
+    }
+
+    // Offsets count from zero, so the last page is `total_pages - 1`.
+    if !page.has_more() {
+        break;
+    }
+    let next = filter.page().next_page();
+    filter = filter.with_page(next);
+}
+```
+
+Array parameters are repeated keys, which is how the venue spells them —
+`product-code[]=ES&product-code[]=6A`, not one comma-joined value:
+
+```rust
+let page = tasty
+    .list_futures(&FutureFilter::for_product_codes(&["ES", "6A"]))
+    .await?;
+println!("{} contract(s) of {}", page.len(), page.pagination.total_items);
+```
+
+A value the venue adds later still round-trips: [`prelude::Lendability`]
+and the other wire enums keep an unrecognised value verbatim rather than
+failing, so a new classification never makes an instrument disappear.
+
 ### Real-time Data
 
 Market data comes over DXLink. All eleven event types the feed models are

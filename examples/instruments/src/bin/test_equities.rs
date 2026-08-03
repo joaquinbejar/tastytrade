@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 1: List active equities with pagination
     info!("\n📊 Test 1: Listing active equities (paginated)...");
-    match tasty.list_active_equities(0).await {
+    match tasty
+        .list_active_equities(&ActiveEquityFilter::new().with_page(PageRequest::first()))
+        .await
+    {
         Ok(paginated_equities) => {
             info!(
                 "✅ Retrieved {} active equities from page 1",
@@ -120,7 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let test_symbols = vec!["AAPL", "MSFT", "GOOGL", "TSLA", "SPY"];
 
-                match tasty.list_equities(&test_symbols).await {
+                match tasty
+                    .list_equities(&EquityFilter::for_symbols(&test_symbols))
+                    .await
+                {
                     Ok(specific_equities) => {
                         info!(
                             "✅ Retrieved {} equities for specific symbols",
