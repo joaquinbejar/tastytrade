@@ -80,7 +80,7 @@ fix:
 	cargo fix --allow-staged --allow-dirty
 
 .PHONY: pre-push
-pre-push: fix fmt lint-fix test readme
+pre-push: fix fmt lint-fix test
 
 # Reading the docs. Opens a browser, so it is not a gate.
 .PHONY: doc
@@ -96,7 +96,7 @@ doc-check:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 .PHONY: publish
-publish: readme coverage
+publish: coverage
 	cargo login ${CARGO_REGISTRY_TOKEN}
 	cargo package
 	cargo publish
@@ -139,10 +139,6 @@ git-log:
 create-doc:
 	cargo doc --no-deps --document-private-items
 
-.PHONY: readme
-readme: check-cargo-readme create-doc
-	cargo readme > README.md
-
 # Dependency advisories, licences, sources and version skew. Kept out of
 # `check` on purpose: it needs the network and the RustSec database, and the
 # pre-push gate must stay usable offline. CI runs it on every push and weekly.
@@ -176,22 +172,6 @@ deny-expiry:
 		exit 1; \
 	fi; \
 	echo "deny-expiry: $$ignores exception(s), none expired"
-
-# README.md is generated from src/lib.rs. Nothing stopped the two drifting,
-# and a hand edit to the README silently disappears on the next regeneration.
-.PHONY: readme-check
-readme-check: check-cargo-readme create-doc
-	@cargo readme > /tmp/tastytrade-readme-check.md
-	@if ! diff -q README.md /tmp/tastytrade-readme-check.md > /dev/null; then \
-		echo "README.md is out of date with src/lib.rs. Run: make readme"; \
-		diff README.md /tmp/tastytrade-readme-check.md | head -40; \
-		exit 1; \
-	fi; \
-	echo "readme-check: README.md matches src/lib.rs"
-
-.PHONY: check-cargo-readme
-check-cargo-readme:
-	@command -v cargo-readme > /dev/null || (echo "Installing cargo-readme..."; cargo install cargo-readme --locked)
 
 # Code and comments are English, across every crate this repository ships.
 # This replaces the old scripts/spanish.py, which was referenced by the

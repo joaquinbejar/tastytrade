@@ -43,7 +43,3 @@ jobs:
 
       - name: Format check
         run: make fmt-check
-
-      # README.md is generated from src/lib.rs, so the two can drift silently.
-      - name: README is up to date
-        run: make readme-check

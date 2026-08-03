@@ -9,651 +9,170 @@
 
 //! # tastytrade
 //!
-//! `tastytrade` is a Rust client library for the Tastytrade API, providing programmatic access to
-//! trading functionality, market data, and account information.
+//! A Rust client for the tastytrade brokerage API. **Orders placed through it
+//! move real money.**
 //!
-//! ## Features
+//! This is the API reference. The [README] is the tour: what the crate covers,
+//! how to authenticate, and a worked example per area. What follows is the
+//! handful of behaviours a caller has to know before reading any individual
+//! method, because they are properties of the whole crate rather than of one
+//! call.
 //!
-//! - OAuth2 authentication, with automatic access-token renewal
-//! - Real-time market data streaming via DxFeed
-//! - Account and positions information
-//! - Order management (placing, modifying, canceling)
-//! - Real-time account streaming for balance updates and order status changes
+//! [README]: https://github.com/joaquinbejar/tastytrade#readme
 //!
-//! ## Authentication
+//! ## Certification is the default
+//!
+//! [`utils::config::TastyTradeConfig::from_env`] selects the **certification**
+//! environment (`api.cert.tastyworks.com`). Production is a deliberate opt-in:
+//!
+//! ```shell
+//! TASTYTRADE_USE_DEMO=false   # production — orders placed here are real
+//! ```
+//!
+//! Only a value that parses as `false` selects production. A missing, empty or
+//! misspelled variable resolves to certification, so a typo cannot be what
+//! points an order at a funded account.
+//!
+//! A session is bound to the deployment it authenticated against: it will not
+//! present a certification token to production, and it will not send the client
+//! secret to a host it did not authenticate with.
+//!
+//! ## Authentication is OAuth2, and only OAuth2
 //!
 //! tastytrade **decommissioned `POST /sessions` on 2026-02-11**. Username and
 //! password authentication, session tokens and remember tokens are gone from
-//! the venue, and gone from this crate with it; OAuth2 is the only flow that
-//! works.
-//!
-//! Create an OAuth application and a personal grant under Manage → My Profile
-//! → API on [my.tastytrade.com](https://my.tastytrade.com). That gives you a
-//! **client secret** and a **refresh token**, which are what
-//! [`utils::config::TastyTradeConfig`] reads from
-//! `TASTYTRADE_CLIENT_SECRET` and `TASTYTRADE_REFRESH_TOKEN`.
-//!
-//! Access tokens last about fifteen minutes. You do not have to manage that:
-//! every request renews the token first when the one in hand is about to
-//! expire, so a long-lived client keeps working. A renewal is never a *retry* —
-//! a `POST` that may have placed an order is not replayed on a `401`.
-//!
-//! ## Usage
+//! the venue and gone from this crate with it.
 //!
 //! ```rust,no_run
 //! use tastytrade::TastyTrade;
 //! use tastytrade::utils::config::TastyTradeConfig;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Authenticate with the personal refresh-token grant
+//! # async fn connect() -> Result<(), Box<dyn std::error::Error>> {
+//! let config = TastyTradeConfig::from_env();
+//! let tasty = TastyTrade::connect(&config).await?;
 //!
-//!     let config = TastyTradeConfig::from_env();
-//!     let tasty = TastyTrade::connect(&config).await?;
-//!
-//!     // Get account information
-//!     let accounts = tasty.accounts().await?;
-//!     for account in accounts {
-//!         // Redacted: doc examples get copied, and an account number in a
-//!         // log is the thing this crate spends most of its care avoiding.
-//!         println!("Account: {}", account.number().redacted());
-//!         
-//!         // Get positions
-//!         let positions = account.positions().await?;
-//!         println!("Positions: {}", positions.len());
-//!     }
-//!     
-//!     Ok(())
-//! }
-//! ```
-//!
-//! ## The customer resource
-//!
-//! [`TastyTrade::customer`] returns names, addresses, tax identifiers, birth
-//! dates, net worth and employment. It is the most sensitive object this crate
-//! touches, so **nothing in it renders itself**: `Debug` and `Display` print
-//! the type and a field count, never a value.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn who(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let customer = tasty.customer().await?;
-//!
-//! // Safe: renders as `Customer(<redacted, N field(s) present>)`.
-//! println!("{customer:?}");
-//!
-//! // Reading a value means naming the field, which is a decision rather than
-//! // an accident — and one a reviewer can grep for.
-//! if let Some(country) = customer.citizenship_country.as_deref() {
-//!     println!("citizenship: {country}");
+//! for account in tasty.accounts().await? {
+//!     // Redacted: doc examples get copied, and an account number in a log is
+//!     // the thing this crate spends most of its care avoiding.
+//!     println!("{}", account.number().redacted());
 //! }
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! A customer that may not exist is [`TastyTrade::find_customer`], which sends
-//! the venue's `allow-missing` and answers `Ok(None)` instead of a `404`.
+//! Access tokens last about fifteen minutes and every request renews the one in
+//! hand before it expires, so a long-lived client keeps working. A renewal is
+//! never a *retry*: a `POST` that may have placed an order is not replayed on a
+//! `401`.
 //!
-//! One account is one request. [`TastyTrade::account`] used to download every
-//! account and filter locally, so a *sibling* account that failed to
-//! deserialize took the one you asked for with it — `Items<T>` skips what it
-//! cannot parse, and the answer came back `Ok(None)`, indistinguishable from
-//! "this session cannot see that account". Now `Ok(None)` means the venue
-//! returned `404`.
+//! [`TastyTrade::connect_with_authorization_code`] is the third-party grant, for
+//! an application acting on somebody else's account.
 //!
-//! ## Balances and positions
+//! ## Nothing that trades happens without a receipt
 //!
-//! `GET /balances` answers with a **list** — one row per currency the account
-//! holds — and has since 2024-05-01. [`accounts::Account::balance`] is the
-//! shortcut for the single-row case and refuses rather than picking a currency
-//! for you when there is more than one.
+//! Placement, replacement, editing and complex orders all go through the same
+//! shape: dry-run, read what the venue said, then apply the receipt.
 //!
 //! ```rust,no_run
 //! # use tastytrade::prelude::*;
-//! # async fn money(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! for row in account.balances().await? {
-//!     println!("{:?}: {}", row.currency, row.cash_balance);
-//! }
-//! let usd = account.balance_in("USD").await?;
-//! # let _ = usd;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Snapshots take a single day **or** a date range, never both — they are one
-//! enum, so the contradictory query cannot be written. `time-of-day` is
-//! required by the venue and is therefore a constructor argument:
-//!
-//! ```rust,no_run
-//! # use chrono::NaiveDate;
-//! # use tastytrade::prelude::*;
-//! # async fn history(account: &Account<'_>, from: NaiveDate, to: NaiveDate)
+//! # async fn place(account: &Account<'_>, order: &Order)
 //! # -> Result<(), Box<dyn std::error::Error>> {
-//! let page = account
-//!     .balance_snapshots(
-//!         &BalanceSnapshotFilter::at(SnapshotTimeOfDay::Eod)
-//!             .with_range(SnapshotRange::between(from, to))
-//!             .with_page(PageRequest::first().with_per_page(30)),
-//!     )
-//!     .await?;
-//! # let _ = page;
-//! # Ok(())
-//! # }
-//! ```
+//! let receipt = account.review_order(order).await?;
 //!
-//! Positions filter at the venue. `positions()` is still every open position;
-//! `positions_matching` narrows the request itself rather than the result:
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn book(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let held = account
-//!     .positions_matching(
-//!         &PositionFilter::new()
-//!             .with_underlying_symbols(&["AAPL", "SPY"])
-//!             .with_marks(true),
-//!     )
-//!     .await?;
-//! # let _ = held;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! `with_marks` is what fills in [`FullPosition::mark`]; without it the field
-//! is `None` because the venue did not send one, which is not the same as a
-//! mark of zero.
-//!
-//! ### The order lifecycle
-//!
-//! Placing and cancelling were already here; reading an order back, searching
-//! the history, and amending a working order were not. Cancel-replace is how a
-//! resting order gets repriced — cancel-then-place loses queue position and
-//! leaves the account exposed in between.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn book(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let history = account
-//!     .search_orders(
-//!         &OrderFilter::new()
-//!             .with_statuses(&[OrderStatus::Filled, OrderStatus::Cancelled])
-//!             .with_page(PageRequest::first().with_per_page(50)),
-//!     )
-//!     .await?;
-//!
-//! // The live endpoint takes a **single** status, not an array — which is why
-//! // its filter is a different type. Sending the history filters there would
-//! // be ignored, and the listing would look narrowed when it was not.
-//! let working = account
-//!     .live_orders_matching(&LiveOrderFilter::new().with_status(OrderStatus::Live))
-//!     .await?;
-//! # let _ = (history, working);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Amending goes through the same discipline as placing: dry-run, read the
-//! answer, then apply the receipt.
-//!
-//! ```rust,no_run
-//! # use rust_decimal::Decimal;
-//! # use tastytrade::prelude::*;
-//! # async fn reprice(account: &Account<'_>, id: OrderId, price: Decimal)
-//! # -> Result<(), Box<dyn std::error::Error>> {
-//! let amendment = OrderAmendment::new(
-//!     OrderType::Limit,
-//!     TimeInForce::Day,
-//!     Decimal::ZERO,
-//!     PriceEffect::Debit,
-//!     PriceEffect::Debit,
-//! )
-//! .with_price(price);
-//!
-//! let receipt = account
-//!     .review_amendment(id, AmendmentIntent::Replace, &amendment)
-//!     .await?;
 //! for warning in receipt.warnings() {
+//!     // Venue prose, written for a person: it can name the account or the
+//!     // buying power, so it belongs on a screen rather than in a log.
 //!     println!("{warning}");
 //! }
-//! let replaced = account.place_reviewed_amendment(receipt.accept()?).await?;
-//! # let _ = replaced;
+//!
+//! // `accept` refuses when there are warnings. That is not a refusal to
+//! // proceed — it is a refusal to proceed *silently*.
+//! let reviewed = receipt.accept()?;
+//! account.place_reviewed_order(reviewed).await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! The intent is recorded **at review time**, so an amendment reviewed as a
-//! replacement cannot be applied as an edit: the venue treats them differently
-//! and a caller should not be able to swap them after reading the answer. The
-//! receipt is bound to the account **and** the deployment, because
-//! certification reuses production account numbering.
+//! A receipt binds the account number **and** the deployment, because
+//! certification reuses production account numbering — without the origin, a
+//! sandbox dry run would authorise a real order against the same number. No
+//! receipt is `Clone`: duplicable proof is not proof.
 //!
-//! A replacement is not atomic at the venue — a fill on the original aborts it
-//! — and this crate does not paper over that.
+//! [`accounts::Account::place_order`] still exists for callers managing the
+//! review themselves. It carries no evidence that one happened.
 //!
-//! [`prelude::OrderStatus`] keeps an unrecognised value verbatim. `Items<T>`
-//! skips what it cannot parse, so a strict enum would make an order carrying a
-//! new status vanish from a listing without an error, and
-//! [`prelude::OrderStatus::is_terminal`] answers `false` for it: a status this
-//! crate has not seen says nothing about whether the order is finished.
+//! ## Money is `Decimal`
 //!
-//! ### The cryptocurrency suspension
+//! Every price, quantity, balance and ratio is [`rust_decimal::Decimal`].
+//! `f64` appears in exactly one place — [`types::dxfeed`], where the streaming
+//! feed imposes it — and REST paths never reuse those types even when the field
+//! names match.
 //!
-//! tastytrade **disabled cryptocurrency trading through the API on
-//! 2026-06-29**, until further notice
-//! ([release notes](https://developer.tastytrade.com/release-notes/)). Order
-//! routing for a cryptocurrency leg is refused locally as a non-retryable
-//! [`TastyTradeError::Precondition`], on the placement path, the dry-run path
-//! and the complex-order path alike — a dry run that succeeded while placement
-//! refused would be a worse answer than one consistent refusal.
+//! ## An absent field is unknown, never zero
 //!
-//! **Instrument discovery and market data are unaffected.**
-//! [`TastyTrade::list_cryptocurrencies`], [`TastyTrade::get_cryptocurrency`]
-//! and the DXLink feed all keep working; only routing is closed.
+//! A flag the venue did not send is `None`, not `false`; a price it did not send
+//! is `None`, not `0`. Certification omits fields production sends, and
+//! "we were not told whether this account is frozen" and "this account is not
+//! frozen" are different facts — only one of them is safe to act on.
 //!
-//! The whole decision is [`prelude::CRYPTOCURRENCY_TRADING_ENABLED`], one
-//! constant. Restoring trading is flipping it — there is no second place to
-//! remember, and no business rule baked into the order paths that would be
-//! wrong the day the venue changes its mind. A caller who finds the venue has
-//! restored trading before this crate has can still reach the endpoint through
-//! [`TastyTrade::post`], which is public and unguarded.
+//! ## Secrets never render themselves
 //!
-//! ### Complex orders
+//! The client secret, the refresh and access tokens, the DXLink quote token, the
+//! AI-search token and the whole customer resource print as `***` or as a field
+//! count. Not in `Debug`, not in `Display`, not in a log line, not in an error
+//! message — an error is a string the caller prints wherever they like.
 //!
-//! OCO, OTOCO, PAIRS and the rest: a container of component orders whose fates
-//! are linked. "Take profit or stop out, whichever comes first" is one object
-//! at the venue, not two orders and a race.
+//! Account numbers are redacted from every request path that reaches an error,
+//! and a response body is never logged at any level: an error document from an
+//! endpoint this crate does not control can echo a credential.
 //!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn oco(account: &Account<'_>, take: Order, stop: Order)
-//! # -> Result<(), Box<dyn std::error::Error>> {
-//! let request = ComplexOrderRequest::new(ComplexOrderType::Oco, vec![take, stop]);
+//! ## A library does not panic
 //!
-//! let receipt = account.review_complex_order(&request).await?;
-//! for warning in receipt.warnings() {
-//!     println!("{warning}");
-//! }
-//! let placed = account.place_reviewed_complex_order(receipt.accept()?).await?;
-//! # let _ = placed;
-//! # Ok(())
-//! # }
-//! ```
+//! No `unwrap`, no `expect`, no unchecked indexing on any path reachable from a
+//! public method. Everything fallible returns [`TastyTradeError`]. A local
+//! failure is [`TastyTradeError::Precondition`] and reports `is_retryable()`
+//! false, because nothing was sent.
 //!
-//! The same receipt discipline as a plain order, for the same reason: it routes
-//! real money. Local checks run first — an OCO with one component is not an
-//! OCO, and a PAIRS trade with no threshold has no trigger — so neither reaches
-//! the venue.
+//! ## Unknown values survive
 //!
-//! `PATCH /complex-orders/{id}` changes the **threshold price of a PAIRS trade
-//! and nothing else**, which is narrower than the plain-order patch. It has its
-//! own type rather than a generic edit that would advertise fields the route
-//! ignores, and its own receipt.
+//! [`api::base::Items`] skips an item it cannot decode rather than failing a
+//! whole listing, so a strict enum on a response would make a row **disappear**
+//! — silently. The response enums therefore keep an `Unknown(String)` arm that
+//! round-trips the venue's text: a new order status, transaction kind or
+//! instrument classification is visible and matchable instead of missing.
 //!
-//! Cancelling a container requests cancellation of every component that is not
-//! already terminal. A component that has filled stays filled.
+//! Request enums are closed, for the opposite reason: tolerance there would only
+//! let a caller send something the venue rejects.
 //!
-//! ### Can this account trade?
+//! ## Cryptocurrency order routing is suspended
 //!
-//! [`accounts::Account::trading_status`] is one request and answers before the
-//! venue answers with a rejection.
+//! tastytrade disabled it on 2026-06-29, until further notice. An order with a
+//! cryptocurrency leg is refused locally on every routing path. **Instrument
+//! discovery and market data are unaffected.** The whole decision is
+//! [`prelude::CRYPTOCURRENCY_TRADING_ENABLED`], one constant.
+//!
+//! ## Streaming
+//!
+//! Two websockets, and they are different services. Market data is DXLink,
+//! reached with a token from `GET /api-quote-tokens`; account notifications are
+//! tastytrade's own streamer, authenticated with the access token. Both
+//! reconnect under a [`streaming::reconnect::BackoffPolicy`] and expose
+//! [`streaming::reconnect::ConnectionState`].
+//!
+//! Candles are the only route to a price series in this crate, and the only
+//! subscription needing more than a symbol — a candle is addressed by a symbol
+//! carrying its period, `AAPL{=5m}`.
 //!
 //! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn check(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let status = account.trading_status().await?;
-//!
-//! if status.is_blocked() {
-//!     println!("this account cannot trade");
-//! } else if !status.is_known_blocked() {
-//!     // The venue did not send the flags, so "not blocked" is not something
-//!     // this process actually knows. Every flag is `Option<bool>`, and a flag
-//!     // the broker omitted is unknown rather than false.
-//!     println!("unverified: the venue reported neither flag");
-//! }
-//!
-//! println!("day trades used: {:?}", status.day_trade_count);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ### The equity curve
-//!
-//! [`accounts::Account::net_liq_history`] is open/high/low/close of net
-//! liquidating value over time. `time-back` and an explicit window are one
-//! enum, so a request carrying both cannot be built.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn curve(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let bars = account
-//!     .net_liq_history(&NetLiqHistoryFilter::back(TimeBack::OneMonth))
-//!     .await?;
-//!
-//! let peak = bars.iter().filter_map(|bar| bar.high).max();
-//! # let _ = peak;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! **Live only**: the venue's sandbox page lists this endpoint as unavailable
-//! in certification. It is also served by a different system, which spells its
-//! JSON in camelCase and its timestamps as JVM `ZonedDateTime` — so
-//! [`prelude::NetLiqOhlc::time`] is a `String` rather than a `DateTime`, and
-//! every field accepts both spellings.
-//!
-//! ### Margin and risk
-//!
-//! What an order will consume, and what the account may hold.
-//! [`accounts::Account::margin_requirements`] is the standing requirement,
-//! nested total → underlying → strategy, because the per-strategy figures are
-//! what explain the total.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn risk(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let report = account.margin_requirements().await?;
-//! for group in &report.groups {
-//!     println!("{:?}: {:?}", group.underlying_symbol, group.margin_requirement);
-//! }
-//!
-//! let limit = account.position_limit().await?;
-//! println!("largest equity order: {:?}", limit.equity_order_size);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! [`accounts::Account::estimate_margin`] is **not** the order preflight.
-//! [`accounts::Account::dry_run`] asks whether the venue would accept an order;
-//! this asks how much buying power it would take. Neither routes anything, and
-//! there is no path from this one to a placement — it takes
-//! [`prelude::MarginOrderRequest`], which carries the account number and
-//! underlying symbol an [`prelude::Order`] does not, so an order cannot be
-//! handed to it by accident.
-//!
-//! One to [`prelude::MAX_MARGIN_LEGS`] unique legs, checked locally: a repeated
-//! leg is almost always one leg written twice, and a doubled requirement is the
-//! kind of wrong that looks plausible.
-//!
-//! ### Transactions
-//!
-//! The ledger: fills, fees, dividends, assignments, cash movements. It is the
-//! only place a P&L can be reconciled from — an order says what was asked for,
-//! a transaction says what happened and what it cost.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn ledger(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
-//! let page = account
-//!     .transactions(
-//!         &TransactionFilter::new()
-//!             .with_types(TransactionTypes::Several(vec![
-//!                 TransactionType::Trade,
-//!                 TransactionType::ReceiveDeliver,
-//!             ]))
-//!             .with_page(PageRequest::first().with_per_page(250)),
-//!     )
-//!     .await?;
-//!
-//! for row in &page {
-//!     // `None` means the venue sent nothing, never zero. A commission that
-//!     // defaults to zero is a P&L that is quietly wrong.
-//!     println!("{:?} {:?}", row.transaction_sub_type, row.net_value);
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! The venue documents `type` and `types` as mutually exclusive, so they are
-//! one enum here and a request carrying both cannot be built.
-//!
-//! [`accounts::Account::total_fees`] takes an `Option<NaiveDate>`; passing
-//! `None` omits the parameter and leaves the venue's own "today" in place,
-//! rather than substituting this machine's idea of the date.
-//!
-//! ## Instrument listings
-//!
-//! The instrument listings paginate, and each takes a typed filter rather than
-//! a row of positional `Option`s. A filter that sets nothing sends nothing, so
-//! the venue's own defaults are what answer.
-//!
-//! ```rust,no_run
-//! use tastytrade::prelude::*;
-//!
-//! # async fn browse(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let mut filter = EquityFilter::new()
-//!     .with_is_etf(true)
-//!     .with_lendability(Lendability::EasyToBorrow)
-//!     .with_page(PageRequest::first().with_per_page(25));
-//!
-//! loop {
-//!     let page = tasty.list_equities(&filter).await?;
-//!     for equity in &page {
-//!         println!("{} — {}", equity.symbol.0, equity.description);
-//!     }
-//!
-//!     // Offsets count from zero, so the last page is `total_pages - 1`.
-//!     if !page.has_more() {
-//!         break;
-//!     }
-//!     let next = filter.page().next_page();
-//!     filter = filter.with_page(next);
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Array parameters are repeated keys, which is how the venue spells them —
-//! `product-code[]=ES&product-code[]=6A`, not one comma-joined value:
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn futures(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let page = tasty
-//!     .list_futures(&FutureFilter::for_product_codes(&["ES", "6A"]))
-//!     .await?;
-//! println!("{} contract(s) of {}", page.len(), page.pagination.total_items);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! A value the venue adds later still round-trips: [`prelude::Lendability`]
-//! and the other wire enums keep an unrecognised value verbatim rather than
-//! failing, so a new classification never makes an instrument disappear.
-//!
-//! ### Finding an instrument
-//!
-//! Two searches, with different encodings. `search_symbols` is a prefix search
-//! whose term is a **path segment**; `search_instruments` spans every
-//! instrument type and takes classification filters that are **comma-joined
-//! into one parameter each**, which is the opposite of the listings above.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn find(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! // A class separator in the term is encoded, so this is a search for
-//! // `BRK/B` rather than a search of `/symbols/search/BRK` for `B`.
-//! for hit in tasty.search_symbols("BRK/B").await? {
-//!     println!("{} — {:?}", hit.symbol, hit.description);
-//! }
-//!
-//! let results = tasty
-//!     .search_instruments(
-//!         &InstrumentSearchFilter::for_query("gold")
-//!             .with_types(&["Equity", "Future"])
-//!             .with_limit(10),
-//!     )
-//!     .await?;
-//! # let _ = results;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! `limit` is capped at [`prelude::MAX_SEARCH_RESULTS`] and an over-large one
-//! fails locally as a non-retryable precondition, before anything is sent.
-//!
-//! `ai_search_token()` mints a short-lived third-party credential for AI
-//! search. It is treated like every other secret here — never in `Debug`,
-//! `Display`, a log or an error — and it is handed back rather than used,
-//! because the service it authenticates is not part of this API.
-//!
-//! ## Market data over REST
-//!
-//! One snapshot of up to a hundred symbols, without opening a websocket. For a
-//! portfolio mark, a screener pass or a pre-trade sanity check, that is the
-//! right shape; the DXLink feed is for watching a price change.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn snapshot(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let prices = tasty
-//!     .market_data_by_type(
-//!         &MarketDataRequest::new()
-//!             .with_equities(&["AAPL", "TSLA"])
-//!             .with_cryptocurrencies(&["BTC/USD"]),
-//!     )
-//!     .await?;
-//!
-//! for price in &prices {
-//!     println!("{}: {:?} / {:?}", price.symbol, price.bid, price.ask);
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! **Every price is `Decimal`.** The `f64` exemption is specifically for the
-//! DXFeed streaming types in [`types::dxfeed`], where the feed imposes the
-//! representation; these are different types with a different field set, and
-//! conflating them would leak `f64` onto a REST path.
-//!
-//! The venue takes **one parameter per instrument type**, comma-joined — not
-//! the repeated keys the instrument listings use — and caps the request at
-//! [`prelude::MAX_MARKET_DATA_SYMBOLS`] across all types together. Over the cap
-//! is a non-retryable precondition, refused before anything is sent.
-//!
-//! ### Volatility, dividends and earnings
-//!
-//! For an options client this is the data that decides whether a trade is
-//! worth putting on: the crate could fetch a chain but not tell you whether its
-//! volatility was high or low.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn vol(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! for metric in tasty.market_metrics(&["AAPL", "TSLA"]).await? {
-//!     println!("{}: rank {:?}", metric.symbol, metric.implied_volatility_rank);
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! `symbols` is **comma-joined into one parameter** here, not the repeated keys
-//! the instrument listings use — the venue documents it that way, and getting
-//! it wrong returns metrics for one symbol.
-//!
-//! Earnings take [`prelude::EarningsRange`], which carries the start date the
-//! venue requires: a required query parameter should be impossible to omit
-//! rather than a runtime `400`.
-//!
-//! An option expiration decodes as a **calendar day** even though the schema
-//! types it as a timestamp — an expiration is a day of market, and there is no
-//! timezone to invent.
-//!
-//! **Live only**: the venue's sandbox page lists Market Metrics as unavailable
-//! in certification, so its examples require an explicit read-only production
-//! opt-in.
-//!
-//! ### Is the market open?
-//!
-//! Eleven endpoints, and the reason they exist: a hardcoded exchange calendar
-//! is wrong roughly once a quarter.
-//!
-//! ```rust,no_run
-//! # use chrono::Utc;
-//! # use tastytrade::prelude::*;
-//! # async fn clock(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let session = tasty
-//!     .current_market_session(SessionCollection::Equity, &[])
-//!     .await?;
-//!
-//! // Derived from the session the venue sent, never from a local assumption
-//! // about the exchange's timezone. `None` means the venue did not send both
-//! // boundaries — which is not "closed".
-//! match session.is_open_at(Utc::now().fixed_offset()) {
-//!     Some(true) => println!("open"),
-//!     Some(false) => println!("closed"),
-//!     None => println!("the venue did not say"),
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Session boundaries keep the offset the venue sent — going to UTC is one-way
-//! — and holidays are `NaiveDate`, because a holiday is a day.
-//!
-//! `to-date` on [`prelude::SessionRange`] is a constructor argument because the
-//! venue marks it required, and a range longer than nine months is refused
-//! locally with the limit named in the message.
-//! `instrument-collections[]` is required too, so
-//! [`TastyTrade::current_market_session`] takes a first collection separately
-//! from the rest: an empty selection is unrepresentable.
-//!
-//! ## Real-time Data
-//!
-//! Market data comes over DXLink. All eleven event types the feed models are
-//! routed: quotes, regular and extended-hours trade prints, Greeks, candles,
-//! summaries, time and sale, profiles, underlyings, theoretical prices and
-//! series. A subscription names the ones it wants and the channel is
-//! configured for exactly those.
-//!
-//! ```rust,no_run
-//! // Create a quote streamer
-//! use tastytrade::{Symbol, TastyTrade};
-//! use tastytrade::utils::config::TastyTradeConfig;
-//! use tastytrade::dxfeed::{self, EventKind};
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = TastyTradeConfig::from_env();
-//!     let tasty = TastyTrade::connect(&config).await?;
-//!     let mut quote_streamer = tasty.create_quote_streamer().await?;
-//!     let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]).await?;
-//!
-//!     // Add symbols to subscribe to
-//!     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]).await?;
-//!
-//!     // Listen for events
-//!     if let Ok(dxfeed::Event { sym, data }) = quote_sub.get_event().await {
-//!         match data {
-//!             dxfeed::EventData::Quote(quote) => {
-//!                 println!("Quote for {}: {}/{}", sym, quote.bid_price, quote.ask_price);
-//!             }
-//!             _ => {}
-//!         }
-//!     }
-//!     Ok(())
-//! }
-//! ```
-//!
-//! ### Candles
-//!
-//! Candles are the only route to a price series in this crate — there is no
-//! REST endpoint for one — and the only subscription that needs more than a
-//! symbol. A candle is addressed by a symbol that carries its period,
-//! `AAPL{=5m}`, so two periods of one underlying are two different streamer
-//! symbols and never deliver into each other.
-//!
-//! ```rust,no_run
-//! use chrono::{Duration, Utc};
-//! use tastytrade::{Symbol, TastyTrade};
-//! use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
-//!
+//! # use chrono::{Duration, Utc};
+//! # use tastytrade::{Symbol, TastyTrade};
+//! # use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
 //! # async fn bars(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
 //! let mut streamer = tasty.create_quote_streamer().await?;
 //! let mut bars = streamer.create_sub([EventKind::Candle]).await?;
 //!
-//! // `from_time` is required, not optional: a candle subscription without one
-//! // replays an unbounded history. A day of one-minute bars is about 1440
-//! // events per symbol.
+//! // `from_time` is required, not optional: without one a candle subscription
+//! // replays an unbounded history.
 //! bars.add_candles(
 //!     &[Symbol("AAPL".to_string())],
 //!     CandlePeriod::minutes(5)?,
@@ -664,436 +183,43 @@
 //! if let Ok(event) = bars.get_event().await
 //!     && let EventData::Candle(candle) = event.data
 //! {
-//!     // `event.sym` is `AAPL{=5m}`, period included.
 //!     println!("{}: o {} c {}", event.sym, candle.open, candle.close);
 //! }
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! A reconnect resumes each candle series one millisecond past the last bar
-//! delivered **contiguously**, rather than replaying the original start —
-//! otherwise every reconnect would re-send a history the consumer already has.
-//!
-//! ### Falling behind
-//!
-//! A subscription's buffer is bounded, so a consumer that does not keep up
-//! loses events rather than stalling every other subscription. That is the
-//! right trade for quotes and the wrong one for a price series, so it is
-//! observable:
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # fn check(bars: &QuoteSubscription) {
-//! if bars.lagged() > 0 {
-//!     // Those events are gone; reading faster will not bring them back.
-//!     println!("{} events lost", bars.lagged());
-//! }
-//! # }
-//! ```
-//!
-//! For candles it is also recoverable across a reconnect: a dropped bar stops
-//! the resume point advancing, so the next connection asks for it again. Within
-//! one connection a dropped bar stays dropped. Size the buffer with
-//! [`QuoteStreamer::create_sub_with_capacity`](streaming::quote_streamer::QuoteStreamer::create_sub_with_capacity)
-//! when the default does not fit the history you are asking for.
-//!
-//! ## Backtesting
-//!
-//! Server-side strategy backtests, and the **only area served by a different
-//! host**: `https://backtester.vast.tastyworks.com`, declared in its own
-//! OpenAPI document. One host, with no sandbox counterpart — so the session's
-//! environment decides which credentials are used, not which service is
-//! reached, and errors name the session's environment because that is what a
-//! caller needs to know.
-//!
-//! A backtest is asynchronous, and the polling is yours:
-//!
-//! ```rust,no_run
-//! # use chrono::NaiveDate;
-//! # use tastytrade::prelude::*;
-//! # async fn run(tasty: &TastyTrade, backtest: NewBacktest)
-//! # -> Result<(), Box<dyn std::error::Error>> {
-//! let started = tasty.create_backtest(&backtest).await?;
-//! let Some(id) = started.id else { return Ok(()) };
-//!
-//! loop {
-//!     let run = tasty.backtest(&id).await?;
-//!     // An unrecognised status is **not** finished: a loop that stopped on
-//!     // one would abandon a run that was still going.
-//!     if run.is_finished() {
-//!         println!("{} trial(s)", run.trials.len());
-//!         break;
-//!     }
-//!     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Its JSON is camelCase, not kebab-case, like the net-liq service and unlike
-//! everything else. Nothing here routes an order or touches a position.
-//!
-//! ## Watchlists
-//!
-//! The only user-owned, mutable resource in the API besides orders, and the
-//! only area where a client can **destroy** user data.
-//!
-//! ```rust,no_run
-//! # use tastytrade::prelude::*;
-//! # async fn lists(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let created = tasty
-//!     .create_watchlist(&NewWatchlist::new("Earnings plays", &["AAPL", "TSLA"]))
-//!     .await?;
-//!
-//! // `replace_watchlist` replaces **every property**. It is not an append and
-//! // not a merge: the entries sent are the entries that survive. To add a
-//! // symbol, read the list, push onto its entries, and send the whole thing
-//! // back.
-//! # let _ = created;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! [`TastyTrade::delete_watchlist`] is irreversible and takes the name
-//! explicitly, so it cannot be reached from a listing or a read by accident.
-//! Every mutating example runs against certification only, on a uniquely named
-//! throwaway list, and cleans up after itself.
-//!
-//! `public-watchlists-subscribe` on the account websocket publishes the same
-//! [`prelude::Watchlist`] type these endpoints return.
-//!
-//! ## Quote alerts
-//!
-//! A threshold on a symbol. Setting one is REST; being told it fired is the
-//! account websocket — and both halves use the **same** [`prelude::QuoteAlert`]
-//! type, so a caller cannot set an alert with one shape and receive it as
-//! another.
-//!
-//! ```rust,no_run
-//! # use rust_decimal::Decimal;
-//! # use tastytrade::prelude::*;
-//! # async fn watch(tasty: &TastyTrade, price: Decimal)
-//! # -> Result<(), Box<dyn std::error::Error>> {
-//! let alert = tasty
-//!     .create_quote_alert(&NewQuoteAlert::new(
-//!         "AAPL",
-//!         QuoteAlertField::Last,
-//!         QuoteAlertOperator::Above,
-//!         price,
-//!     ))
-//!     .await?;
-//!
-//! // …and it arrives on the account streamer, subscribed with
-//! // `SubRequestAction::QuoteAlertsSubscribe`.
-//! # let _ = alert;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Alerts are per **user**, not per account, so they hang off the client —
-//! putting them on an `Account` would imply a scoping the venue does not have.
-//!
-//! The threshold is given once and rendered into both wire forms, so they
-//! cannot disagree; a threshold of zero is refused locally, because an alert
-//! that fires on the first quote is almost always a caller who forgot to set
-//! one.
-//!
-//! ## Account streaming
+//! A subscription's buffer is bounded, so a slow consumer loses events rather
+//! than stalling every other subscription.
+//! [`streaming::quote_streamer::QuoteSubscription::lagged`] makes that
+//! observable, and for candles it is recoverable across a reconnect: a dropped
+//! bar stops the resume point advancing, so the next connection asks for it
+//! again.
 //!
 //! The account websocket publishes a **full object** on every change — never a
-//! diff — for orders, balances, positions, quote alerts and tastytrade's
-//! public watchlists. The fills inside an order's `legs` are the only place an
-//! executed price reaches this crate: no REST endpoint returns one.
+//! diff. The fills inside an order's legs are the only place an executed price
+//! reaches this crate; no REST endpoint returns one. Anything that is JSON
+//! reaches the caller, including a `type` nobody here recognises.
 //!
-//! ```rust,no_run
-//! use tastytrade::prelude::*;
+//! ## Where to look
 //!
-//! # async fn watch(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
-//! let streamer = tasty.create_account_streamer().await?;
-//! for account in &tasty.accounts().await? {
-//!     streamer.subscribe_to_account(account).await?;
-//! }
-//!
-//! match streamer.get_event().await? {
-//!     AccountEvent::Notification(notification) => match notification.payload {
-//!         NotificationPayload::Order(order) => {
-//!             for leg in &order.legs {
-//!                 for fill in &leg.fills {
-//!                     println!("{:?} at {:?}", fill.quantity, fill.fill_price);
-//!                 }
-//!             }
-//!         }
-//!         // A notification type this crate does not model yet still arrives,
-//!         // with its payload. Nothing is discarded.
-//!         NotificationPayload::Unsupported(payload) => {
-//!             println!("{} arrived untyped ({} bytes)", notification.kind, payload.len());
-//!         }
-//!         _ => {}
-//!     },
-//!     AccountEvent::Unknown(unknown) => println!("unplaceable: {:?}", unknown.kind),
-//!     _ => {}
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Anything that is JSON reaches the caller. A `type` nobody here recognises,
-//! a payload that does not match its model, and a frame that is neither a
-//! notification nor an acknowledgement all arrive with the payload intact —
-//! `RawPayload` renders as a byte count, so reading it takes
-//! [`RawPayload::expose`](prelude::RawPayload::expose) and is one grep away
-//! from an audit. Only bytes that are not JSON are dropped, and that is
-//! reported without the frame or the serde error.
-//!
-//! ## Environments
-//!
-//! `TastyTradeConfig::from_env` selects the **certification** environment by
-//! default (`api.cert.tastyworks.com`). Production is a deliberate opt-in:
-//!
-//! ```shell
-//! TASTYTRADE_USE_DEMO=false   # production — orders placed here are real
-//! ```
-//!
-//! Only a value that parses as `false` selects production. A missing, empty or
-//! misspelled variable resolves to certification, so a typo cannot be what
-//! points an order at a funded account.
-//!
-//! Connecting without `TASTYTRADE_CLIENT_SECRET` and
-//! `TASTYTRADE_REFRESH_TOKEN` fails locally with
-//! `TastyTradeError::ConfigError` and never reaches the network.
-//!
-//! A session is bound to the deployment it authenticated against: it will not
-//! present a certification token to production, and it will not send the
-//! client secret to a host it did not authenticate with.
-//!
-//! ## Authorizing other people's accounts
-//!
-//! A **trusted third-party** application — one tastytrade has reviewed — sends
-//! a customer to the authorization page and exchanges the code it gets back:
-//!
-//! ```rust,no_run
-//! use tastytrade::TastyTrade;
-//! use tastytrade::oauth::{AuthorizationRequest, Scope};
-//! use tastytrade::utils::config::TastyTradeConfig;
-//!
-//! # async fn authorize(state: &str, code: String, returned_state: Option<&str>)
-//! # -> Result<(), Box<dyn std::error::Error>> {
-//! let config = TastyTradeConfig::from_env();
-//!
-//! let request = AuthorizationRequest::new(&config.client_id, &config.redirect_uri)
-//!     .with_scopes([Scope::Read, Scope::Trade])
-//!     // Tie this to the browser session that started the flow. This crate
-//!     // does not invent one: a nonce the application cannot correlate
-//!     // proves nothing.
-//!     .with_state(state);
-//!
-//! // Send the customer here. The URL carries no secret.
-//! let url = request.authorize_url(config.environment())?;
-//!
-//! // …they come back to your redirect URI with `code` and `state`.
-//! request.verify_state(returned_state)?;
-//! let tasty = TastyTrade::connect_with_authorization_code(&config, code).await?;
-//!
-//! // Store this. It does not expire, and having it means never sending the
-//! // customer through the authorization page again.
-//! let refresh_token = tasty.refresh_token().await;
-//! # let _ = (url, refresh_token);
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Placing an order
-//!
-//! Placement goes through a review the venue's warnings cannot be skipped
-//! past silently:
-//!
-//! ```rust,no_run
-//! # use tastytrade::{Order, TastyTrade};
-//! # use tastytrade::utils::config::TastyTradeConfig;
-//! # async fn place(
-//! #     account: &tastytrade::accounts::Account<'_>,
-//! #     order: &Order,
-//! #     config: &TastyTradeConfig,
-//! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let receipt = account.review_order(order).await?;
-//! println!("buying power effect: {}", receipt.result().buying_power_effect.change_in_buying_power);
-//!
-//! if !receipt.is_clean() {
-//!     for warning in receipt.warnings() {
-//!         println!("warning: {}", warning.message);
-//!     }
-//!     // accept_with_warnings is for a person who has read the above and
-//!     // still wants the order. Reaching for it automatically defeats it.
-//!     return Ok(());
-//! }
-//! let reviewed = receipt.accept()?;
-//!
-//! // Certification only. An example that places on production is an example
-//! // somebody runs on production.
-//! if config.use_demo {
-//!     account.place_reviewed_order(reviewed).await?;
-//! }
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! `Account::place_order` still exists for callers that manage the review
-//! themselves, but it carries no evidence that a review happened.
-//!
-//! ## Logging
-//!
-//! This crate emits `tracing` events and does **not** install a subscriber on
-//! your behalf: process-global logging belongs to the application. Loading
-//! configuration touches no global state, so a program that already owns
-//! `tracing` keeps its own setup.
-//!
-//! Binaries that do not want to build one can opt in:
-//!
-//! ```rust,no_run
-//! use tastytrade::utils::logger::{try_setup_logger, LoggerInit};
-//!
-//! match try_setup_logger() {
-//!     LoggerInit::Installed => {}
-//!     LoggerInit::AlreadyInstalled => { /* the application owns it */ }
-//!     LoggerInit::Unsupported => { /* wasm32 */ }
-//! }
-//! ```
-//!
-//! Without a subscriber the environment warnings above are not printed, so a
-//! binary that cares about them should install one before building the config.
-//!
-//!  ## Setup Instructions
-//!  
-//!  1. Clone the repository:
-//!  ```shell
-//!  git clone https://github.com/joaquinbejar/tastytrade
-//!  cd tastytrade
-//!  ```
-//!  
-//!  2. Build the project:
-//!  ```shell
-//!  make build
-//!  ```
-//!  
-//!  3. Run tests:
-//!  ```shell
-//!  make test
-//!  ```
-//!  
-//!  4. Format the code:
-//!  ```shell
-//!  make fmt
-//!  ```
-//!  
-//!  5. Run linting:
-//!  ```shell
-//!  make lint
-//!  ```
-//!  
-//!  6. Clean the project:
-//!  ```shell
-//!  make clean
-//!  ```
-//!  
-//!  7. Run the project:
-//!  ```shell
-//!  make run
-//!  ```
-//!  
-//!  8. Fix issues:
-//!  ```shell
-//!  make fix
-//!  ```
-//!  
-//!  9. Run pre-push checks:
-//!  ```shell
-//!  make pre-push
-//!  ```
-//!  
-//!  10. Generate documentation:
-//!  ```shell
-//!  make doc
-//!  ```
-//!  
-//!  11. Publish the package:
-//!  ```shell
-//!  make publish
-//!  ```
-//!  
-//!  12. Generate coverage report:
-//!  ```shell
-//!  make coverage
-//!  ```
-//!
-//!
-//! ## CLI Example
-//!
-//! This crate also includes a sample CLI application in the `tastytrade-cli` directory
-//! that demonstrates a portfolio viewer with real-time updates.
-//!
-//! It reads its credentials from the environment, and takes `--config` to read
-//! them from a JSON file instead. Neither credential is a flag on purpose: a
-//! secret given on the command line is visible to every process on the machine
-//! and is kept in the shell history.
-//!
-//!  ```shell
-//!  export TASTYTRADE_CLIENT_SECRET=...
-//!  export TASTYTRADE_REFRESH_TOKEN=...
-//!  export TASTYTRADE_USE_DEMO=true      # certification, the safe default
-//!  cargo run -p tastytrade-cli
-//!  ```
-//!
-//! ## Migrating from 0.3
-//!
-//! Every authentication surface changed, because the API behind it was
-//! retired. This is a breaking release and `cargo semver-checks` reports it as
-//! one.
-//!
-//! | Removed | Replacement |
-//! |---|---|
-//! | `TastyTrade::login(&config)` | [`TastyTrade::connect`] |
-//! | `TastyTrade::default()` | [`TastyTrade::from_env`] |
-//! | `LoginCredentials`, `LoginResponse`, `LoginResponseUser` | [`oauth::TokenResponse`] |
-//! | `TastyTradeConfig::username`, `::password` | `client_secret`, `refresh_token` |
-//! | `TastyTradeConfig::remember_me`, `TASTYTRADE_REMEMBER_ME` | nothing — it configured a retired API |
-//! | `TASTYTRADE_USERNAME`, `TASTYTRADE_PASSWORD` | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN` |
-//! | CLI `--login` | CLI `--config` |
-//!
-//! There is no deprecation window: a deprecated `login()` would still be a
-//! call to an endpoint that no longer exists, so leaving one in place would
-//! only move the failure from compile time to run time.
-//!  
-//!  ## Testing
-//!  
-//!  To run unit tests:
-//!  ```shell
-//!  make test
-//!  ```
-//!  
-//!  To run tests with coverage:
-//!  ```shell
-//!  make coverage
-//!  ```
-//!  
-//!  ## Contribution and Contact
-//!  
-//!  We welcome contributions to this project! If you would like to contribute, please follow these steps:
-//!  
-//!  1. Fork the repository.
-//!  2. Create a new branch for your feature or bug fix.
-//!  3. Make your changes and ensure that the project still builds and all tests pass.
-//!  4. Commit your changes and push your branch to your forked repository.
-//!  5. Submit a pull request to the main repository.
-//!  
-//!  If you have any questions, issues, or would like to provide feedback, please feel free to contact the project maintainer:
-//!  
-//!  **Joaquín Béjar García**
-//!  - Email: jb@taunais.com
-//!  - GitHub: [joaquinbejar](https://github.com/joaquinbejar)
-//!  
-//!  We appreciate your interest and look forward to your contributions!
-//!  
+//! [`prelude`] re-exports the advertised surface in one import. The endpoint
+//! groups hang off [`TastyTrade`] and [`accounts::Account`]; the filters that
+//! narrow them are `*Filter` types taking a [`api::query::PageRequest`].
+
+/// Compiles every Rust block in `README.md` as a doc test.
+///
+/// The README is hand-written now, which means nothing else checks its
+/// examples — and a README whose code does not compile is worse than one with
+/// no code at all. This couples the *code* to the crate without coupling the
+/// *prose*: the file is still authored by hand, and `src/lib.rs` no longer
+/// generates it.
+///
+/// `#[cfg(doctest)]` keeps the item out of every build except the doc-test
+/// pass, so it costs nothing at compile time and appears in no documentation.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
 
 /// REST surface: authentication, accounts, instruments and option chains.
 pub mod api;
