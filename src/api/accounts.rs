@@ -8,6 +8,7 @@ use crate::types::margin::{
     EffectiveMarginRequirement, MarginEstimate, MarginOrderRequest, MarginRequirementsReport,
     PositionLimit,
 };
+use crate::types::net_liq::{NetLiqHistoryFilter, NetLiqOhlc};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::types::trading_status::TradingStatus;
 use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
@@ -600,6 +601,31 @@ impl Account<'_> {
     /// Propagates the venue's error.
     pub async fn position_limit(&self) -> TastyResult<PositionLimit> {
         self.tasty.get(&self.path("/position-limit")).await
+    }
+
+    /// The account's equity curve.
+    ///
+    /// Open, high, low and close of net liquidating value over time — what a
+    /// performance or drawdown chart is drawn from.
+    ///
+    /// **Live only.** The venue's sandbox page lists Net Liq History as
+    /// unavailable in certification, so this returns nothing useful there.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which
+    /// is a defect in this crate's model rather than an account with no
+    /// history. Propagates the venue's error otherwise.
+    pub async fn net_liq_history(
+        &self,
+        filter: &NetLiqHistoryFilter,
+    ) -> TastyResult<Vec<NetLiqOhlc>> {
+        let query = filter.to_query();
+        let resp: Items<NetLiqOhlc> = self
+            .tasty
+            .get_with_query(&self.path("/net-liq/history"), &query.pairs())
+            .await?;
+        resp.into_items()
     }
 
     /// Orders that are still working.

@@ -64,6 +64,9 @@ pub use crate::types::margin::{
     SpanRow,
 };
 
+// Re-export the equity curve
+pub use crate::types::net_liq::{NetLiqHistoryFilter, NetLiqOhlc, NetLiqRange, TimeBack};
+
 // Re-export the account trading status
 pub use crate::types::trading_status::TradingStatus;
 

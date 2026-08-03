@@ -167,6 +167,26 @@ if status.is_blocked() {
 println!("day trades used: {:?}", status.day_trade_count);
 ```
 
+#### The equity curve
+
+[`accounts::Account::net_liq_history`] is open/high/low/close of net
+liquidating value over time. `time-back` and an explicit window are one
+enum, so a request carrying both cannot be built.
+
+```rust
+let bars = account
+    .net_liq_history(&NetLiqHistoryFilter::back(TimeBack::OneMonth))
+    .await?;
+
+let peak = bars.iter().filter_map(|bar| bar.high).max();
+```
+
+**Live only**: the venue's sandbox page lists this endpoint as unavailable
+in certification. It is also served by a different system, which spells its
+JSON in camelCase and its timestamps as JVM `ZonedDateTime` — so
+[`prelude::NetLiqOhlc::time`] is a `String` rather than a `DateTime`, and
+every field accepts both spellings.
+
 #### Margin and risk
 
 What an order will consume, and what the account may hold.
