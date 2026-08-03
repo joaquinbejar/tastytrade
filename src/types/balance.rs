@@ -5,7 +5,7 @@
 ******************************************************************************/
 use crate::PriceEffect;
 use crate::accounts::AccountNumber;
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -139,6 +139,175 @@ pub struct Balance {
     #[serde(with = "rust_decimal::serde::arbitrary_precision")]
     pub effective_cryptocurrency_buying_power: Decimal,
 
+    // Everything below is `Option`. The published schema marks no balance
+    // field required, and the venue genuinely omits some depending on what the
+    // account is permitted to trade — a cash account has no futures margin. A
+    // required field the venue skips would fail the whole decode, which on the
+    // streaming path means an account balance notification silently becoming
+    // an unreadable frame.
+    //
+    // `default` is not redundant next to `with`: an explicit `with` cancels
+    // serde's implicit "absent Option is None", so a field that has both and
+    // no `default` fails on absence.
+    /// Margin equity as Apex recorded it at the start of the day.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub apex_starting_day_margin_equity: Option<Decimal>,
+
+    /// Margin required against bond positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub bond_margin_requirement: Option<Decimal>,
+
+    /// A manual adjustment applied to buying power.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub buying_power_adjustment: Option<Decimal>,
+
+    /// Cash that has settled.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub cash_settle_balance: Option<Decimal>,
+
+    /// Balance available for closed-loop transfers.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub closed_loop_available_balance: Option<Decimal>,
+
+    /// Margin required against cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub cryptocurrency_margin_requirement: Option<Decimal>,
+
+    /// Margin required against equity offerings.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub equity_offering_margin_requirement: Option<Decimal>,
+
+    /// Margin required against fixed-income positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub fixed_income_security_margin_requirement: Option<Decimal>,
+
+    /// Intraday margin required against futures.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub futures_intraday_margin_requirement: Option<Decimal>,
+
+    /// Overnight margin required against futures.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub futures_overnight_margin_requirement: Option<Decimal>,
+
+    /// Equities cash moving intraday.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub intraday_equities_cash_amount: Option<Decimal>,
+
+    /// Futures cash moving intraday.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub intraday_futures_cash_amount: Option<Decimal>,
+
+    /// Total value of long bond positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_bond_value: Option<Decimal>,
+
+    /// Total value of long cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_cryptocurrency_value: Option<Decimal>,
+
+    /// Total value of long fixed-income positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_fixed_income_security_value: Option<Decimal>,
+
+    /// Total value of long index derivative positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_index_derivative_value: Option<Decimal>,
+
+    /// Equity above the maintenance requirement.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub maintenance_excess: Option<Decimal>,
+
+    /// Margin balance that has settled.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub margin_settle_balance: Option<Decimal>,
+
+    /// Previous day's cryptocurrency fiat movement.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub previous_day_cryptocurrency_fiat_amount: Option<Decimal>,
+
+    /// Margin required under Regulation T.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub reg_t_margin_requirement: Option<Decimal>,
+
+    /// Total value of short cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub short_cryptocurrency_value: Option<Decimal>,
+
+    /// Total value of short index derivative positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub short_index_derivative_value: Option<Decimal>,
+
+    /// Equity option buying power from the special memorandum account.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub sma_equity_option_buying_power: Option<Decimal>,
+
+    /// Apex's adjustment to the special memorandum account.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub special_memorandum_account_apex_adjustment: Option<Decimal>,
+
+    /// The special memorandum account value.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub special_memorandum_account_value: Option<Decimal>,
+
+    /// Liquidity pool rebate still pending.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub total_pending_liquidity_pool_rebate: Option<Decimal>,
+
+    /// Total settled balance.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub total_settle_balance: Option<Decimal>,
+
+    /// Cryptocurrency fiat movement that has not settled.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub unsettled_cryptocurrency_fiat_amount: Option<Decimal>,
+
+    /// Derivative buying power already committed.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub used_derivative_buying_power: Option<Decimal>,
+
+    /// Whether the buying-power adjustment is a debit or a credit.
+    #[serde(default)]
+    pub buying_power_adjustment_effect: Option<PriceEffect>,
+
+    /// Whether the intraday equities cash is a debit or a credit.
+    #[serde(default)]
+    pub intraday_equities_cash_effect: Option<PriceEffect>,
+
+    /// Whether the intraday futures cash is a debit or a credit.
+    #[serde(default)]
+    pub intraday_futures_cash_effect: Option<PriceEffect>,
+
+    /// Whether the previous day's cryptocurrency fiat movement is a debit or a credit.
+    #[serde(default)]
+    pub previous_day_cryptocurrency_fiat_effect: Option<PriceEffect>,
+
+    /// Whether the unsettled cryptocurrency fiat movement is a debit or a credit.
+    #[serde(default)]
+    pub unsettled_cryptocurrency_fiat_effect: Option<PriceEffect>,
+
+    /// Calendar day the intraday equities cash becomes effective.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub intraday_equities_cash_effective_date: Option<NaiveDate>,
+
+    /// Calendar day the intraday futures cash becomes effective.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub intraday_futures_cash_effective_date: Option<NaiveDate>,
+
+    /// Calendar day the previous cryptocurrency fiat movement became effective.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub previous_date_cryptocurrency_fiat_effective_date: Option<NaiveDate>,
+
+    /// Calendar day this balance describes.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub snapshot_date: Option<NaiveDate>,
+
+    /// The currency these figures are denominated in, such as `USD`.
+    #[serde(default)]
+    pub currency: Option<String>,
+
+    /// Which end of the trading day this balance describes.
+    #[serde(default)]
+    pub time_of_day: Option<SnapshotTimeOfDay>,
     /// The timestamp of the last balance update.
     #[serde(with = "crate::types::wire::datetime")]
     pub updated_at: DateTime<FixedOffset>,
@@ -325,6 +494,46 @@ mod tests {
             pending_margin_interest: Decimal::from_str("0.00").unwrap(),
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
             updated_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap(),
+            apex_starting_day_margin_equity: None,
+            bond_margin_requirement: None,
+            buying_power_adjustment: None,
+            cash_settle_balance: None,
+            closed_loop_available_balance: None,
+            cryptocurrency_margin_requirement: None,
+            equity_offering_margin_requirement: None,
+            fixed_income_security_margin_requirement: None,
+            futures_intraday_margin_requirement: None,
+            futures_overnight_margin_requirement: None,
+            intraday_equities_cash_amount: None,
+            intraday_futures_cash_amount: None,
+            long_bond_value: None,
+            long_cryptocurrency_value: None,
+            long_fixed_income_security_value: None,
+            long_index_derivative_value: None,
+            maintenance_excess: None,
+            margin_settle_balance: None,
+            previous_day_cryptocurrency_fiat_amount: None,
+            reg_t_margin_requirement: None,
+            short_cryptocurrency_value: None,
+            short_index_derivative_value: None,
+            sma_equity_option_buying_power: None,
+            special_memorandum_account_apex_adjustment: None,
+            special_memorandum_account_value: None,
+            total_pending_liquidity_pool_rebate: None,
+            total_settle_balance: None,
+            unsettled_cryptocurrency_fiat_amount: None,
+            used_derivative_buying_power: None,
+            buying_power_adjustment_effect: None,
+            intraday_equities_cash_effect: None,
+            intraday_futures_cash_effect: None,
+            previous_day_cryptocurrency_fiat_effect: None,
+            unsettled_cryptocurrency_fiat_effect: None,
+            intraday_equities_cash_effective_date: None,
+            intraday_futures_cash_effective_date: None,
+            previous_date_cryptocurrency_fiat_effective_date: None,
+            snapshot_date: None,
+            currency: None,
+            time_of_day: None,
         };
 
         let serialized = serde_json::to_string(&balance).unwrap();
@@ -408,6 +617,46 @@ mod tests {
             pending_margin_interest: Decimal::from_str("0.00").unwrap(),
             effective_cryptocurrency_buying_power: Decimal::from_str("0.00").unwrap(),
             updated_at: DateTime::parse_from_rfc3339("2024-01-01T12:00:00Z").unwrap(),
+            apex_starting_day_margin_equity: None,
+            bond_margin_requirement: None,
+            buying_power_adjustment: None,
+            cash_settle_balance: None,
+            closed_loop_available_balance: None,
+            cryptocurrency_margin_requirement: None,
+            equity_offering_margin_requirement: None,
+            fixed_income_security_margin_requirement: None,
+            futures_intraday_margin_requirement: None,
+            futures_overnight_margin_requirement: None,
+            intraday_equities_cash_amount: None,
+            intraday_futures_cash_amount: None,
+            long_bond_value: None,
+            long_cryptocurrency_value: None,
+            long_fixed_income_security_value: None,
+            long_index_derivative_value: None,
+            maintenance_excess: None,
+            margin_settle_balance: None,
+            previous_day_cryptocurrency_fiat_amount: None,
+            reg_t_margin_requirement: None,
+            short_cryptocurrency_value: None,
+            short_index_derivative_value: None,
+            sma_equity_option_buying_power: None,
+            special_memorandum_account_apex_adjustment: None,
+            special_memorandum_account_value: None,
+            total_pending_liquidity_pool_rebate: None,
+            total_settle_balance: None,
+            unsettled_cryptocurrency_fiat_amount: None,
+            used_derivative_buying_power: None,
+            buying_power_adjustment_effect: None,
+            intraday_equities_cash_effect: None,
+            intraday_futures_cash_effect: None,
+            previous_day_cryptocurrency_fiat_effect: None,
+            unsettled_cryptocurrency_fiat_effect: None,
+            intraday_equities_cash_effective_date: None,
+            intraday_futures_cash_effective_date: None,
+            previous_date_cryptocurrency_fiat_effective_date: None,
+            snapshot_date: None,
+            currency: None,
+            time_of_day: None,
         };
 
         let debug_str = format!("{:?}", balance);

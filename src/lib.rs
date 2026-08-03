@@ -100,6 +100,53 @@
 //! }
 //! ```
 //!
+//! ## Account streaming
+//!
+//! The account websocket publishes a **full object** on every change — never a
+//! diff — for orders, balances, positions, quote alerts and tastytrade's
+//! public watchlists. The fills inside an order's `legs` are the only place an
+//! executed price reaches this crate: no REST endpoint returns one.
+//!
+//! ```rust,no_run
+//! use tastytrade::prelude::*;
+//!
+//! # async fn watch(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let streamer = tasty.create_account_streamer().await?;
+//! for account in &tasty.accounts().await? {
+//!     streamer.subscribe_to_account(account).await?;
+//! }
+//!
+//! match streamer.get_event().await? {
+//!     AccountEvent::Notification(notification) => match notification.payload {
+//!         NotificationPayload::Order(order) => {
+//!             for leg in &order.legs {
+//!                 for fill in &leg.fills {
+//!                     println!("{:?} at {:?}", fill.quantity, fill.fill_price);
+//!                 }
+//!             }
+//!         }
+//!         // A notification type this crate does not model yet still arrives,
+//!         // with its payload. Nothing is discarded.
+//!         NotificationPayload::Unsupported(payload) => {
+//!             println!("{} arrived untyped ({} bytes)", notification.kind, payload.len());
+//!         }
+//!         _ => {}
+//!     },
+//!     AccountEvent::Unknown(unknown) => println!("unplaceable: {:?}", unknown.kind),
+//!     _ => {}
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Anything that is JSON reaches the caller. A `type` nobody here recognises,
+//! a payload that does not match its model, and a frame that is neither a
+//! notification nor an acknowledgement all arrive with the payload intact —
+//! `RawPayload` renders as a byte count, so reading it takes
+//! [`RawPayload::expose`](prelude::RawPayload::expose) and is one grep away
+//! from an audit. Only bytes that are not JSON are dropped, and that is
+//! reported without the frame or the serde error.
+//!
 //! ## Environments
 //!
 //! `TastyTradeConfig::from_env` selects the **certification** environment by

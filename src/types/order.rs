@@ -1,5 +1,6 @@
 use crate::accounts::AccountNumber;
 use crate::types::instrument::InstrumentType;
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use derive_builder::Builder;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
@@ -257,12 +258,21 @@ pub struct LiveOrderRecord {
     pub size: Decimal,
     /// The symbol of the underlying asset being traded.
     pub underlying_symbol: Symbol,
-    /// The price of the order.  Uses `rust_decimal` for arbitrary precision
-    /// to avoid floating-point inaccuracies.
-    #[serde(with = "rust_decimal::serde::arbitrary_precision")]
-    pub price: Decimal,
-    /// The effect of the price on the account (Debit, Credit, or None).
-    pub price_effect: PriceEffect,
+    /// The price of the order, for order types that have one.
+    ///
+    /// `Option`, and it has to be: a market order has no price, and the
+    /// account streamer's own documented example is a filled market order with
+    /// no `price` field at all. A required `Decimal` here meant that
+    /// notification could not be decoded — the most common order type there
+    /// is, arriving on the socket that exists to report it.
+    ///
+    /// `Decimal` rather than `f64`, as everywhere money appears outside
+    /// `types::dxfeed`.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub price: Option<Decimal>,
+    /// Whether the price is a debit or a credit. Absent with `price`.
+    #[serde(default)]
+    pub price_effect: Option<PriceEffect>,
     /// The current status of the order (e.g., Live, Filled, Cancelled).
     pub status: OrderStatus,
     /// Indicates whether the order can be cancelled.
@@ -271,6 +281,137 @@ pub struct LiveOrderRecord {
     pub editable: bool,
     /// Indicates whether the order has been edited.
     pub edited: bool,
+
+    // The account streamer publishes a *full* order object on every status
+    // change, and the fills inside `legs` are the only place this crate ever
+    // sees an execution: there is no other endpoint or event that carries
+    // them. Everything below is what was being decoded and thrown away.
+    //
+    // All `Option`: the published schema marks nothing required, and an order
+    // that has not been routed yet has no `live-at`, one that was never
+    // rejected has no `reject-reason`. A required field the venue skips would
+    // fail the decode of an order notification entirely.
+    /// The legs of the order, each with the executions that filled it.
+    #[serde(default)]
+    pub legs: Vec<LiveOrderLeg>,
+
+    /// The instrument type of the underlying.
+    #[serde(default)]
+    pub underlying_instrument_type: Option<InstrumentType>,
+
+    /// The notional value of the order.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub value: Option<Decimal>,
+
+    /// Whether `value` is a debit or a credit.
+    #[serde(default)]
+    pub value_effect: Option<PriceEffect>,
+
+    /// How many legs the venue counts, as it reports it.
+    #[serde(default, with = "crate::types::wire::loose_string_option")]
+    pub leg_count: Option<String>,
+
+    /// Where the order came from, as the venue labels it.
+    #[serde(default)]
+    pub source: Option<String>,
+
+    /// Why the venue rejected the order, when it did.
+    ///
+    /// Venue prose. It can name the account, the instrument or the buying
+    /// power involved, so it belongs in front of a person and never in a log
+    /// line — the same rule dry-run warnings follow.
+    #[serde(default)]
+    pub reject_reason: Option<String>,
+
+    /// The state of a contingency attached to the order.
+    #[serde(default)]
+    pub contingent_status: Option<String>,
+
+    /// The stop trigger, for order types that have one.
+    #[serde(default)]
+    pub stop_trigger: Option<String>,
+
+    /// The good-till-cancelled expiry date, for GTD orders.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub gtc_date: Option<NaiveDate>,
+
+    /// The complex order this one belongs to, when it belongs to one.
+    #[serde(default)]
+    pub complex_order_id: Option<String>,
+
+    /// The tag of the complex order this one belongs to.
+    #[serde(default)]
+    pub complex_order_tag: Option<String>,
+
+    /// The order this one replaces.
+    #[serde(default)]
+    pub replaces_order_id: Option<String>,
+
+    /// The order that is replacing this one.
+    #[serde(default)]
+    pub replacing_order_id: Option<String>,
+
+    /// The venue's own identifier for the order.
+    #[serde(default)]
+    pub external_identifier: Option<String>,
+
+    /// The request that created the order, for correlating with a submission.
+    #[serde(default)]
+    pub global_request_id: Option<String>,
+
+    /// The pre-flight identifier, when the venue assigns one.
+    #[serde(default)]
+    pub preflight_id: Option<String>,
+
+    /// The user the order belongs to.
+    ///
+    /// Tolerant of both wire shapes: the swagger types it as a string and the
+    /// account-streaming guide's example shows `"user-id": 99`.
+    #[serde(default, with = "crate::types::wire::loose_string_option")]
+    pub user_id: Option<String>,
+
+    /// The username the order was placed under.
+    #[serde(default)]
+    pub username: Option<String>,
+
+    /// Who cancelled the order.
+    #[serde(default, with = "crate::types::wire::loose_string_option")]
+    pub cancel_user_id: Option<String>,
+
+    /// The username the cancellation was made under.
+    #[serde(default)]
+    pub cancel_username: Option<String>,
+
+    /// When the venue received the order.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub received_at: Option<DateTime<FixedOffset>>,
+
+    /// When the order was in flight to the exchange.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub in_flight_at: Option<DateTime<FixedOffset>>,
+
+    /// When the order went live on the exchange.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub live_at: Option<DateTime<FixedOffset>>,
+
+    /// When the order reached a terminal state.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub terminal_at: Option<DateTime<FixedOffset>>,
+
+    /// When the order was cancelled.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub cancelled_at: Option<DateTime<FixedOffset>>,
+
+    /// When the order last changed, as the venue reports it.
+    ///
+    /// `String` on purpose. The published schema says this is a string with
+    /// no format, and the account-streaming guide's own worked example shows
+    /// `"updated-at": 1688584052750` — an integer. Two sources, two shapes,
+    /// and no captured frame to settle it, so this keeps whatever arrived
+    /// rather than inventing a timezone for it. The neighbouring timestamps
+    /// are all `date-time` and are typed.
+    #[serde(default, with = "crate::types::wire::loose_string_option")]
+    pub updated_at: Option<String>,
 }
 
 /// Represents a leg of a live order.
@@ -296,9 +437,47 @@ pub struct LiveOrderLeg {
     pub remaining_quantity: Decimal,
     /// The action associated with this leg (e.g., Buy, Sell).
     pub action: Action,
-    /// A vector of strings representing fills for this leg.  Further
-    /// details on the contents are not documented.
-    pub fills: Vec<String>,
+    /// The executions that filled this leg.
+    ///
+    /// Was `Vec<String>`, which no real frame ever matched: a fill is an
+    /// object. The venue publishes one message per fill as each is processed,
+    /// so a leg routinely fills many times — a hundred one-share fills for a
+    /// hundred-share order is the documented example — and this is where the
+    /// prices are.
+    #[serde(default)]
+    pub fills: Vec<OrderFill>,
+}
+
+/// One execution against an order leg.
+///
+/// The only place an executed price reaches a caller of this crate. Everything
+/// is `Option` except the numbers that define the execution, because the
+/// published schema marks nothing required and a venue that omits an
+/// identifier must not cost the caller the price.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct OrderFill {
+    /// How much of the leg this execution filled.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub quantity: Option<Decimal>,
+    /// The price it filled at.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub fill_price: Option<Decimal>,
+    /// When it filled.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub filled_at: Option<DateTime<FixedOffset>>,
+    /// Where it filled.
+    #[serde(default)]
+    pub destination_venue: Option<String>,
+    /// The venue's identifier for this fill.
+    #[serde(default)]
+    pub fill_id: Option<String>,
+    /// The execution identifier the exchange assigned.
+    #[serde(default)]
+    pub ext_exec_id: Option<String>,
+    /// The group identifier the exchange assigned, for grouped fills.
+    #[serde(default)]
+    pub ext_group_fill_id: Option<String>,
 }
 
 /// Represents an order to be placed.

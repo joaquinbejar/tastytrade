@@ -7,6 +7,8 @@ use crate::TastyTradeError;
 use crate::accounts::AccountNumber;
 use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 use crate::types::balance::Balance;
+use crate::types::quote_alert::QuoteAlert;
+use crate::types::watchlist::Watchlist;
 use crate::{BriefPosition, LiveOrderRecord, TastyResult, TastyTrade, accounts::Account};
 use futures_util::{SinkExt, StreamExt};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
@@ -102,34 +104,115 @@ pub struct HandlerAction {
     ack: Option<oneshot::Sender<TastyResult<()>>>,
 }
 
-/// Represents a message related to an account.
+/// The account payload a notification carries.
 ///
-/// This enum uses the `serde` library's tagged enum representation.  The `type` field
-/// in the JSON will determine which variant is used.  The `data` field will contain
-/// the associated data for that variant.
-///
-/// # Examples
-///
-/// ```json
-/// {"type": "order", "data": { ... order data ... }}
-/// {"type": "account_balance", "data": { ... balance data ... }}
-/// {"type": "current_position", "data": { ... position data ... }}
-/// {"type": "order_chain", "data": null}
-/// {"type": "external_transaction", "data": null}
-/// ```
-#[derive(Deserialize, Debug)]
-#[serde(tag = "type", content = "data")]
-pub enum AccountMessage {
-    /// Represents a live order record.  Contains a `LiveOrderRecord` struct.
-    Order(LiveOrderRecord),
-    /// Represents the account balance. Contains a `Balance` struct.
+/// One variant per notification the four documented actions produce, plus one
+/// for everything else. `Unsupported` is not a failure: it means the frame
+/// arrived, its `type` is known to exist, and no captured frame has
+/// established the schema — so the payload is kept rather than discarded, and
+/// the caller can look at it.
+#[derive(Debug)]
+pub enum NotificationPayload {
+    /// A full order object, published on every status change.
+    ///
+    /// The only place an executed price reaches a caller of this crate: fills
+    /// live inside `legs` and no REST endpoint returns them.
+    Order(Box<LiveOrderRecord>),
+    /// A full account balance.
     AccountBalance(Box<Balance>),
-    /// Represents the current position. Contains a `BriefPosition` struct.
+    /// One position, as it now stands.
     CurrentPosition(Box<BriefPosition>),
-    /// Represents an order chain.  Currently has no associated data.
-    OrderChain,
-    /// Represents an external transaction.  Currently has no associated data.
-    ExternalTransaction,
+    /// A quote alert the customer configured, and the venue fired.
+    QuoteAlert(Box<QuoteAlert>),
+    /// One of tastytrade's curated watchlists, as it now stands.
+    PublicWatchlist(Box<Watchlist>),
+    /// A notification whose `type` this crate recognises but does not model,
+    /// or one whose payload did not decode.
+    ///
+    /// Both cases keep the payload. Discarding it was the old behaviour and it
+    /// is the one thing a caller cannot recover from.
+    Unsupported(RawPayload),
+}
+
+/// One notification from the account websocket.
+///
+/// The venue publishes a full object on every change, never a diff, so each of
+/// these is a complete picture rather than something to merge into a previous
+/// one.
+#[derive(Debug)]
+pub struct AccountNotification {
+    /// The wire `type`, exactly as it arrived.
+    ///
+    /// Present even for the modelled variants: it is what a log line can name
+    /// safely, and what tells two `Unsupported` payloads apart.
+    pub kind: String,
+    /// When the venue published it, in epoch milliseconds.
+    pub timestamp: Option<i64>,
+    /// What it is about.
+    pub payload: NotificationPayload,
+}
+
+/// A frame this crate could not place.
+///
+/// Reached when the `type` is one nothing here recognises, or when the frame
+/// is neither a notification nor a status message. The payload is kept: a
+/// notification type added by the venue tomorrow arrives as one of these, and
+/// a caller who knows what it is can read it.
+#[derive(Debug)]
+pub struct UnknownEvent {
+    /// The `type` field, when the frame had one.
+    pub kind: Option<String>,
+    /// The `action` field, when the frame had one.
+    pub action: Option<String>,
+    /// The whole frame.
+    pub payload: RawPayload,
+}
+
+/// JSON this crate did not model, kept without being made easy to leak.
+///
+/// Account frames carry account numbers, balances and venue prose. The value
+/// belongs to the caller — it is their own account data — but it must not
+/// travel by accident, so `Debug` and `Display` render a byte count and
+/// nothing else, and there is no `Serialize`. Reading it takes
+/// [`RawPayload::expose`], which is one grep away from an audit.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawPayload(String);
+
+impl RawPayload {
+    /// Wraps `json`.
+    pub(crate) fn new(json: impl Into<String>) -> Self {
+        Self(json.into())
+    }
+
+    /// The JSON text.
+    ///
+    /// Every call is a place account data can leave the process. There is one
+    /// in this crate — none — and a caller adding one is choosing to.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// How many bytes it is. Safe to log; the contents are not.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there is nothing in it.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for RawPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RawPayload(<redacted, {} bytes>)", self.0.len())
+    }
+}
+
+impl std::fmt::Display for RawPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<redacted, {} bytes>", self.0.len())
+    }
 }
 
 /// Represents a status message received from the API.
@@ -141,23 +224,39 @@ pub enum AccountMessage {
 ///
 /// ```json
 /// {
-///     "status": "success",
-///     "action": "subscribe",
-///     "web-socket-session-id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
-///     "request-id": 12345
+///     "status": "ok",
+///     "action": "connect",
+///     "web-socket-session-id": "5b6e2799",
+///     "value": ["5WT00000"],
+///     "request-id": 2
 /// }
 /// ```
 #[derive(Deserialize, DebugPretty, DisplaySimple, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct StatusMessage {
-    /// The status of the request (e.g., "success", "error").
+    /// The status of the request. `ok` for an accepted action.
     pub status: String,
-    /// The action performed (e.g., "subscribe", "unsubscribe").
+    /// The action performed, such as `connect` or `heartbeat`.
     pub action: String,
     /// The ID of the WebSocket session.
-    pub web_socket_session_id: String,
-    /// The unique identifier for the request.
-    pub request_id: u64,
+    ///
+    /// `Option` because it is the venue's to send, and a frame that omits it
+    /// is still an acknowledgement.
+    #[serde(default)]
+    pub web_socket_session_id: Option<String>,
+    /// The identifier the request carried, echoed back.
+    ///
+    /// **`Option`, and that is the fix.** `request-id` is optional on the way
+    /// out and the venue only echoes one it was given. This crate sends none,
+    /// so it never came back — and a required `u64` here meant every status
+    /// frame failed to deserialize, fell through the untagged enum, and was
+    /// dropped with a warning. Acknowledgements were invisible.
+    #[serde(default)]
+    pub request_id: Option<u64>,
+    /// What the action applied to, echoed back. `connect` returns the account
+    /// numbers it subscribed.
+    #[serde(default)]
+    pub value: Option<Vec<AccountNumber>>,
 }
 
 /// Represents an error message received from the API.
@@ -172,25 +271,32 @@ pub struct ErrorMessage {
     /// The action that caused the error.
     pub action: String,
     /// The ID of the WebSocket session where the error occurred.
-    pub web_socket_session_id: String,
+    #[serde(default)]
+    pub web_socket_session_id: Option<String>,
     /// A human-readable description of the error.
+    ///
+    /// Venue prose. It can name an account or a subscription, so it goes in
+    /// front of a person and never into a log line.
     pub message: String,
 }
 
 /// Represents the different types of events that can be received from the account streaming API.
 ///
-/// This enum uses `serde`'s untagged enum representation.  This means the
-/// deserialization will try each variant in order until one matches.
-#[derive(Deserialize, Debug)]
-#[serde(untagged)]
+/// Decoded by looking at which fields the frame has, not by trying variants
+/// until one sticks. The untagged version could not tell "a type this crate
+/// does not model" from "a frame that is not JSON": both came out as a decode
+/// failure and the event was dropped. A dropped event on this socket is a fill
+/// the caller never hears about.
+#[derive(Debug)]
 pub enum AccountEvent {
-    /// Represents an error message received from the API.
+    /// The venue refused an action.
     ErrorMessage(ErrorMessage),
-    /// Represents a status message received from the API.
+    /// The venue acknowledged an action.
     StatusMessage(StatusMessage),
-    /// Represents an account-related message received from the API.  This variant
-    /// is boxed to reduce the size of the `AccountEvent` enum.
-    AccountMessage(Box<AccountMessage>),
+    /// An account notification.
+    Notification(Box<AccountNotification>),
+    /// A frame this crate could not place, kept rather than discarded.
+    Unknown(UnknownEvent),
 }
 
 /// Which transport an [`AccountStreamer`] is using.
@@ -475,6 +581,20 @@ impl AccountStreamer {
         })?
     }
 
+    /// Decodes one account frame without a socket.
+    ///
+    /// The same function the read loop uses. Public because "what does this
+    /// crate do with a frame it does not model" is a question worth being able
+    /// to answer without a connection, and because a caller replaying captured
+    /// frames should get exactly the routing the live path gets.
+    ///
+    /// Returns `None` only when the bytes are not JSON. Everything else
+    /// arrives as an [`AccountEvent`], with the payload kept even when nothing
+    /// here can type it.
+    pub fn decode_frame(data: &[u8]) -> Option<AccountEvent> {
+        decode_account_frame(data)
+    }
+
     /// Receives the next account event asynchronously.
     ///
     /// This method attempts to receive the next `AccountEvent` from the internal event receiver.
@@ -560,12 +680,10 @@ async fn resubscribe(
     actions: &flume::Sender<HandlerAction>,
     subscribed: &Arc<Mutex<BTreeSet<AccountNumber>>>,
 ) -> bool {
-    let accounts: Vec<AccountNumber> = {
-        let guard = subscribed
-            .lock()
-            .expect("subscription set is never poisoned");
-        guard.iter().cloned().collect()
-    };
+    // Through `subscribed_of`, which recovers a poisoned lock. An `expect`
+    // here would abort the caller's process over a set of account numbers a
+    // panicking thread cannot have left in an unreadable state.
+    let accounts: Vec<AccountNumber> = subscribed_of(subscribed).iter().cloned().collect();
 
     for account in accounts {
         let (ack, answered) = oneshot::channel();
@@ -769,16 +887,47 @@ fn report(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()
     }
 }
 
+/// Notification types this crate recognises but does not model.
+///
+/// They are real — the venue publishes them, and other clients decode them —
+/// but no captured frame here establishes their schema, and guessing one from
+/// a field list produces a type that fails to decode the day it is wrong.
+/// Naming them separately from the genuinely unknown is what lets a caller
+/// tell "we have not typed this yet" from "the venue added something".
+const OBSERVED_BUT_UNTYPED: [&str; 6] = [
+    // Present in this crate's subscription actions but not in the venue's
+    // current documentation.
+    "UserMessage",
+    // Legacy or observed variants. The old code had arms for the first two
+    // that carried no data at all, so the payload was discarded outright.
+    "OrderChain",
+    "ExternalTransaction",
+    "ComplexOrder",
+    "TradingStatus",
+    "UnderlyingYearGainSummary",
+];
+
 /// Decodes one account frame, reporting a failure without its contents.
 ///
 /// Split out so the privacy rule is testable without a socket. `serde_json`'s
 /// `Display` renders the rejected value on a type mismatch, so an account
 /// number in a frame would land in the log through the error itself — the
 /// same trap this crate closed on the REST path.
+///
+/// Returns `None` only when the bytes are not JSON at all. Everything that
+/// *is* JSON reaches the caller: a notification if the `type` is one this
+/// crate models, an acknowledgement if it looks like one, and an
+/// [`AccountEvent::Unknown`] carrying the frame otherwise. The old
+/// implementation asked serde to try three variants and dropped the frame when
+/// none matched, which silently swallowed every status message — none of them
+/// echo the `request-id` this crate never sends — along with any notification
+/// type it did not model.
 fn decode_account_frame(data: &[u8]) -> Option<AccountEvent> {
-    match serde_json::from_slice::<AccountEvent>(data) {
-        Ok(event) => Some(event),
+    let frame = match serde_json::from_slice::<serde_json::Value>(data) {
+        Ok(frame) => frame,
         Err(e) => {
+            // Classification, position and size. Never the error's own
+            // rendering, which quotes the value it rejected.
             warn!(
                 "Skipping an unreadable account frame ({} bytes): {:?} error at line {}, column {}",
                 data.len(),
@@ -787,9 +936,136 @@ fn decode_account_frame(data: &[u8]) -> Option<AccountEvent> {
                 e.column()
             );
             debug!("account frame decode error: {e}");
-            None
+            return None;
+        }
+    };
+
+    let kind = frame
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let action = frame
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    if let Some(kind) = kind {
+        return Some(decode_notification(kind, &frame));
+    }
+
+    // No `type`, so it is an acknowledgement or a refusal. The venue
+    // distinguishes them with `status`.
+    if let Some(status) = frame.get("status").and_then(serde_json::Value::as_str) {
+        let decoded = if status.eq_ignore_ascii_case("error") {
+            serde_json::from_value::<ErrorMessage>(frame.clone()).map(AccountEvent::ErrorMessage)
+        } else {
+            serde_json::from_value::<StatusMessage>(frame.clone()).map(AccountEvent::StatusMessage)
+        };
+
+        return Some(match decoded {
+            Ok(event) => event,
+            Err(e) => {
+                // Still delivered. An acknowledgement this crate cannot shape
+                // is worth less than one it can, and more than nothing.
+                warn!(
+                    "An account status frame did not match its shape ({} bytes, status {:?}): \
+                     {:?} error at line {}, column {}",
+                    data.len(),
+                    status,
+                    e.classify(),
+                    e.line(),
+                    e.column()
+                );
+                unknown_event(None, action, data)
+            }
+        });
+    }
+
+    debug!(
+        "An account frame carried neither a type nor a status ({} bytes)",
+        data.len()
+    );
+    Some(unknown_event(None, action, data))
+}
+
+/// Places one `type`d frame, keeping the payload whatever happens.
+fn decode_notification(kind: String, frame: &serde_json::Value) -> AccountEvent {
+    let timestamp = frame.get("timestamp").and_then(serde_json::Value::as_i64);
+    // `data` is where the venue puts the object. A frame that has a `type` and
+    // no `data` is still a notification; it just has nothing in it.
+    let data = frame
+        .get("data")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let payload = match kind.as_str() {
+        "Order" => typed(&kind, &data, NotificationPayload::Order),
+        "AccountBalance" => typed(&kind, &data, NotificationPayload::AccountBalance),
+        "CurrentPosition" => typed(&kind, &data, NotificationPayload::CurrentPosition),
+        "QuoteAlert" => typed(&kind, &data, NotificationPayload::QuoteAlert),
+        "PublicWatchlists" => typed(&kind, &data, NotificationPayload::PublicWatchlist),
+        other if OBSERVED_BUT_UNTYPED.contains(&other) => {
+            debug!("Delivering an untyped {other} notification without decoding its payload");
+            NotificationPayload::Unsupported(raw(&data))
+        }
+        other => {
+            // A type the venue added. Naming it is safe; the payload is not,
+            // so it travels in the event rather than in this line.
+            debug!("Delivering an unrecognised {other} notification as an untyped payload");
+            NotificationPayload::Unsupported(raw(&data))
+        }
+    };
+
+    AccountEvent::Notification(Box::new(AccountNotification {
+        kind,
+        timestamp,
+        payload,
+    }))
+}
+
+/// Decodes `data` into `T`, falling back to the raw payload rather than
+/// dropping the notification.
+///
+/// A model that has drifted from the wire is this crate's defect, and making
+/// the caller lose a fill over it is the wrong trade. The type name and the
+/// serde classification say what to fix; the payload goes to the caller.
+fn typed<T, F>(kind: &str, data: &serde_json::Value, wrap: F) -> NotificationPayload
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce(Box<T>) -> NotificationPayload,
+{
+    match serde_json::from_value::<T>(data.clone()) {
+        Ok(value) => wrap(Box::new(value)),
+        Err(e) => {
+            warn!(
+                "A {kind} notification did not match its model ({:?} error at line {}, column {}); \
+                 delivering the payload untyped",
+                e.classify(),
+                e.line(),
+                e.column()
+            );
+            debug!("{kind} payload decode error: {e}");
+            NotificationPayload::Unsupported(raw(data))
         }
     }
+}
+
+/// The JSON text of a value, for a payload this crate is not modelling.
+fn raw(data: &serde_json::Value) -> RawPayload {
+    // Re-serialising a Value cannot fail for anything that came out of a
+    // parse, but a library does not get to assume that: an empty payload is a
+    // worse answer than a wrong one only if it pretends otherwise, and
+    // `RawPayload` reports its own length.
+    RawPayload::new(serde_json::to_string(data).unwrap_or_default())
+}
+
+/// An unknown frame, carrying the bytes exactly as they arrived.
+fn unknown_event(kind: Option<String>, action: Option<String>, data: &[u8]) -> AccountEvent {
+    AccountEvent::Unknown(UnknownEvent {
+        kind,
+        action,
+        payload: RawPayload::new(String::from_utf8_lossy(data).into_owned()),
+    })
 }
 
 impl TastyTrade {
@@ -898,8 +1174,12 @@ mod frame_privacy_tests {
     /// The trap this crate already closed once on the REST path: a type
     /// mismatch renders the rejected value inside the serde error, so logging
     /// the error is logging the account data.
+    ///
+    /// The frame is now *delivered* rather than dropped — losing an order
+    /// notification because one field drifted is the worse failure — but the
+    /// log rule is unchanged.
     #[test]
-    fn an_unreadable_frame_never_logs_its_contents_at_warn() {
+    fn a_frame_that_does_not_match_its_model_never_logs_its_contents_at_warn() {
         // `status` wants a string; a number there makes serde quote the
         // neighbouring context, and the frame carries an account number.
         let frame = format!(
@@ -908,15 +1188,41 @@ mod frame_privacy_tests {
 
         let (event, logs) = decode_capturing(frame.as_bytes(), Level::WARN);
 
-        assert!(event.is_none(), "the frame must not decode");
+        let Some(AccountEvent::Notification(notification)) = event else {
+            panic!("a typed frame that does not decode is still a notification");
+        };
+        assert_eq!(notification.kind, "Order");
+        let NotificationPayload::Unsupported(payload) = &notification.payload else {
+            panic!("the payload could not be modelled, so it travels untyped");
+        };
+        assert!(
+            payload.expose().contains(ACCOUNT_NUMBER),
+            "the payload must reach the caller intact"
+        );
+
         assert!(
             !logs.contains(ACCOUNT_NUMBER),
             "the account number reached the logs:\n{logs}"
         );
         assert!(
-            logs.contains("bytes)") && logs.contains("error at line"),
+            logs.contains("error at line"),
             "the failure must still be diagnosable:\n{logs}"
         );
+    }
+
+    /// The payload is the caller's own account data, so they may read it — but
+    /// only on purpose. Rendering it must cost nothing but a byte count.
+    #[test]
+    fn a_raw_payload_does_not_render_itself() {
+        let payload = RawPayload::new(format!(r#"{{"account-number":"{ACCOUNT_NUMBER}"}}"#));
+
+        for rendered in [format!("{payload:?}"), format!("{payload}")] {
+            assert!(!rendered.contains(ACCOUNT_NUMBER), "{rendered}");
+            assert!(rendered.contains("redacted"), "{rendered}");
+            assert!(rendered.contains(&payload.len().to_string()), "{rendered}");
+        }
+        assert!(payload.expose().contains(ACCOUNT_NUMBER));
+        assert!(!payload.is_empty());
     }
 
     #[test]
@@ -924,10 +1230,260 @@ mod frame_privacy_tests {
         let frame = br#"{ not json at all"#;
         let (event, logs) = decode_capturing(frame, Level::DEBUG);
 
-        assert!(event.is_none());
+        assert!(event.is_none(), "bytes that are not JSON are not an event");
         assert!(
             logs.contains("decode error"),
             "DEBUG keeps the full error:\n{logs}"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_routing_tests {
+    use super::*;
+
+    const ACCOUNT_NUMBER: &str = "SENTINEL-5WX00042";
+
+    fn decode(frame: &str) -> AccountEvent {
+        decode_account_frame(frame.as_bytes()).expect("valid JSON is always an event")
+    }
+
+    /// The documented `connect` notification, verbatim from the account
+    /// streaming guide, with the account number replaced by a sentinel.
+    ///
+    /// The fills inside `legs` are the reason this matters: no REST endpoint
+    /// in this crate returns an execution, so this frame is the only place a
+    /// caller ever learns what they paid.
+    #[test]
+    fn the_documented_order_notification_decodes_with_its_fills() {
+        let frame = format!(
+            r#"{{
+              "type": "Order",
+              "data": {{
+                "id": 1,
+                "account-number": "{ACCOUNT_NUMBER}",
+                "time-in-force": "Day",
+                "order-type": "Market",
+                "size": 100,
+                "underlying-symbol": "AAPL",
+                "underlying-instrument-type": "Equity",
+                "price": "100.0",
+                "price-effect": "Debit",
+                "status": "Filled",
+                "cancellable": false,
+                "editable": false,
+                "edited": false,
+                "received-at": "2023-07-05T19:07:32.444+00:00",
+                "updated-at": 1688584052750,
+                "live-at": "2023-07-05T19:07:32.495+00:00",
+                "terminal-at": "2023-07-05T19:07:32.737+00:00",
+                "destination-venue": "TEST_A",
+                "user-id": "99",
+                "username": "coolperson",
+                "legs": [
+                  {{
+                    "instrument-type": "Equity",
+                    "symbol": "AAPL",
+                    "quantity": 100,
+                    "remaining-quantity": 0,
+                    "action": "Buy to Open",
+                    "fills": [
+                      {{
+                        "ext-group-fill-id": "0",
+                        "ext-exec-id": "1122",
+                        "fill-id": "24_TW::TEST_A47504::20230705.1179-TEST_FILL",
+                        "quantity": 100,
+                        "fill-price": "100.0",
+                        "filled-at": "2023-07-05T19:07:32.496+00:00",
+                        "destination-venue": "TEST_A"
+                      }}
+                    ]
+                  }}
+                ]
+              }},
+              "timestamp": 1688595114405
+            }}"#
+        );
+
+        let AccountEvent::Notification(notification) = decode(&frame) else {
+            panic!("a documented order notification must be a notification");
+        };
+        assert_eq!(notification.kind, "Order");
+        assert_eq!(notification.timestamp, Some(1_688_595_114_405));
+
+        let NotificationPayload::Order(order) = notification.payload else {
+            panic!("the Order payload must be typed");
+        };
+        assert_eq!(order.legs.len(), 1, "the legs used to be discarded");
+        let fill = &order.legs[0].fills[0];
+        assert_eq!(
+            fill.fill_price,
+            Some(rust_decimal::Decimal::new(1000, 1)),
+            "the fill price is the whole point of the frame"
+        );
+        assert_eq!(fill.destination_venue.as_deref(), Some("TEST_A"));
+        assert!(fill.filled_at.is_some());
+        // Two sources disagree about this one, so both shapes survive.
+        assert_eq!(order.updated_at.as_deref(), Some("1688584052750"));
+        assert!(order.received_at.is_some());
+        assert!(order.reject_reason.is_none());
+    }
+
+    /// A market order has no price. The venue's own worked example is one,
+    /// and a required `price` meant that notification — the commonest order
+    /// type there is — could not be decoded at all.
+    #[test]
+    fn a_market_order_notification_without_a_price_decodes() {
+        let frame = format!(
+            r#"{{"type":"Order","data":{{
+                 "id": 1,
+                 "account-number": "{ACCOUNT_NUMBER}",
+                 "time-in-force": "Day",
+                 "order-type": "Market",
+                 "size": 100,
+                 "underlying-symbol": "AAPL",
+                 "status": "Routed",
+                 "cancellable": true,
+                 "editable": true,
+                 "edited": false,
+                 "user-id": 99,
+                 "leg-count": 1
+               }}}}"#
+        );
+
+        let AccountEvent::Notification(notification) = decode(&frame) else {
+            panic!("a market order is a notification");
+        };
+        let NotificationPayload::Order(order) = notification.payload else {
+            panic!("a market order must be typed, not delivered raw");
+        };
+        assert!(order.price.is_none(), "a market order has no price");
+        assert!(order.price_effect.is_none());
+        // Numeric where the schema says string: both shapes reach the caller.
+        assert_eq!(order.user_id.as_deref(), Some("99"));
+        assert_eq!(order.leg_count.as_deref(), Some("1"));
+    }
+
+    /// The regression that made acknowledgements invisible: `request-id` is
+    /// optional on the way out, this crate sends none, so none ever came back
+    /// — and a required `u64` meant every status frame failed the untagged
+    /// decode and was dropped with a warning.
+    #[test]
+    fn a_connect_acknowledgement_without_a_request_id_is_delivered() {
+        let frame = format!(
+            r#"{{"status":"ok","action":"connect","web-socket-session-id":"5b6e2799",
+                 "value":["{ACCOUNT_NUMBER}"]}}"#
+        );
+
+        let AccountEvent::StatusMessage(status) = decode(&frame) else {
+            panic!("an acknowledgement must reach the caller");
+        };
+        assert_eq!(status.action, "connect");
+        assert_eq!(status.status, "ok");
+        assert_eq!(status.request_id, None);
+        assert_eq!(
+            status.value.map(|accounts| accounts[0].0.clone()),
+            Some(ACCOUNT_NUMBER.to_string()),
+            "connect echoes what it subscribed"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_an_error_message() {
+        let frame = r#"{"status":"error","action":"connect","web-socket-session-id":"5b6e2799",
+                        "message":"connect-not-completed"}"#;
+
+        let AccountEvent::ErrorMessage(error) = decode(frame) else {
+            panic!("a refusal must be an error message");
+        };
+        assert_eq!(error.message, "connect-not-completed");
+    }
+
+    /// A notification type the venue adds tomorrow. It must reach the caller
+    /// with its name and its payload rather than being dropped.
+    #[test]
+    fn an_unrecognised_type_arrives_as_an_untyped_payload() {
+        let frame = format!(
+            r#"{{"type":"SomethingNew","data":{{"account-number":"{ACCOUNT_NUMBER}"}},
+                 "timestamp":1}}"#
+        );
+
+        let AccountEvent::Notification(notification) = decode(&frame) else {
+            panic!("an unrecognised type is still a notification");
+        };
+        assert_eq!(notification.kind, "SomethingNew");
+        let NotificationPayload::Unsupported(payload) = &notification.payload else {
+            panic!("there is no model for it, so it travels untyped");
+        };
+        assert!(payload.expose().contains(ACCOUNT_NUMBER));
+    }
+
+    /// The variants the old code had arms for that carried no data at all:
+    /// the payload was parsed and thrown away. They are preserved now,
+    /// untyped, until a captured frame establishes a schema.
+    #[test]
+    fn an_observed_but_untyped_notification_keeps_its_payload() {
+        for kind in OBSERVED_BUT_UNTYPED {
+            let frame =
+                format!(r#"{{"type":"{kind}","data":{{"account-number":"{ACCOUNT_NUMBER}"}}}}"#);
+
+            let AccountEvent::Notification(notification) = decode(&frame) else {
+                panic!("{kind} must still be a notification");
+            };
+            assert_eq!(notification.kind, kind);
+            let NotificationPayload::Unsupported(payload) = &notification.payload else {
+                panic!("{kind} has no captured frame, so it must not claim a type");
+            };
+            assert!(
+                payload.expose().contains(ACCOUNT_NUMBER),
+                "{kind} discarded its payload"
+            );
+        }
+    }
+
+    /// A frame that is neither typed nor a status message. Previously a decode
+    /// failure and a dropped event.
+    #[test]
+    fn a_frame_that_is_neither_reaches_the_caller_as_unknown() {
+        let AccountEvent::Unknown(unknown) = decode(r#"{"something":"else"}"#) else {
+            panic!("an unplaceable frame must still be delivered");
+        };
+        assert_eq!(unknown.kind, None);
+        assert!(unknown.payload.expose().contains("something"));
+    }
+
+    #[test]
+    fn a_quote_alert_and_a_public_watchlist_are_typed() {
+        let AccountEvent::Notification(alert) = decode(
+            r#"{"type":"QuoteAlert","data":{"symbol":"AAPL","threshold-numeric":"200.00"}}"#,
+        ) else {
+            panic!("a quote alert is a notification");
+        };
+        assert!(matches!(alert.payload, NotificationPayload::QuoteAlert(_)));
+
+        let AccountEvent::Notification(watchlist) = decode(
+            r#"{"type":"PublicWatchlists","data":{"name":"High Options Volume",
+                 "watchlist-entries":[{"symbol":"AAPL"}]}}"#,
+        ) else {
+            panic!("a watchlist is a notification");
+        };
+        let NotificationPayload::PublicWatchlist(list) = watchlist.payload else {
+            panic!("the watchlist payload must be typed");
+        };
+        assert_eq!(list.watchlist_entries.len(), 1);
+    }
+
+    /// A `type` with no `data` is still a notification. Treating the missing
+    /// payload as a decode failure would drop it.
+    #[test]
+    fn a_typed_frame_without_a_payload_is_still_delivered() {
+        let AccountEvent::Notification(notification) = decode(r#"{"type":"OrderChain"}"#) else {
+            panic!("a bare type is still a notification");
+        };
+        assert_eq!(notification.kind, "OrderChain");
+        assert!(matches!(
+            notification.payload,
+            NotificationPayload::Unsupported(_)
+        ));
     }
 }

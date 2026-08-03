@@ -34,12 +34,17 @@ pub use crate::api::accounts::{
 
 // Re-export order types
 pub use crate::types::order::{
-    Action, AsSymbol, LiveOrderRecord, Order, OrderBuilder, OrderId, OrderLeg, OrderLegBuilder,
-    OrderPlacedResult, OrderStatus, OrderType, PriceEffect, Symbol, TimeInForce,
+    Action, AsSymbol, LiveOrderLeg, LiveOrderRecord, Order, OrderBuilder, OrderFill, OrderId,
+    OrderLeg, OrderLegBuilder, OrderPlacedResult, OrderStatus, OrderType, PriceEffect, Symbol,
+    TimeInForce,
 };
 
 // Re-export position types
 pub use crate::types::position::{BriefPosition, FullPosition, QuantityDirection};
+
+// Re-export the payload types the account streamer shares with REST
+pub use crate::types::quote_alert::QuoteAlert;
+pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
 
 // Re-export balance types
 pub use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
@@ -60,7 +65,8 @@ pub use crate::types::dxfeed::*;
 
 // Re-export streaming types
 pub use crate::streaming::account_streaming::{
-    AccountEvent, AccountMessage, AccountStreamer, AccountTransport, ErrorMessage, StatusMessage,
+    AccountEvent, AccountNotification, AccountStreamer, AccountTransport, ErrorMessage,
+    NotificationPayload, RawPayload, StatusMessage, SubRequestAction, UnknownEvent,
 };
 pub use crate::streaming::quote_streamer::{QuoteStreamer, QuoteSubscription};
 pub use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};

@@ -1,5 +1,6 @@
-use super::order::{PriceEffect, Symbol};
+use super::order::{OrderId, PriceEffect, Symbol};
 use crate::accounts::AccountNumber;
+use crate::api::quote_streaming::DxFeedSymbol;
 use crate::types::instrument::InstrumentType;
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
@@ -146,6 +147,83 @@ pub struct BriefPosition {
     /// The timestamp of when the position was created.
     #[serde(with = "crate::types::wire::datetime")]
     pub created_at: DateTime<FixedOffset>,
+
+    // Everything below is `Option`. The published schema marks no position
+    // field required, and which of them the venue sends depends on the
+    // instrument: an equity has no `expires-at`, a future has no
+    // `deliverable-type`. A required field the venue skips would fail the
+    // whole decode, which on the streaming path means a position notification
+    // silently becoming an unreadable frame.
+    //
+    // `default` is not redundant next to `with`: an explicit `with` cancels
+    // serde's implicit "absent Option is None".
+    /// The instrument's streaming name, when it has one.
+    ///
+    /// Not always the same string as `symbol`; see
+    /// [`crate::TastyTrade::get_streamer_symbol`].
+    #[serde(default)]
+    pub streamer_symbol: Option<DxFeedSymbol>,
+
+    /// The average closing price over the trailing day window.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub average_daily_market_close_price: Option<Decimal>,
+
+    /// The average closing price over the trailing year window.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub average_yearly_market_close_price: Option<Decimal>,
+
+    /// The mark, as the venue values the position.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub mark: Option<Decimal>,
+
+    /// The price the mark was computed from.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub mark_price: Option<Decimal>,
+
+    /// Face value, for instruments that have one.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub face_value: Option<Decimal>,
+
+    /// The fixing price, for instruments that settle against one.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub fixing_price: Option<Decimal>,
+
+    /// Par size, for instruments quoted against one.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub par_size: Option<Decimal>,
+
+    /// What the position delivers at expiration, when it delivers something.
+    #[serde(default)]
+    pub deliverable_type: Option<String>,
+
+    /// What produced this update, when the venue says.
+    #[serde(default)]
+    pub update_type: Option<String>,
+
+    /// The order that opened the position, when one did.
+    #[serde(default)]
+    pub order_id: Option<OrderId>,
+
+    /// When the instrument expires, for those that do.
+    #[serde(default, with = "crate::types::wire::datetime_option")]
+    pub expires_at: Option<DateTime<FixedOffset>>,
+
+    /// Whether the realized day gain is a debit or a credit.
+    #[serde(default)]
+    pub realized_day_gain_effect: Option<PriceEffect>,
+
+    /// The calendar day the realized day gain belongs to.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub realized_day_gain_date: Option<NaiveDate>,
+
+    /// Whether today's realized amount is a debit or a credit.
+    #[serde(default)]
+    pub realized_today_effect: Option<PriceEffect>,
+
+    /// The calendar day today's realized amount belongs to.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub realized_today_date: Option<NaiveDate>,
+
     /// The timestamp of when the position was last updated.
     #[serde(with = "crate::types::wire::datetime")]
     pub updated_at: DateTime<FixedOffset>,
