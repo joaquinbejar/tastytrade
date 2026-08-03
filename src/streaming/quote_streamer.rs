@@ -570,7 +570,13 @@ struct Subscriber {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CandleResume {
     /// The last bar handed to the consumer with nothing missing before it.
-    through: i64,
+    ///
+    /// `Option`, and that is not cosmetic: a series whose **first** bar was
+    /// dropped has no delivered bar to resume from, and seeding this with the
+    /// dropped bar's own time would move the resume point past a bar the
+    /// consumer never received — the exact failure the contiguity rule exists
+    /// to prevent, at the one boundary where it is easiest to miss.
+    through: Option<i64>,
     /// Whether a bar has been dropped since. While this is set, `through`
     /// stops advancing, so the reconnect asks for everything from the last
     /// known-good bar and the gap is refilled.
@@ -926,6 +932,12 @@ impl QuoteStreamer {
         // read its targets and its identity. Its event channel is closed from
         // the start rather than being fed into a void: a receiver nobody can
         // reach should say so if anybody ever asks it.
+        //
+        // The lag counter is the **same** `Arc` the caller holds, not a fresh
+        // one. A private counter here would make `get_sub(id).lagged()` report
+        // zero however far behind the caller's subscription had fallen — a
+        // number that is worse than no number, because it looks like an
+        // answer.
         let (_closed, closed_rx) = mpsc::channel(1);
         self.subscription_map.insert(
             id,
@@ -936,7 +948,7 @@ impl QuoteStreamer {
                 event_receiver: event_receiver.clone(),
                 dxlink_receiver: closed_rx,
                 targets: targets.clone(),
-                lagged: Arc::new(AtomicU64::new(0)),
+                lagged: lagged.clone(),
             },
         );
 
@@ -1237,10 +1249,13 @@ async fn forward_events(
 /// nothing downstream can see.
 fn record_bar(progress: &CandleProgress, sub_id: u32, symbol: &str, time: i64, complete: bool) {
     let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    // Nothing delivered yet, so nothing to resume past. A new entry starts
+    // empty rather than at this bar's time: if this bar was dropped, seeding
+    // it here would skip it forever.
     let resume = seen
         .entry((sub_id, symbol.to_string()))
         .or_insert(CandleResume {
-            through: time,
+            through: None,
             gap: false,
         });
 
@@ -1249,7 +1264,10 @@ fn record_bar(progress: &CandleProgress, sub_id: u32, symbol: &str, time: i64, c
         return;
     }
     if !resume.gap {
-        resume.through = resume.through.max(time);
+        resume.through = Some(match resume.through {
+            Some(through) => through.max(time),
+            None => time,
+        });
     }
 }
 
@@ -1362,10 +1380,15 @@ fn resume_from(
     if target.kind != EventKind::Candle {
         return target;
     }
-    if let Some(resume) = seen.get(&(sub_id, target.symbol.clone())) {
+    // Only a bar that was actually delivered moves the start. A series that
+    // has only ever dropped bars keeps the caller's own `from_time`, so the
+    // reconnect asks for the whole thing again.
+    if let Some(resume) = seen.get(&(sub_id, target.symbol.clone()))
+        && let Some(through) = resume.through
+    {
         target.from_time = Some(match target.from_time {
-            Some(original) => original.max(resume.through.saturating_add(1)),
-            None => resume.through.saturating_add(1),
+            Some(original) => original.max(through.saturating_add(1)),
+            None => through.saturating_add(1),
         });
     }
     target
@@ -2715,7 +2738,7 @@ mod reconnect_tests {
         let seen = progress.lock().expect("not poisoned in tests").clone();
         assert_eq!(
             seen.get(&(1, five.streamer_symbol("AAPL")))
-                .map(|r| r.through),
+                .and_then(|r| r.through),
             Some(1_700_000_000_000)
         );
 
@@ -2783,7 +2806,7 @@ mod reconnect_tests {
         let seen = HashMap::from([(
             (1u32, "AAPL{=5m}".to_string()),
             CandleResume {
-                through: 5_000,
+                through: Some(5_000),
                 gap: false,
             },
         )]);
@@ -3018,7 +3041,8 @@ mod reconnect_tests {
             .expect("the series was seen");
 
         assert_eq!(
-            resume.through, 1_000,
+            resume.through,
+            Some(1_000),
             "only the bar that was actually delivered may be resumed past"
         );
         assert!(
@@ -3033,6 +3057,105 @@ mod reconnect_tests {
         forwarder.abort();
     }
 
+    /// The boundary the contiguity rule is easiest to get wrong at: the very
+    /// first bar of a series being dropped. Seeding the resume point with that
+    /// bar's own time would move it past a bar the consumer never received,
+    /// and the reconnect would never ask for it again.
+    #[tokio::test]
+    async fn a_series_whose_first_bar_was_dropped_resumes_from_the_beginning() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        // Capacity one, already full: every bar is dropped, including the first.
+        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        full_tx
+            .try_send(quote("filler"))
+            .expect("the one slot is taken");
+        routing.write().await.senders.insert(
+            1,
+            vec![Subscriber {
+                events: full_tx,
+                lagged: Arc::new(AtomicU64::new(0)),
+            }],
+        );
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: "AAPL{=5m}".to_string(),
+                from_time: Some(1_000),
+            }]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(8);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        events_tx
+            .send(candle("AAPL{=5m}", 9_000))
+            .await
+            .expect("the feed accepts");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let seen = progress.lock().expect("not poisoned in tests").clone();
+        assert_eq!(
+            seen.get(&(1, "AAPL{=5m}".to_string()))
+                .and_then(|r| r.through),
+            None,
+            "no bar was delivered, so there is nothing to resume past"
+        );
+
+        // And the replay therefore asks for the caller's own start, not 9_001.
+        let target = FeedTarget {
+            kind: EventKind::Candle,
+            symbol: "AAPL{=5m}".to_string(),
+            from_time: Some(1_000),
+        };
+        assert_eq!(
+            resume_from(1, target, &seen).from_time,
+            Some(1_000),
+            "a series that has only ever dropped bars asks for the whole thing again"
+        );
+
+        forwarder.abort();
+    }
+
+    /// `get_sub` hands back the streamer's own copy, and a private counter
+    /// there would report zero however far behind the caller had fallen — a
+    /// number worse than no number, because it looks like an answer.
+    #[tokio::test]
+    async fn the_streamers_copy_reports_the_same_lag_as_the_callers() {
+        let (tx, mut rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
+
+        // The registered sink is what the forwarder charges a drop to.
+        let Some(DXLinkCommand::AddEventSender(_, subscriber)) = rx.try_recv().ok() else {
+            panic!("the consumer is registered before create_sub returns");
+        };
+        subscriber.lagged.fetch_add(3, Ordering::Relaxed);
+
+        assert_eq!(sub.lagged(), 3, "the caller sees its own loss");
+        assert_eq!(
+            streamer
+                .get_sub(sub.id)
+                .expect("the streamer kept a copy")
+                .lagged(),
+            3,
+            "and so does the copy the streamer hands out"
+        );
+    }
+
     /// A gap is refilled by the replay, so the flag that froze the resume
     /// point has to be cleared when the request goes out — otherwise every
     /// future reconnect asks from the same bar forever.
@@ -3041,7 +3164,7 @@ mod reconnect_tests {
         let seen = HashMap::from([(
             (1u32, "AAPL{=5m}".to_string()),
             CandleResume {
-                through: 1_000,
+                through: Some(1_000),
                 gap: true,
             },
         )]);
