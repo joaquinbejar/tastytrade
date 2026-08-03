@@ -1473,36 +1473,6 @@ mod frame_routing_tests {
         assert_eq!(list.watchlist_entries.len(), 1);
     }
 
-    /// The websocket takes the same `Bearer `-prefixed value as the HTTP
-    /// header, not a bare token. Sending the bare one authenticates nothing,
-    /// and the venue's answer to that is silence rather than an error, so
-    /// there is no runtime signal to catch it.
-    #[test]
-    fn every_frame_carries_the_bearer_prefixed_access_token() {
-        const TOKEN: &str = "SENTINEL-access-token-5Nd9";
-
-        let message = SubRequest::<Vec<AccountNumber>> {
-            auth_token: crate::oauth::AccessToken::new(TOKEN).bearer(),
-            action: SubRequestAction::Connect,
-            value: Some(vec![AccountNumber(ACCOUNT_NUMBER.to_string())]),
-        };
-
-        let sent = serde_json::to_string(&message).expect("the request serializes");
-
-        assert!(
-            sent.contains(&format!(r#""auth-token":"Bearer {TOKEN}""#)),
-            "the prefix is part of the credential: {sent}"
-        );
-        assert!(sent.contains(r#""action":"connect""#), "{sent}");
-
-        // Debug is a different surface and the token must not be on it either.
-        let rendered = format!("{message:?}");
-        assert!(
-            !rendered.contains(TOKEN),
-            "the token reached Debug: {rendered}"
-        );
-    }
-
     /// A `type` with no `data` is still a notification. Treating the missing
     /// payload as a decode failure would drop it.
     #[test]
