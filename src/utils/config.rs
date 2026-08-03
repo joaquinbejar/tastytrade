@@ -1,3 +1,4 @@
+use crate::types::oauth::{ClientSecret, RefreshToken};
 use crate::{TastyTrade, TastyTradeError};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Serialize};
@@ -15,19 +16,41 @@ const WEBSOCKET_URL: &str = "wss://streamer.tastyworks.com";
 
 /// Configuration structure for the application
 /// Handles environment variables and logger setup
+///
+/// Authentication is OAuth2. `POST /sessions` was decommissioned on
+/// 2026-02-11, so there is no username or password here: what the venue
+/// accepts is a client secret and a refresh token created under Manage > My
+/// Profile > API on `my.tastytrade.com`.
+///
+/// Both secrets are `#[serde(skip_serializing)]`, which is what keeps them out
+/// of a saved configuration file **and** out of `Debug`, since `DebugPretty`
+/// renders through `Serialize`. They are also newtypes that print `***`, so
+/// neither protection is load-bearing on its own.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub struct TastyTradeConfig {
-    /// TastyTrade API username/email
-    pub username: String,
-    /// TastyTrade API password
+    /// The OAuth application's secret, shown once when the application is
+    /// created.
     #[serde(skip_serializing, default)]
-    pub password: String,
+    pub client_secret: ClientSecret,
+    /// The grant's refresh token. Long-lived: tastytrade's do not expire.
+    #[serde(skip_serializing, default)]
+    pub refresh_token: RefreshToken,
+    /// The OAuth application's public identifier.
+    ///
+    /// Only needed for the trusted third-party authorization-code flow; the
+    /// personal refresh-token flow does not send it.
+    #[serde(default)]
+    pub client_id: String,
+    /// Where tastytrade redirects a customer after they authorize.
+    ///
+    /// Only needed for the authorization-code flow, and must match one
+    /// registered with tastytrade exactly.
+    #[serde(default)]
+    pub redirect_uri: String,
     /// Whether to use demo/cert environment
     pub use_demo: bool,
     /// Log level: "INFO", "DEBUG", "WARN", "ERROR", "TRACE"
     pub log_level: String,
-    /// Whether to remember login session
-    pub remember_me: bool,
     /// Base URL for API requests
     pub base_url: String,
     /// Websocket URL.
@@ -57,6 +80,10 @@ impl TastyTradeConfig {
 
     /// Initialize a new configuration from environment variables.
     ///
+    /// Reads `TASTYTRADE_CLIENT_SECRET` and `TASTYTRADE_REFRESH_TOKEN` for the
+    /// personal flow, plus `TASTYTRADE_CLIENT_ID` and
+    /// `TASTYTRADE_REDIRECT_URI` for the third-party one.
+    ///
     /// The **certification** environment is the default. Production is a
     /// deliberate opt-in through `TASTYTRADE_USE_DEMO=false`, and only a value
     /// that actually parses as `false` selects it — a missing, empty or
@@ -65,8 +92,12 @@ impl TastyTradeConfig {
     pub fn from_env() -> Self {
         #[cfg(not(test))]
         dotenv::dotenv().ok();
-        let username = env::var("TASTYTRADE_USERNAME").unwrap_or_default();
-        let password = env::var("TASTYTRADE_PASSWORD").unwrap_or_default();
+        let client_secret =
+            ClientSecret::new(env::var("TASTYTRADE_CLIENT_SECRET").unwrap_or_default());
+        let refresh_token =
+            RefreshToken::new(env::var("TASTYTRADE_REFRESH_TOKEN").unwrap_or_default());
+        let client_id = env::var("TASTYTRADE_CLIENT_ID").unwrap_or_default();
+        let redirect_uri = env::var("TASTYTRADE_REDIRECT_URI").unwrap_or_default();
         let log_level = env::var("LOGLEVEL").unwrap_or_else(|_| "INFO".to_string());
 
         let use_demo = match env::var("TASTYTRADE_USE_DEMO") {
@@ -86,22 +117,18 @@ impl TastyTradeConfig {
                 true
             }
         };
-        let remember_me = env::var("TASTYTRADE_REMEMBER_ME")
-            .unwrap_or_else(|_| "false".to_string())
-            .trim()
-            .parse()
-            .unwrap_or(false);
 
         if !use_demo {
             warn!("Using the tastytrade production environment: orders placed here are real");
         }
 
         Self {
-            username,
-            password,
+            client_secret,
+            refresh_token,
+            client_id,
+            redirect_uri,
             use_demo,
             log_level,
-            remember_me,
             base_url: if use_demo {
                 BASE_DEMO_URL.to_string()
             } else {
@@ -116,6 +143,11 @@ impl TastyTradeConfig {
     }
 
     /// Load configuration from a JSON file
+    ///
+    /// The secrets are not written by [`TastyTradeConfig::save_to_file`], so a
+    /// round trip through a file loses them unless the file supplies them by
+    /// hand. That is the intended asymmetry: a saved configuration is safe to
+    /// keep, and a credential belongs in the environment.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, TastyTradeError> {
         let contents = fs::read_to_string(path)?;
         let config: TastyTradeConfig = serde_json::from_str(&contents)?;
@@ -123,6 +155,8 @@ impl TastyTradeConfig {
     }
 
     /// Save configuration to a JSON file
+    ///
+    /// Writes everything except the client secret and refresh token.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), TastyTradeError> {
         let contents = serde_json::to_string_pretty(self)?;
         fs::write(path, contents)?;
@@ -145,13 +179,13 @@ impl TastyTradeConfig {
         }
     }
 
-    /// Whether both credentials are present.
+    /// Whether the personal OAuth credentials are both present.
     ///
-    /// Whitespace does not count. `TASTYTRADE_USERNAME=" "` is a shell
-    /// accident, not a username, and treating it as one would send an
-    /// unusable credential to the venue instead of failing here.
+    /// Whitespace does not count. `TASTYTRADE_CLIENT_SECRET=" "` is a shell
+    /// accident, not a secret, and treating it as one would send an unusable
+    /// credential to the venue instead of failing here.
     pub fn has_valid_credentials(&self) -> bool {
-        !self.username.trim().is_empty() && !self.password.trim().is_empty()
+        !self.client_secret.is_blank() && !self.refresh_token.is_blank()
     }
 
     /// Creates a TastyTrade client from the configuration.
@@ -159,10 +193,10 @@ impl TastyTradeConfig {
     /// # Errors
     ///
     /// Returns [`TastyTradeError::ConfigError`] without making a network
-    /// request when the username or password is missing. The error names the
-    /// variables to set and never contains their values.
+    /// request when the client secret or refresh token is missing. The error
+    /// names the variables to set and never contains their values.
     pub async fn create_client(&self) -> Result<TastyTrade, TastyTradeError> {
-        TastyTrade::login(self).await
+        TastyTrade::connect(self).await
     }
 }
 
@@ -172,22 +206,35 @@ mod tests {
     use serial_test::serial;
     use std::env;
 
+    /// Every variable this configuration reads, so a test cannot inherit one
+    /// from the shell that started it.
+    const VARIABLES: [&str; 7] = [
+        "TASTYTRADE_CLIENT_SECRET",
+        "TASTYTRADE_REFRESH_TOKEN",
+        "TASTYTRADE_CLIENT_ID",
+        "TASTYTRADE_REDIRECT_URI",
+        "TASTYTRADE_USE_DEMO",
+        "LOGLEVEL",
+        "TASTYTRADE_REMEMBER_ME",
+    ];
+
+    fn clear_environment() {
+        for name in VARIABLES {
+            unsafe {
+                env::remove_var(name);
+            }
+        }
+    }
+
     #[test]
     #[serial]
     fn test_default_config() {
-        // Ensure environment variables don't interfere with the test
-        unsafe {
-            env::remove_var("TASTYTRADE_USERNAME");
-            env::remove_var("TASTYTRADE_PASSWORD");
-            env::remove_var("TASTYTRADE_USE_DEMO");
-            env::remove_var("LOGLEVEL");
-            env::remove_var("TASTYTRADE_REMEMBER_ME");
-        }
+        clear_environment();
         let config = TastyTradeConfig::default();
-        assert!(config.username.is_empty());
-        assert!(config.password.is_empty());
+        assert!(config.client_secret.is_blank());
+        assert!(config.refresh_token.is_blank());
+        assert!(config.client_id.is_empty());
         assert_eq!(config.log_level, "INFO");
-        assert!(!config.remember_me);
 
         // Certification, not production, when nothing says otherwise.
         assert!(
@@ -215,9 +262,7 @@ mod tests {
             );
             assert_eq!(config.base_url, BASE_DEMO_URL);
         }
-        unsafe {
-            env::remove_var("TASTYTRADE_USE_DEMO");
-        }
+        clear_environment();
     }
 
     /// Surrounding whitespace is a shell accident, not a different intent.
@@ -230,20 +275,19 @@ mod tests {
         let config = TastyTradeConfig::from_env();
         assert!(!config.use_demo);
         assert_eq!(config.base_url, BASE_URL);
-        unsafe {
-            env::remove_var("TASTYTRADE_USE_DEMO");
-        }
+        clear_environment();
     }
 
     #[tokio::test]
     #[serial]
     async fn missing_credentials_fail_locally_without_a_request() {
         let config = TastyTradeConfig {
-            username: String::new(),
-            password: String::new(),
+            client_secret: ClientSecret::new(""),
+            refresh_token: RefreshToken::new(""),
+            client_id: String::new(),
+            redirect_uri: String::new(),
             use_demo: true,
             log_level: "WARN".to_string(),
-            remember_me: false,
             // Unroutable on purpose: if the guard ever stops working, this
             // test hangs or fails on connection rather than passing quietly.
             base_url: "http://127.0.0.1:1".to_string(),
@@ -261,7 +305,7 @@ mod tests {
         );
         let text = format!("{error}");
         assert!(
-            text.contains("TASTYTRADE_USERNAME") && text.contains("TASTYTRADE_PASSWORD"),
+            text.contains("TASTYTRADE_CLIENT_SECRET") && text.contains("TASTYTRADE_REFRESH_TOKEN"),
             "the error must name the variables to set: {text}"
         );
     }
@@ -269,30 +313,43 @@ mod tests {
     #[test]
     #[serial]
     fn test_config_from_env() {
-        // Set environment variables for testing
+        clear_environment();
         unsafe {
-            env::set_var("TASTYTRADE_USERNAME", "test_user");
-            env::set_var("TASTYTRADE_PASSWORD", "test_pass");
+            env::set_var("TASTYTRADE_CLIENT_SECRET", "test_secret");
+            env::set_var("TASTYTRADE_REFRESH_TOKEN", "test_refresh");
+            env::set_var("TASTYTRADE_CLIENT_ID", "test_client");
+            env::set_var("TASTYTRADE_REDIRECT_URI", "https://app.example.com/cb");
             env::set_var("TASTYTRADE_USE_DEMO", "true");
             env::set_var("LOGLEVEL", "DEBUG");
-            env::set_var("TASTYTRADE_REMEMBER_ME", "true");
         }
         let config = TastyTradeConfig::from_env();
-        assert_eq!(config.username, "test_user");
-        assert_eq!(config.password, "test_pass");
+        assert_eq!(config.client_secret.expose_secret(), "test_secret");
+        assert_eq!(config.refresh_token.expose_secret(), "test_refresh");
+        assert_eq!(config.client_id, "test_client");
+        assert_eq!(config.redirect_uri, "https://app.example.com/cb");
         assert!(config.use_demo);
-        assert!(config.remember_me);
         assert_eq!(config.base_url, BASE_DEMO_URL.to_string());
         assert_eq!(config.websocket_url, WEBSOCKET_DEMO_URL.to_string());
 
+        clear_environment();
+    }
+
+    /// `TASTYTRADE_REMEMBER_ME` selected a behaviour of the retired session
+    /// API. Reading it now would suggest it still does something.
+    #[test]
+    #[serial]
+    fn the_retired_remember_me_variable_is_not_read() {
+        clear_environment();
         unsafe {
-            // Clean up environment
-            env::remove_var("TASTYTRADE_USERNAME");
-            env::remove_var("TASTYTRADE_PASSWORD");
-            env::remove_var("TASTYTRADE_USE_DEMO");
-            env::remove_var("LOGLEVEL");
-            env::remove_var("TASTYTRADE_REMEMBER_ME");
+            env::set_var("TASTYTRADE_REMEMBER_ME", "true");
         }
+
+        let rendered = format!("{:?}", TastyTradeConfig::from_env());
+        assert!(
+            !rendered.contains("remember"),
+            "a retired setting must not reappear in the configuration: {rendered}"
+        );
+        clear_environment();
     }
 
     /// A shell accident is not a credential.
@@ -300,11 +357,12 @@ mod tests {
     #[serial]
     fn whitespace_is_not_a_credential() {
         let config = TastyTradeConfig {
-            username: "   ".to_string(),
-            password: "\t\n".to_string(),
+            client_secret: ClientSecret::new("   "),
+            refresh_token: RefreshToken::new("\t\n"),
+            client_id: String::new(),
+            redirect_uri: String::new(),
             use_demo: true,
             log_level: "WARN".to_string(),
-            remember_me: false,
             base_url: BASE_DEMO_URL.to_string(),
             websocket_url: WEBSOCKET_DEMO_URL.to_string(),
         };
@@ -314,87 +372,70 @@ mod tests {
     #[test]
     #[serial]
     fn test_has_valid_credentials() {
-        // Ensure environment variables don't interfere with the test
-        unsafe {
-            env::remove_var("TASTYTRADE_USERNAME");
-            env::remove_var("TASTYTRADE_PASSWORD");
-        }
+        clear_environment();
         let mut config = TastyTradeConfig::default();
         assert!(!config.has_valid_credentials());
 
-        config.username = "user".to_string();
+        config.client_secret = ClientSecret::new("secret");
         assert!(!config.has_valid_credentials());
 
-        config.password = "pass".to_string();
+        config.refresh_token = RefreshToken::new("refresh");
         assert!(config.has_valid_credentials());
     }
 
+    /// The secrets stay out of the serialized form, and therefore out of
+    /// `Debug` and `Display` too, because both render through `Serialize`.
     #[test]
     fn test_serialize_deserialize() {
         let config = TastyTradeConfig {
-            username: "test_user".to_string(),
-            password: "test_pass".to_string(),
+            client_secret: ClientSecret::new("SENTINEL-client-secret-3Qv7"),
+            refresh_token: RefreshToken::new("SENTINEL-refresh-token-8Hb2"),
+            client_id: "client-abc".to_string(),
+            redirect_uri: "https://app.example.com/cb".to_string(),
             use_demo: true,
             log_level: "DEBUG".to_string(),
-            remember_me: true,
             base_url: BASE_DEMO_URL.to_string(),
             websocket_url: WEBSOCKET_DEMO_URL.to_string(),
         };
 
-        let json = serde_json::to_string(&config).unwrap();
+        let json = serde_json::to_string(&config).expect("the config serializes");
+        for rendered in [json.clone(), format!("{config:?}"), format!("{config}")] {
+            assert!(
+                !rendered.contains("SENTINEL"),
+                "a secret escaped: {rendered}"
+            );
+        }
+        // The public half survives, which is the point of saving one at all.
+        assert!(json.contains("client-abc"), "{json}");
 
-        // Password should be skipped during serialization
-        assert!(!json.contains("test_pass"));
-
-        // Create a new config with an empty password
-        let mut deserialized: TastyTradeConfig = serde_json::from_str(&json).unwrap();
-
-        // Manually set the password since it's not in the JSON
-        deserialized.password = "test_pass".to_string();
-
-        assert_eq!(config.username, deserialized.username);
-        assert_eq!(config.password, deserialized.password);
+        let deserialized: TastyTradeConfig =
+            serde_json::from_str(&json).expect("the config round-trips");
+        assert_eq!(config.client_id, deserialized.client_id);
         assert_eq!(config.use_demo, deserialized.use_demo);
         assert_eq!(config.log_level, deserialized.log_level);
-        assert_eq!(config.remember_me, deserialized.remember_me);
+        assert!(
+            deserialized.client_secret.is_blank(),
+            "a saved configuration must not be able to carry the secret back"
+        );
     }
 
     #[test]
     #[serial]
     fn test_config_from_env_demo_false() {
-        // Clean up any existing environment variables first
+        clear_environment();
         unsafe {
-            env::remove_var("TASTYTRADE_USERNAME");
-            env::remove_var("TASTYTRADE_PASSWORD");
-            env::remove_var("TASTYTRADE_USE_DEMO");
-            env::remove_var("LOGLEVEL");
-            env::remove_var("TASTYTRADE_REMEMBER_ME");
-        }
-
-        // Set environment variables for testing
-        unsafe {
-            env::set_var("TASTYTRADE_USERNAME", "test_user");
-            env::set_var("TASTYTRADE_PASSWORD", "test_pass");
+            env::set_var("TASTYTRADE_CLIENT_SECRET", "test_secret");
+            env::set_var("TASTYTRADE_REFRESH_TOKEN", "test_refresh");
             env::set_var("TASTYTRADE_USE_DEMO", "false");
             env::set_var("LOGLEVEL", "DEBUG");
-            env::set_var("TASTYTRADE_REMEMBER_ME", "false");
         }
         let config = TastyTradeConfig::from_env();
-        assert_eq!(config.username, "test_user");
-        assert_eq!(config.password, "test_pass");
+        assert_eq!(config.client_secret.expose_secret(), "test_secret");
         assert!(!config.use_demo);
-        assert!(!config.remember_me);
         assert_eq!(config.base_url, BASE_URL.to_string());
         assert_eq!(config.websocket_url, WEBSOCKET_URL.to_string());
 
-        unsafe {
-            // Clean up environment
-            env::remove_var("TASTYTRADE_USERNAME");
-            env::remove_var("TASTYTRADE_PASSWORD");
-            env::remove_var("TASTYTRADE_USE_DEMO");
-            env::remove_var("LOGLEVEL");
-            env::remove_var("TASTYTRADE_REMEMBER_ME");
-        }
+        clear_environment();
     }
 }
 
@@ -405,11 +446,12 @@ mod environment_tests {
 
     fn config_with(base_url: &str, use_demo: bool) -> TastyTradeConfig {
         TastyTradeConfig {
-            username: "someone".to_string(),
-            password: "secret".to_string(),
+            client_secret: ClientSecret::new("secret"),
+            refresh_token: RefreshToken::new("refresh"),
+            client_id: String::new(),
+            redirect_uri: String::new(),
             use_demo,
             log_level: "WARN".to_string(),
-            remember_me: false,
             base_url: base_url.to_string(),
             websocket_url: WEBSOCKET_DEMO_URL.to_string(),
         }

@@ -184,10 +184,10 @@ impl MockVenue {
         }
     }
 
-    /// Convenience for a venue that only needs to answer a successful login.
-    pub async fn with_login(body: String) -> Self {
+    /// Convenience for a venue that only needs to mint an access token.
+    pub async fn with_token(body: String) -> Self {
         let mut routes = HashMap::new();
-        routes.insert("POST /sessions".to_string(), Route::ok(body));
+        routes.insert("POST /oauth/token".to_string(), Route::ok(body));
         Self::start(routes).await
     }
 

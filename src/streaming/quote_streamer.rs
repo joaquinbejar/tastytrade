@@ -808,10 +808,17 @@ fn event_symbol(event: &MarketEvent) -> Option<&str> {
 /// Exhaustive without a wildcard on purpose: a variant added by a future
 /// dxlink breaks the build here, which is the moment to decide whether this
 /// crate models it, rather than silently logging it as something else.
+///
+/// It fired. dxlink 0.3.1 added `TradeETH` and `Series`, and because
+/// `Cargo.lock` is not committed — the usual convention for a library — every
+/// build resolves `dxlink = "0.3"` afresh and picks it up. The two arms below
+/// are named so the build works; they are dropped like the six other
+/// unmodelled types, and routing them is #86.
 fn event_kind(event: &MarketEvent) -> &'static str {
     match event {
         MarketEvent::Quote(_) => "Quote",
         MarketEvent::Trade(_) => "Trade",
+        MarketEvent::TradeETH(_) => "TradeETH",
         MarketEvent::Greeks(_) => "Greeks",
         MarketEvent::Summary(_) => "Summary",
         MarketEvent::Candle(_) => "Candle",
@@ -819,6 +826,7 @@ fn event_kind(event: &MarketEvent) -> &'static str {
         MarketEvent::Profile(_) => "Profile",
         MarketEvent::Underlying(_) => "Underlying",
         MarketEvent::TheoPrice(_) => "TheoPrice",
+        MarketEvent::Series(_) => "Series",
     }
 }
 

@@ -12,21 +12,21 @@ async fn main() {
         eprintln!("Error: Missing TastyTrade credentials!");
         eprintln!("Please make sure you have:");
         eprintln!("1. Copied .env.example to .env: cp .env.example .env");
-        eprintln!("2. Set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD in .env");
+        eprintln!("2. Set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN in .env");
         eprintln!("3. Set TASTYTRADE_USE_DEMO=true for sandbox testing");
         std::process::exit(1);
     }
 
-    println!("Attempting to login with username: {}", config.username);
+    println!("Authenticating against {}", config.environment());
     println!("Using demo environment: {}", config.use_demo);
 
-    let tasty = match TastyTrade::login(&config).await {
+    let tasty = match TastyTrade::connect(&config).await {
         Ok(client) => {
-            println!("✅ Login successful!");
+            println!("✅ Authenticated");
             client
         }
         Err(e) => {
-            eprintln!("❌ Login failed: {}", e);
+            eprintln!("❌ Authentication failed: {}", e);
             eprintln!("\nTroubleshooting:");
             eprintln!("1. Verify your credentials are correct");
             eprintln!("2. Make sure TASTYTRADE_USE_DEMO=true for sandbox");

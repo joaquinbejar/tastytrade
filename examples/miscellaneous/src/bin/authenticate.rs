@@ -5,15 +5,19 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logger();
-    info!("TastyTrade Demo Login Example");
-    info!("-----------------------------");
+    info!("TastyTrade OAuth2 Authentication Example");
+    info!("---------------------------------------");
 
     // Check if environment variables are set
-    if env::var("TASTYTRADE_USERNAME").is_err() || env::var("TASTYTRADE_PASSWORD").is_err() {
-        info!("Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables.");
+    if env::var("TASTYTRADE_CLIENT_SECRET").is_err()
+        || env::var("TASTYTRADE_REFRESH_TOKEN").is_err()
+    {
+        info!(
+            "Please set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN environment variables."
+        );
         info!("Example:");
-        info!("  export TASTYTRADE_USERNAME=your_username");
-        info!("  export TASTYTRADE_PASSWORD=your_password");
+        info!("  export TASTYTRADE_CLIENT_SECRET=your_oauth_client_secret");
+        info!("  export TASTYTRADE_REFRESH_TOKEN=your_oauth_refresh_token");
         info!("  export TASTYTRADE_USE_DEMO=true");
         info!("  export LOGLEVEL=DEBUG");
         std::process::exit(1);
@@ -23,12 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TastyTradeConfig::from_env();
     info!("Configuration loaded, connecting to demo environment...");
 
-    // Login to the TastyTrade API
-    let tasty = TastyTrade::login(&config).await?;
-    if config.use_demo {
-        info!("Successfully logged in to demo environment!");
-    } else {
-        info!("Successfully logged in to production environment!");
+    // Exchange the refresh token for an access token.
+    let tasty = TastyTrade::connect(&config).await?;
+    info!("Authenticated against {}", config.environment());
+
+    // A duration is not a secret; a token is. This is the only thing an
+    // example may print about the credential it is holding.
+    match tasty.session().expires_in().await {
+        Some(left) => info!("The access token is good for another {}s", left.as_secs()),
+        None => info!("The access token has already expired and will be renewed on use"),
     }
 
     // Get account information
@@ -99,6 +106,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    info!("Demo login example completed successfully!");
+    info!("OAuth2 authentication example completed successfully!");
     Ok(())
 }

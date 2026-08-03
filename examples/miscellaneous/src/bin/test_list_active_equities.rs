@@ -20,13 +20,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if we have valid credentials
     if !config.has_valid_credentials() {
         eprintln!(
-            "❌ No valid credentials found. Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables."
+            "❌ No valid credentials found. Please set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN environment variables."
         );
         return Err("Missing credentials".into());
     }
 
     println!("🔐 Logging into TastyTrade...");
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
     println!("✅ Successfully logged in!");
 
     println!();

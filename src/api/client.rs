@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::sync::Arc;
 
 use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
@@ -6,34 +7,38 @@ use crate::api::base::Paginated;
 use crate::api::base::Response;
 use crate::api::base::TastyApiResponse;
 use crate::api::base::TastyResult;
+use crate::api::oauth::{OAuthSession, authorization_code_grant, default_headers, refresh_grant};
 use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
-use crate::types::login::{LoginCredentials, LoginResponse};
+use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::utils::config::TastyTradeConfig;
 use reqwest::ClientBuilder;
 use reqwest::header;
-use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::debug;
 
-/// An authenticated tastytrade session.
+/// An authenticated tastytrade client.
 ///
-/// Holds the session token and the configuration it was built from, which
-/// includes the password, so its `Debug` redacts both. Cloning is cheap and
-/// shares the underlying HTTP client.
+/// Authentication is OAuth2: the client holds a session that mints short-lived
+/// bearer tokens and renews them underneath every request. Cloning is cheap
+/// and shares both the HTTP client and the session, so a refresh performed by
+/// one clone is seen by all of them.
+///
+/// `Debug` shows the environment and the configuration, neither of which
+/// carries a secret.
 #[derive(Clone)]
 pub struct TastyTrade {
     pub(crate) client: reqwest::Client,
-    pub(crate) session_token: String,
+    pub(crate) session: Arc<OAuthSession>,
     pub(crate) config: TastyTradeConfig,
 }
 
 impl std::fmt::Debug for TastyTrade {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TastyTrade")
-            .field("session_token", &"***")
+            .field("session", &self.session)
             .field("config", &self.config)
             .finish()
     }
@@ -96,7 +101,7 @@ fn endpoint_url(base_url: &str, path: &str) -> TastyResult<String> {
 /// Built once per request and carried through both the transport failure and
 /// the decode paths, so every verb produces the same shape and no verb can
 /// forget a field.
-struct RequestReport {
+pub(crate) struct RequestReport {
     method: &'static str,
     /// Already redacted: no account number reaches this.
     operation: String,
@@ -109,7 +114,7 @@ struct RequestReport {
 
 impl RequestReport {
     /// A report for `method operation`, timed from now.
-    fn new(
+    pub(crate) fn new(
         method: &'static str,
         operation: String,
         environment: crate::error::Environment,
@@ -122,7 +127,7 @@ impl RequestReport {
         }
     }
 
-    fn context(&self, status: Option<u16>) -> crate::error::RequestContext {
+    pub(crate) fn context(&self, status: Option<u16>) -> crate::error::RequestContext {
         crate::error::RequestContext {
             method: self.method,
             operation: self.operation.clone(),
@@ -130,31 +135,10 @@ impl RequestReport {
             status,
         }
     }
-}
 
-/// Re-labels a rejected login as an authentication failure.
-///
-/// A 401 or 403 on `/sessions` means the credentials are wrong, which is a
-/// different thing for a caller than a request that failed: it is not
-/// retryable, and `BackoffPolicy` already treats `Auth` as terminal. Every
-/// other status keeps its request shape, because a 503 from the login endpoint
-/// says nothing about whether the credentials are good.
-fn as_authentication_failure(error: crate::TastyTradeError) -> crate::TastyTradeError {
-    match &error {
-        crate::TastyTradeError::Request { context, api } => match context.status {
-            Some(401) | Some(403) => {
-                let detail = api
-                    .as_ref()
-                    .map(|api| api.message.clone())
-                    .unwrap_or_else(|| "the venue rejected the credentials".to_string());
-                crate::TastyTradeError::Auth(format!(
-                    "login refused on {}: {detail}",
-                    context.environment
-                ))
-            }
-            _ => error,
-        },
-        _ => error,
+    /// How long the exchange has taken so far. A duration, never contents.
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
     }
 }
 
@@ -275,7 +259,10 @@ where
 ///
 /// The reqwest error itself is kept out of the value: its `Display` renders
 /// the URL it was trying to reach, account number included.
-fn transport_failure(report: &RequestReport, error: reqwest::Error) -> crate::TastyTradeError {
+pub(crate) fn transport_failure(
+    report: &RequestReport,
+    error: reqwest::Error,
+) -> crate::TastyTradeError {
     // `without_url` strips it for the log too. The redacted operation is
     // already there, and it is the part that says what failed.
     debug!(
@@ -367,121 +354,188 @@ impl<T: DeserializeOwned + Serialize + std::fmt::Debug> FromTastyResponse<Items<
 }
 
 impl TastyTrade {
-    /// Logs in using configuration read from the environment.
+    /// Authenticates using configuration read from the environment.
     ///
     /// # Errors
     ///
-    /// Fails without a network request when the credentials are missing, and
-    /// with the venue's own error when they are rejected. Certification is the
-    /// default environment; see [`crate::utils::config::TastyTradeConfig`].
-    pub async fn default() -> TastyResult<Self> {
-        let config = TastyTradeConfig::default();
-        Self::login(&config).await
+    /// Fails without a network request when the OAuth credentials are missing,
+    /// and with the venue's own answer when they are rejected. Certification is
+    /// the default environment; see
+    /// [`crate::utils::config::TastyTradeConfig`].
+    pub async fn from_env() -> TastyResult<Self> {
+        let config = TastyTradeConfig::from_env();
+        Self::connect(&config).await
     }
 
-    /// Logs in with an explicit configuration.
+    /// Authenticates with the personal refresh-token grant.
+    ///
+    /// This is the flow for an OAuth application you created for yourself on
+    /// `my.tastytrade.com`: the configuration supplies the client secret and
+    /// the grant's refresh token, and this exchanges them for the first access
+    /// token. The token is renewed automatically from then on.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError` without contacting the venue when the username or
-    /// password is missing or blank. The error names the variables to set and
-    /// never their values.
+    /// [`crate::TastyTradeError::ConfigError`] without contacting the venue
+    /// when the client secret or refresh token is missing or blank. The error
+    /// names the variables to set and never their values.
     ///
-    /// Credentials the venue rejects (`401`/`403`) return
-    /// [`crate::TastyTradeError::Auth`], which is not retryable. Any other
-    /// failure keeps the [`crate::TastyTradeError::Request`] shape with its
-    /// status, because a login endpoint that is down says nothing about whether
-    /// the credentials are good. The request body carries the password and the
-    /// response body carries the session token, so neither reaches the error or
-    /// the logs at any level.
-    pub async fn login(config: &TastyTradeConfig) -> TastyResult<Self> {
+    /// Credentials the venue refuses return [`crate::TastyTradeError::Auth`],
+    /// which is not retryable. Any other failure keeps the
+    /// [`crate::TastyTradeError::Request`] shape with its status, because a
+    /// token endpoint that is down says nothing about whether the secret is
+    /// good. The request body carries the client secret and the response body
+    /// carries the tokens, so neither reaches the error or the logs at any
+    /// level.
+    pub async fn connect(config: &TastyTradeConfig) -> TastyResult<Self> {
         // Fail here rather than posting an empty credential pair to the venue.
         // The message names the variables, never their values.
         if !config.has_valid_credentials() {
             return Err(crate::TastyTradeError::ConfigError(
-                "Missing tastytrade credentials: set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD, \
-                 or load a configuration file that provides both"
+                "Missing tastytrade OAuth credentials: set TASTYTRADE_CLIENT_SECRET and \
+                 TASTYTRADE_REFRESH_TOKEN, or load a configuration file that provides both. \
+                 Create them under Manage > My Profile > API on my.tastytrade.com"
                     .to_string(),
             ));
         }
 
-        let creds = Self::do_login_request(
-            &config.username,
-            &config.password,
-            config.remember_me,
+        Self::establish(
+            config,
+            refresh_grant(config.client_secret.clone(), config.refresh_token.clone()),
+        )
+        .await
+    }
+
+    /// Exchanges an authorization code for a session.
+    ///
+    /// The trusted third-party flow: after a customer authorizes the
+    /// application at [`crate::oauth::AuthorizationRequest::authorize_url`]
+    /// and is redirected back with a `code`, this exchanges it. Check the
+    /// returned `state` with
+    /// [`crate::oauth::AuthorizationRequest::verify_state`] **before**
+    /// calling this — a code from a redirect the application did not start is
+    /// not worth exchanging.
+    ///
+    /// The response carries a refresh token that never expires. Store it with
+    /// [`TastyTrade::refresh_token`] and use [`TastyTrade::connect`] next time,
+    /// rather than sending the customer through the authorization page again.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::ConfigError`] without contacting the venue
+    /// when the client id, client secret or redirect URI is missing. A code the
+    /// venue refuses — expired, already used, or issued for another
+    /// application — returns [`crate::TastyTradeError::Auth`].
+    pub async fn connect_with_authorization_code(
+        config: &TastyTradeConfig,
+        code: impl Into<AuthorizationCode>,
+    ) -> TastyResult<Self> {
+        if config.client_id.trim().is_empty()
+            || config.client_secret.is_blank()
+            || config.redirect_uri.trim().is_empty()
+        {
+            return Err(crate::TastyTradeError::ConfigError(
+                "the authorization-code grant needs TASTYTRADE_CLIENT_ID, \
+                 TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REDIRECT_URI, and the redirect URI must \
+                 be the same one the authorization request used"
+                    .to_string(),
+            ));
+        }
+
+        Self::establish(
+            config,
+            authorization_code_grant(
+                code.into(),
+                config.client_id.clone(),
+                config.client_secret.clone(),
+                config.redirect_uri.clone(),
+            ),
+        )
+        .await
+    }
+
+    /// Builds the HTTP client and performs the first token exchange.
+    async fn establish(
+        config: &TastyTradeConfig,
+        grant: crate::oauth::OAuthGrant,
+    ) -> TastyResult<Self> {
+        let client = ClientBuilder::new()
+            .default_headers(default_headers())
+            .build()
+            .map_err(|e| {
+                crate::TastyTradeError::Connection(format!("could not build the HTTP client: {e}"))
+            })?;
+
+        let session = OAuthSession::establish(
+            client.clone(),
             &config.base_url,
             config.environment(),
+            grant,
         )
         .await?;
 
-        // Deliberately not the email: it identifies the account holder, and
-        // the caller already knows which credentials it supplied.
-        debug!("Login successful");
-        let client = Self::create_client(&creds)?;
+        // Deliberately not the customer, the token or the grant: the caller
+        // already knows which credentials it supplied, and the environment is
+        // the part worth confirming.
+        debug!("Authenticated against {}", config.environment());
 
         Ok(Self {
             client,
-            session_token: creds.session_token,
+            session,
             config: config.clone(),
         })
     }
 
-    fn create_client(creds: &LoginResponse) -> TastyResult<reqwest::Client> {
-        let mut headers = HeaderMap::new();
-
-        // A session token with bytes a header cannot carry is a venue
-        // response this crate cannot use. The error says so without quoting
-        // the token.
-        let token = HeaderValue::from_str(&creds.session_token).map_err(|_| {
-            crate::TastyTradeError::Auth(
-                "the session token returned by the venue is not a valid header value".to_string(),
-            )
-        })?;
-        headers.insert(header::AUTHORIZATION, token);
-        headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        headers.insert(header::USER_AGENT, HeaderValue::from_static("tastytrade"));
-
-        ClientBuilder::new()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| {
-                crate::TastyTradeError::Connection(format!("could not build the HTTP client: {e}"))
-            })
+    /// The OAuth session behind this client.
+    ///
+    /// Exposes token lifetime and the refresh token; see [`OAuthSession`].
+    pub fn session(&self) -> &Arc<OAuthSession> {
+        &self.session
     }
 
-    async fn do_login_request(
-        login: &str,
-        password: &str,
-        remember_me: bool,
-        base_url: &str,
-        environment: crate::error::Environment,
-    ) -> TastyResult<LoginResponse> {
-        let client = reqwest::Client::default();
+    /// The refresh token this client would renew with, if it has one.
+    ///
+    /// An application that authenticated with an authorization code must store
+    /// this: it is what lets the next process start with [`TastyTrade::connect`]
+    /// instead of another trip through the authorization page.
+    pub async fn refresh_token(&self) -> Option<RefreshToken> {
+        self.session.refresh_token().await
+    }
 
-        // The endpoint is fixed and account-free, so there is nothing to
-        // redact; the base URL is not included because it says nothing the
-        // environment does not.
-        let report = RequestReport::new("POST", "/sessions".to_string(), environment);
+    /// A live access token, refreshing first if the current one is about to
+    /// expire.
+    ///
+    /// Needed by anything that authenticates outside the REST path — the
+    /// account websocket puts the same `Bearer `-prefixed value in its
+    /// `auth-token` field.
+    ///
+    /// # Errors
+    ///
+    /// As [`OAuthSession::access_token`].
+    pub async fn access_token(&self) -> TastyResult<AccessToken> {
+        self.session.ensure_same_deployment(&self.config.base_url)?;
+        self.session.access_token().await
+    }
 
-        let response = client
-            .post(format!("{base_url}/sessions"))
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::USER_AGENT, "tastytrade")
-            .json(&LoginCredentials {
-                login: login.to_string(),
-                password: password.to_string(),
-                remember_me,
-            })
-            .send()
-            .await
-            .map_err(|e| transport_failure(&report, e))?;
+    /// An `Authorization` header carrying a live access token.
+    ///
+    /// Built here rather than at each call site so no verb can forget the
+    /// refresh or the `Bearer ` prefix.
+    async fn authorization(&self) -> TastyResult<HeaderValue> {
+        let token = self.access_token().await?;
+        // A token with bytes a header cannot carry is a venue response this
+        // crate cannot use. The error says so without quoting the token.
+        HeaderValue::from_str(&token.bearer()).map_err(|_| {
+            crate::TastyTradeError::Auth(
+                "the access token returned by the venue is not a valid header value".to_string(),
+            )
+        })
+    }
 
-        decode_response::<LoginResponse, LoginResponse>(&report, response)
-            .await
-            .map_err(as_authentication_failure)
+    /// Joins the base URL and a path, after checking the session belongs here.
+    fn request_url(&self, path: &str) -> TastyResult<String> {
+        self.session.ensure_same_deployment(&self.config.base_url)?;
+        endpoint_url(&self.config.base_url, path)
     }
 
     /// Performs a GET with query parameters and decodes the response.
@@ -501,7 +555,7 @@ impl TastyTrade {
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
-        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
+        let full_url = self.request_url(url.as_ref())?;
         let query_string = query
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -520,6 +574,10 @@ impl TastyTrade {
             redact_account_path(&full_request),
             self.config.environment(),
         );
+        // Refreshed before the request rather than retried after a 401. The
+        // token is minted for fifteen minutes and every verb goes through
+        // here, so a caller never has to think about expiry.
+        let authorization = self.authorization().await?;
         // A timeout or a refused connection is the failure most worth retrying,
         // and it used to exit through From<reqwest::Error> before any context
         // existed, so the caller lost the method, the endpoint and the
@@ -527,6 +585,7 @@ impl TastyTrade {
         let response: reqwest::Response = if query.is_empty() {
             self.client
                 .get(&full_url)
+                .header(header::AUTHORIZATION, authorization)
                 .send()
                 .await
                 .map_err(|e| transport_failure(&report, e))?
@@ -542,6 +601,7 @@ impl TastyTrade {
             }
             self.client
                 .get(url_with_query)
+                .header(header::AUTHORIZATION, authorization)
                 .send()
                 .await
                 .map_err(|e| transport_failure(&report, e))?
@@ -576,22 +636,33 @@ impl TastyTrade {
     /// response becomes [`crate::TastyTradeError::Request`] carrying a redacted
     /// endpoint, the environment and the status, and no response body reaches
     /// the error or the logs.
+    ///
+    /// A `401` here is **not** retried with a fresh token. The token is
+    /// renewed before the request goes out, so a refusal after that is the
+    /// venue's answer — and a POST that may have placed an order is the one
+    /// request this crate will never replay on its own.
     pub async fn post<R, P, U>(&self, url: U, payload: P) -> TastyResult<R>
     where
         R: DeserializeOwned + Serialize + std::fmt::Debug,
         P: Serialize,
         U: AsRef<str>,
     {
-        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
+        let full_url = self.request_url(url.as_ref())?;
         let report = RequestReport::new(
             "POST",
             redact_account_path(&full_url),
             self.config.environment(),
         );
 
+        let authorization = self.authorization().await?;
         let response = self
             .client
             .post(&full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
             .body(serde_json::to_string(&payload)?)
             .send()
             .await
@@ -614,16 +685,18 @@ impl TastyTrade {
         R: DeserializeOwned + Serialize + std::fmt::Debug,
         U: AsRef<str>,
     {
-        let full_url = endpoint_url(&self.config.base_url, url.as_ref())?;
+        let full_url = self.request_url(url.as_ref())?;
         let report = RequestReport::new(
             "DELETE",
             redact_account_path(&full_url),
             self.config.environment(),
         );
 
+        let authorization = self.authorization().await?;
         let response = self
             .client
             .delete(&full_url)
+            .header(header::AUTHORIZATION, authorization)
             .send()
             .await
             .map_err(|e| transport_failure(&report, e))?;

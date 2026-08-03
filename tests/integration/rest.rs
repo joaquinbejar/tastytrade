@@ -12,76 +12,281 @@ use tastytrade::{Environment, TastyTradeError};
 use tracing::Level;
 
 use crate::support::{
-    CapturedLogs, MockVenue, Route, capture_logs_at, login_response_body,
-    partially_unparseable_accounts_body, sentinel, wholly_unparseable_accounts_body,
+    CapturedLogs, MockVenue, Route, capture_logs_at, expiring_token_response_body,
+    partially_unparseable_accounts_body, sentinel, token_error_body, token_response_body,
+    wholly_unparseable_accounts_body,
 };
 
 /// A config pointed at `venue`, with credentials that are never real.
 fn config_for(venue: &MockVenue) -> TastyTradeConfig {
     TastyTradeConfig {
-        username: "someone@example.com".to_string(),
-        password: sentinel::PASSWORD.to_string(),
+        client_secret: sentinel::CLIENT_SECRET.into(),
+        refresh_token: sentinel::REFRESH_TOKEN.into(),
+        client_id: "client-abc".to_string(),
+        redirect_uri: "https://app.example.com/cb".to_string(),
         use_demo: true,
         log_level: "TRACE".to_string(),
-        remember_me: true,
         base_url: venue.base_url().to_string(),
         websocket_url: "ws://127.0.0.1:1".to_string(),
     }
 }
 
+/// Routes that answer the token exchange plus whatever else a test needs.
+fn routes_with_token<const N: usize>(extra: [(&str, Route); N]) -> HashMap<String, Route> {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
+    );
+    for (key, route) in extra {
+        routes.insert(key.to_string(), route);
+    }
+    routes
+}
+
 fn assert_no_secret_leaked(logs: &CapturedLogs) {
-    logs.assert_absent(sentinel::SESSION_TOKEN, "the session token");
-    logs.assert_absent(sentinel::REMEMBER_TOKEN, "the remember token");
-    logs.assert_absent(sentinel::PASSWORD, "the password");
+    logs.assert_absent(sentinel::ACCESS_TOKEN, "the access token");
+    logs.assert_absent(sentinel::REFRESH_TOKEN, "the refresh token");
+    logs.assert_absent(sentinel::CLIENT_SECRET, "the client secret");
+    logs.assert_absent(sentinel::ID_TOKEN, "the identity token");
 }
 
 #[tokio::test]
-async fn login_succeeds_without_writing_a_credential_anywhere() {
-    let venue = MockVenue::with_login(login_response_body()).await;
+async fn authenticating_writes_no_credential_anywhere() {
+    let venue = MockVenue::with_token(token_response_body()).await;
     let config = config_for(&venue);
 
     // TRACE, so nothing can hide behind a level filter.
     let (client, logs) =
-        capture_logs_at(Level::TRACE, async { TastyTrade::login(&config).await }).await;
+        capture_logs_at(Level::TRACE, async { TastyTrade::connect(&config).await }).await;
 
-    let client = client.expect("the canned login response must be accepted");
+    let client = client.expect("the canned token response must be accepted");
     assert_no_secret_leaked(&logs);
 
     // Debug output is part of the contract too: it lands in panic messages and
     // in a consumer's error reports.
     let rendered = format!("{client:?} {client}");
     assert!(
-        !rendered.contains(sentinel::SESSION_TOKEN) && !rendered.contains(sentinel::PASSWORD),
+        !rendered.contains("SENTINEL"),
         "Debug/Display exposed a credential: {rendered}"
     );
 
     let sent = venue.requests();
-    assert_eq!(sent.len(), 1, "login must be exactly one request");
+    assert_eq!(sent.len(), 1, "authenticating must be exactly one request");
     assert_eq!(sent[0].method, "POST");
-    assert_eq!(sent[0].target, "/sessions");
+    assert_eq!(sent[0].target, "/oauth/token");
 
-    // The password belongs in the login body and nowhere else. Asserting it is
-    // there is what makes the log assertions above mean something: the value
-    // was in play, and still did not get written down.
+    // RFC 6749 §6: the token endpoint takes form-encoded parameters, and the
+    // client must not let a JSON default shadow that.
+    assert_eq!(
+        sent[0].headers.get("content-type").map(String::as_str),
+        Some("application/x-www-form-urlencoded"),
+        "the token request must be form-encoded: {:?}",
+        sent[0].headers
+    );
+
+    // The venue rejects a User-Agent that is not <product>/<version>, and
+    // rejects a missing one outright.
+    let agent = sent[0]
+        .headers
+        .get("user-agent")
+        .expect("every request carries a user agent");
     assert!(
-        sent[0].body.contains(sentinel::PASSWORD),
-        "the login request must carry the password it was given"
+        agent.split_once('/').is_some_and(|(product, version)| {
+            !product.is_empty() && version.chars().next().is_some_and(|c| c.is_ascii_digit())
+        }),
+        "the user agent must be <product>/<version>: {agent}"
+    );
+
+    // The secrets belong in the token request body and nowhere else. Asserting
+    // they are there is what makes the log assertions above mean something:
+    // the values were in play, and still did not get written down.
+    assert!(
+        sent[0].body.contains("grant_type=refresh_token"),
+        "the grant type must be the refresh flow: {}",
+        sent[0].body
     );
     assert!(
-        sent[0].body.contains("remember-me"),
-        "remember_me must be sent kebab-cased: {}",
+        sent[0].body.contains(sentinel::CLIENT_SECRET)
+            && sent[0].body.contains(sentinel::REFRESH_TOKEN),
+        "the token request must carry the credentials it was given"
+    );
+    // The authorization-code parameters belong to the other grant.
+    assert!(
+        !sent[0].body.contains("redirect_uri"),
+        "the refresh grant sends no redirect URI: {}",
         sent[0].body
     );
 }
 
+/// Every request after the first has to present the token as a bearer
+/// credential. Without the prefix the venue answers 401 on everything.
+#[tokio::test]
+async fn every_request_carries_the_bearer_token() {
+    let venue = MockVenue::start(routes_with_token([(
+        "GET /customers/me/accounts",
+        Route::ok(r#"{"data":{"items":[]},"context":"/customers/me/accounts"}"#),
+    )]))
+    .await;
+    let config = config_for(&venue);
+
+    let client = TastyTrade::connect(&config)
+        .await
+        .expect("authentication must succeed");
+    client.accounts().await.expect("an empty listing is fine");
+
+    let sent = venue.requests();
+    let listing = sent
+        .iter()
+        .find(|request| request.target == "/customers/me/accounts")
+        .expect("the listing was requested");
+
+    assert_eq!(
+        listing.headers.get("authorization").map(String::as_str),
+        Some(format!("Bearer {}", sentinel::ACCESS_TOKEN).as_str()),
+        "the access token must be presented as a bearer credential"
+    );
+}
+
+/// The token lasts fifteen minutes and the client is meant to outlive it, so
+/// a stale token is replaced before the request that would have failed on it.
+#[tokio::test]
+async fn an_expiring_token_is_refreshed_before_the_next_request() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::ok(expiring_token_response_body()),
+    );
+    routes.insert(
+        "GET /customers/me/accounts".to_string(),
+        Route::ok(r#"{"data":{"items":[]},"context":"/customers/me/accounts"}"#),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let client = TastyTrade::connect(&config)
+        .await
+        .expect("authentication must succeed");
+    client.accounts().await.expect("an empty listing is fine");
+
+    let exchanges = venue
+        .requests()
+        .iter()
+        .filter(|request| request.target == "/oauth/token")
+        .count();
+    assert_eq!(
+        exchanges, 2,
+        "a token already inside the refresh margin must be renewed before it is used"
+    );
+}
+
+/// A refused refresh is terminal: the same secret produces the same answer,
+/// and both streamers stop rather than back off on `Auth`.
+#[tokio::test]
+async fn a_refused_grant_is_an_authentication_failure_and_is_not_retryable() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::status(400, token_error_body("invalid_grant")),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let (result, logs) =
+        capture_logs_at(Level::TRACE, async { TastyTrade::connect(&config).await }).await;
+    let error = result.expect_err("a refused grant is not a session");
+
+    assert!(
+        matches!(error, TastyTradeError::Auth(_)),
+        "expected an authentication failure, got {error:?}"
+    );
+    assert!(!error.is_retryable(), "presenting it again cannot help");
+
+    let rendered = format!("{error}");
+    assert!(rendered.contains("invalid_grant"), "{rendered}");
+    // The refusal document echoed a credential back in `error_description`,
+    // and the sentinel body also puts one in `error` itself. Neither field is
+    // trusted: only the spec's own codes leave the type.
+    assert!(!rendered.contains(sentinel::REFRESH_TOKEN), "{rendered}");
+    // Which deployment refused is part of what makes the message actionable.
+    // A loopback host is reported as production, the answer that fails safe.
+    assert!(rendered.contains("production"), "{rendered}");
+    // The venue's error_description echoed a credential back. It must not
+    // travel any further than the socket it arrived on.
+    assert!(!rendered.contains("SENTINEL"), "{rendered}");
+    assert_no_secret_leaked(&logs);
+}
+
+/// `error` is untrusted response text. An endpoint that echoes a credential
+/// back in that field must not get it into the error a caller logs, and the
+/// classification must not turn an unreadable reply into a dead session.
+#[tokio::test]
+async fn an_error_code_the_spec_does_not_define_never_reaches_the_caller() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::status(400, format!(r#"{{"error":"{}"}}"#, sentinel::CLIENT_SECRET)),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let (result, logs) =
+        capture_logs_at(Level::TRACE, async { TastyTrade::connect(&config).await }).await;
+    let error = result.expect_err("a 400 is not a session");
+
+    let rendered = format!("{error} {error:?}");
+    assert!(
+        !rendered.contains("SENTINEL"),
+        "the code reached the caller: {rendered}"
+    );
+    assert_no_secret_leaked(&logs);
+
+    // Not classified as a credential failure: this crate could not read the
+    // code, so giving up on the grant would be a guess.
+    assert!(
+        !matches!(error, TastyTradeError::Auth(_)),
+        "an unreadable code must not be treated as a dead credential: {error:?}"
+    );
+}
+
+/// A token endpoint that is down says nothing about whether the secret is
+/// good, so this keeps its request shape and stays retryable.
+#[tokio::test]
+async fn a_token_endpoint_outage_is_not_a_credential_failure() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::status(503, r#"{"error":"temporarily_unavailable"}"#),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let error = TastyTrade::connect(&config)
+        .await
+        .expect_err("a 503 is not a session");
+
+    match &error {
+        TastyTradeError::Request { context, .. } => {
+            assert_eq!(context.status, Some(503));
+            // A loopback host is not the certification one, so the environment
+            // derivation reports production. That is the answer that fails
+            // safe, and it is the same one every other verb reports here.
+            assert_eq!(context.environment, Environment::Production);
+            assert!(context.operation.contains("/oauth/token"), "{context}");
+        }
+        other => panic!("expected a request failure, got {other:?}"),
+    }
+    assert!(error.is_retryable(), "a 503 is worth trying again");
+}
+
 #[tokio::test]
 async fn missing_credentials_never_reach_the_venue() {
-    let venue = MockVenue::with_login(login_response_body()).await;
+    let venue = MockVenue::with_token(token_response_body()).await;
     let mut config = config_for(&venue);
-    config.username = String::new();
-    config.password = String::new();
+    config.client_secret = "".into();
+    config.refresh_token = "".into();
 
-    let error = TastyTrade::login(&config)
+    let error = TastyTrade::connect(&config)
         .await
         .expect_err("an empty credential pair must not be posted");
 
@@ -99,8 +304,8 @@ async fn missing_credentials_never_reach_the_venue() {
 async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
@@ -110,9 +315,9 @@ async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
     let config = config_for(&venue);
 
     let (accounts, logs) = capture_logs_at(Level::WARN, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         // Account borrows the client, so hand back a count rather than the
         // values themselves.
         client.accounts().await.map(|accounts| accounts.len())
@@ -134,8 +339,8 @@ async fn an_unparseable_item_is_skipped_without_logging_the_payload() {
 async fn an_account_scoped_error_does_not_carry_the_account_number() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         format!("GET /accounts/{}/balances", sentinel::ACCOUNT_NUMBER),
@@ -144,9 +349,9 @@ async fn an_account_scoped_error_does_not_carry_the_account_number() {
     let venue = MockVenue::start(routes).await;
     let config = config_for(&venue);
 
-    let client = TastyTrade::login(&config)
+    let client = TastyTrade::connect(&config)
         .await
-        .expect("login must succeed");
+        .expect("authentication must succeed");
 
     let error = client
         .get::<serde_json::Value, _>(&format!("/accounts/{}/balances", sentinel::ACCOUNT_NUMBER))
@@ -171,8 +376,8 @@ async fn an_account_scoped_error_does_not_carry_the_account_number() {
 async fn a_malformed_envelope_is_an_error_not_a_panic() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
@@ -182,9 +387,9 @@ async fn a_malformed_envelope_is_an_error_not_a_panic() {
     let config = config_for(&venue);
 
     let (result, logs) = capture_logs_at(Level::WARN, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         client.accounts().await.map(|accounts| accounts.len())
     })
     .await;
@@ -199,11 +404,11 @@ async fn a_malformed_envelope_is_an_error_not_a_panic() {
 }
 
 #[tokio::test]
-async fn the_session_token_is_sent_but_never_logged() {
+async fn the_access_token_is_sent_but_never_logged() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
@@ -213,9 +418,9 @@ async fn the_session_token_is_sent_but_never_logged() {
     let config = config_for(&venue);
 
     let (accounts, logs) = capture_logs_at(Level::TRACE, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         client.accounts().await.map(|accounts| accounts.len())
     })
     .await;
@@ -233,8 +438,8 @@ async fn the_session_token_is_sent_but_never_logged() {
         .expect("the account request must be authenticated");
     assert_eq!(
         authorization,
-        sentinel::SESSION_TOKEN,
-        "the session token must be the credential actually sent"
+        &format!("Bearer {}", sentinel::ACCESS_TOKEN),
+        "the access token must be the credential actually sent"
     );
 
     // Sent, and still never written down.
@@ -245,8 +450,8 @@ async fn the_session_token_is_sent_but_never_logged() {
 async fn a_broker_error_document_becomes_a_typed_error() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         format!("GET /accounts/{}/orders/live", sentinel::ACCOUNT_NUMBER),
@@ -262,9 +467,9 @@ async fn a_broker_error_document_becomes_a_typed_error() {
     let config = config_for(&venue);
 
     let (result, logs) = capture_logs_at(Level::WARN, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         client
             .get::<serde_json::Value, _>(&format!(
                 "/accounts/{}/orders/live",
@@ -329,8 +534,8 @@ async fn a_broker_error_document_becomes_a_typed_error() {
 async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         format!("GET /accounts/{}/balances", sentinel::ACCOUNT_NUMBER),
@@ -342,9 +547,9 @@ async fn a_non_json_error_body_degrades_to_status_and_endpoint() {
     let venue = MockVenue::start(routes).await;
     let config = config_for(&venue);
 
-    let client = TastyTrade::login(&config)
+    let client = TastyTrade::connect(&config)
         .await
-        .expect("login must succeed");
+        .expect("authentication must succeed");
 
     let error = client
         .get::<serde_json::Value, _>(&format!("/accounts/{}/balances", sentinel::ACCOUNT_NUMBER))
@@ -379,8 +584,8 @@ async fn a_successful_body_is_never_written_to_the_logs() {
 
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
@@ -391,9 +596,9 @@ async fn a_successful_body_is_never_written_to_the_logs() {
 
     // TRACE: if a body survives anywhere, it survives here.
     let (count, logs) = capture_logs_at(Level::TRACE, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         client.accounts().await.map(|accounts| accounts.len())
     })
     .await;
@@ -415,8 +620,8 @@ async fn a_successful_body_is_never_written_to_the_logs() {
 async fn a_listing_without_pagination_is_an_error_not_a_panic() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     // A well-formed envelope that simply carries no pagination block, which
     // used to reach an expect() and abort the caller's process.
@@ -427,9 +632,9 @@ async fn a_listing_without_pagination_is_an_error_not_a_panic() {
     let venue = MockVenue::start(routes).await;
     let config = config_for(&venue);
 
-    let client = TastyTrade::login(&config)
+    let client = TastyTrade::connect(&config)
         .await
-        .expect("login must succeed");
+        .expect("authentication must succeed");
 
     let error = client
         .list_active_equities(0)
@@ -450,8 +655,8 @@ async fn a_listing_without_pagination_is_an_error_not_a_panic() {
 async fn the_pagination_error_redacts_the_venue_supplied_context() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         format!(
@@ -466,9 +671,9 @@ async fn the_pagination_error_redacts_the_venue_supplied_context() {
     let venue = MockVenue::start(routes).await;
     let config = config_for(&venue);
 
-    let client = TastyTrade::login(&config)
+    let client = TastyTrade::connect(&config)
         .await
-        .expect("login must succeed");
+        .expect("authentication must succeed");
 
     let error = client
         .get_with_query::<tastytrade::api::base::Items<serde_json::Value>, tastytrade::api::base::Paginated<serde_json::Value>, _>(
@@ -495,8 +700,8 @@ async fn the_pagination_error_redacts_the_venue_supplied_context() {
 async fn a_listing_where_nothing_decodes_is_reported_not_returned_empty() {
     let mut routes = HashMap::new();
     routes.insert(
-        "POST /sessions".to_string(),
-        Route::ok(login_response_body()),
+        "POST /oauth/token".to_string(),
+        Route::ok(token_response_body()),
     );
     routes.insert(
         "GET /customers/me/accounts".to_string(),
@@ -506,9 +711,9 @@ async fn a_listing_where_nothing_decodes_is_reported_not_returned_empty() {
     let config = config_for(&venue);
 
     let (result, logs) = capture_logs_at(Level::WARN, async {
-        let client = TastyTrade::login(&config)
+        let client = TastyTrade::connect(&config)
             .await
-            .expect("login must succeed");
+            .expect("authentication must succeed");
         client.accounts().await.map(|accounts| accounts.len())
     })
     .await;
@@ -584,8 +789,8 @@ mod reviewed_placement {
     async fn account_venue(warnings: &str) -> MockVenue {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             "GET /customers/me/accounts".to_string(),
@@ -611,7 +816,7 @@ mod reviewed_placement {
     async fn a_clean_dry_run_accepts_without_ceremony() {
         let venue = account_venue("").await;
         let config = config_for(&venue);
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let accounts = client.accounts().await.expect("accounts");
         let account = accounts.first().expect("one account");
 
@@ -631,7 +836,7 @@ mod reviewed_placement {
         )
         .await;
         let config = config_for(&venue);
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let accounts = client.accounts().await.expect("accounts");
         let account = accounts.first().expect("one account");
 
@@ -657,7 +862,7 @@ mod reviewed_placement {
     async fn a_receipt_cannot_be_spent_on_another_account() {
         let venue = account_venue("").await;
         let config = config_for(&venue);
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let accounts = client.accounts().await.expect("accounts");
         assert_eq!(accounts.len(), 2, "the fixture needs two accounts");
 
@@ -700,7 +905,7 @@ mod reviewed_placement {
 
         let reviewed = {
             let config = config_for(&first);
-            let client = TastyTrade::login(&config).await.expect("login");
+            let client = TastyTrade::connect(&config).await.expect("authentication");
             let accounts = client.accounts().await.expect("accounts");
             accounts[0]
                 .review_order(&an_order())
@@ -712,7 +917,7 @@ mod reviewed_placement {
 
         // Same account number, different venue.
         let config = config_for(&second);
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let accounts = client.accounts().await.expect("accounts");
         assert_eq!(accounts[0].number().0, reviewed.account_number().0);
 
@@ -737,96 +942,20 @@ mod reviewed_placement {
 /// Every verb reports a failure the same way.
 ///
 /// GET has always produced a typed `Request` error with a status, a redacted
-/// endpoint and an environment. POST, DELETE and login never inspected the
-/// status at all: they handed the body straight to serde and surfaced whatever
-/// it said about a document it could not decode. These pin the shared path.
+/// endpoint and an environment. POST, DELETE and the authentication request
+/// never inspected the status at all: they handed the body straight to serde
+/// and surfaced whatever it said about a document it could not decode. These
+/// pin the shared path.
 mod every_verb_reports_failures_alike {
     use super::*;
-
-    /// A `POST /sessions` that fails, plus the routes a test needs afterwards.
-    async fn venue_with_login(login: Route) -> MockVenue {
-        let mut routes = HashMap::new();
-        routes.insert("POST /sessions".to_string(), login);
-        MockVenue::start(routes).await
-    }
-
-    /// The login endpoint is the one request whose *request* body is a
-    /// credential, and a venue that echoes it back is not hypothetical: error
-    /// documents routinely quote the field that failed validation.
-    #[tokio::test]
-    async fn rejected_credentials_are_an_auth_error_not_a_decode_failure() {
-        let venue = venue_with_login(Route::status(
-            401,
-            format!(
-                r#"{{"error":{{"code":"invalid_credentials","message":"Invalid login",
-                     "errors":[{{"code":"password","message":"{} is not correct"}}]}}}}"#,
-                sentinel::PASSWORD
-            ),
-        ))
-        .await;
-        let config = config_for(&venue);
-
-        let (result, logs) =
-            capture_logs_at(Level::TRACE, async { TastyTrade::login(&config).await }).await;
-
-        let error = result.expect_err("a 401 must not produce a session");
-
-        // Auth rather than Request: the credentials are wrong, so retrying with
-        // the same ones is pointless, and `BackoffPolicy` already treats Auth as
-        // terminal.
-        let TastyTradeError::Auth(message) = &error else {
-            panic!("a rejected login must be an auth error, got {error:?}");
-        };
-        assert!(
-            message.contains("Invalid login"),
-            "the venue's own summary is what a caller acts on: {message}"
-        );
-        assert!(
-            !error.is_retryable(),
-            "wrong credentials do not become right on a retry"
-        );
-
-        // The nested detail quoted the password. Neither the error nor the log
-        // may carry it.
-        let rendered = format!("{error} {error:?}");
-        assert!(
-            !rendered.contains(sentinel::PASSWORD),
-            "the password reached the error: {rendered}"
-        );
-        assert_no_secret_leaked(&logs);
-    }
-
-    /// A login endpoint that is down says nothing about the credentials, so
-    /// re-labelling every failure as `Auth` would be wrong.
-    #[tokio::test]
-    async fn an_unavailable_login_endpoint_stays_a_request_error() {
-        let venue = venue_with_login(Route::status(503, "<html>maintenance</html>")).await;
-        let config = config_for(&venue);
-
-        let error = TastyTrade::login(&config)
-            .await
-            .expect_err("a 503 must not produce a session");
-
-        let TastyTradeError::Request { context, api } = &error else {
-            panic!("a 503 on /sessions is a request failure, got {error:?}");
-        };
-        assert_eq!(context.status, Some(503));
-        assert_eq!(context.method, "POST");
-        assert_eq!(context.operation, "/sessions");
-        assert!(api.is_none(), "an HTML body is not a broker error document");
-        assert!(
-            error.is_retryable(),
-            "a venue that is temporarily down is exactly the retryable case"
-        );
-    }
 
     /// The verb that can place an order.
     #[tokio::test]
     async fn a_rejected_post_carries_the_status_and_a_redacted_endpoint() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             format!("POST /accounts/{}/orders", sentinel::ACCOUNT_NUMBER),
@@ -843,9 +972,9 @@ mod every_verb_reports_failures_alike {
         let config = config_for(&venue);
 
         let (result, logs) = capture_logs_at(Level::TRACE, async {
-            let client = TastyTrade::login(&config)
+            let client = TastyTrade::connect(&config)
                 .await
-                .expect("login must succeed");
+                .expect("authentication must succeed");
             client
                 .post::<serde_json::Value, _, _>(
                     format!("/accounts/{}/orders", sentinel::ACCOUNT_NUMBER),
@@ -888,16 +1017,16 @@ mod every_verb_reports_failures_alike {
     async fn a_rejected_delete_carries_the_status_and_a_redacted_endpoint() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         let venue = MockVenue::start(routes).await;
         let config = config_for(&venue);
 
         let (result, logs) = capture_logs_at(Level::TRACE, async {
-            let client = TastyTrade::login(&config)
+            let client = TastyTrade::connect(&config)
                 .await
-                .expect("login must succeed");
+                .expect("authentication must succeed");
             // Unrouted, so the venue answers 404 with a JSON error body.
             client
                 .delete::<serde_json::Value, _>(format!(
@@ -936,8 +1065,8 @@ mod every_verb_reports_failures_alike {
     async fn a_success_status_carrying_an_error_document_is_an_error() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             "POST /accounts/5WX00001/orders".to_string(),
@@ -946,7 +1075,7 @@ mod every_verb_reports_failures_alike {
         let venue = MockVenue::start(routes).await;
         let config = config_for(&venue);
 
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let error = client
             .post::<serde_json::Value, _, _>(
                 "/accounts/5WX00001/orders",
@@ -972,8 +1101,8 @@ mod every_verb_reports_failures_alike {
     async fn a_body_that_cannot_be_decoded_stays_out_of_the_error() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             "POST /accounts/5WX00001/orders".to_string(),
@@ -995,7 +1124,7 @@ mod every_verb_reports_failures_alike {
         }
 
         let (result, logs) = capture_logs_at(Level::TRACE, async {
-            let client = TastyTrade::login(&config).await.expect("login");
+            let client = TastyTrade::connect(&config).await.expect("authentication");
             client
                 .post::<Order, _, _>(
                     "/accounts/5WX00001/orders",
@@ -1035,8 +1164,8 @@ mod every_verb_reports_failures_alike {
     async fn a_decode_failure_is_not_logged_by_rendering_the_serde_error() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             "GET /accounts/5WX00001/balances".to_string(),
@@ -1053,7 +1182,7 @@ mod every_verb_reports_failures_alike {
         }
 
         let (result, logs) = capture_logs_at(Level::TRACE, async {
-            let client = TastyTrade::login(&config).await.expect("login");
+            let client = TastyTrade::connect(&config).await.expect("authentication");
             client
                 .get::<Balance, _>("/accounts/5WX00001/balances")
                 .await
@@ -1073,8 +1202,8 @@ mod every_verb_reports_failures_alike {
     async fn a_streamer_token_that_cannot_be_decoded_never_renders_the_token() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         routes.insert(
             "GET /api-quote-tokens".to_string(),
@@ -1083,14 +1212,14 @@ mod every_verb_reports_failures_alike {
             Route::ok(format!(
                 r#"{{"data":{{"token":["{}"],"dxlink-url":"wss://x","level":"api"}},
                      "context":"/api-quote-tokens"}}"#,
-                sentinel::SESSION_TOKEN
+                sentinel::ACCESS_TOKEN
             )),
         );
         let venue = MockVenue::start(routes).await;
         let config = config_for(&venue);
 
         let (result, logs) = capture_logs_at(Level::TRACE, async {
-            let client = TastyTrade::login(&config).await.expect("login");
+            let client = TastyTrade::connect(&config).await.expect("authentication");
             client.quote_streamer_tokens().await.map(|_| ())
         })
         .await;
@@ -1098,7 +1227,7 @@ mod every_verb_reports_failures_alike {
         let error = result.expect_err("an array where a string belongs cannot decode");
         let rendered = format!("{error} {error:?}");
         assert!(
-            !rendered.contains(sentinel::SESSION_TOKEN),
+            !rendered.contains(sentinel::ACCESS_TOKEN),
             "the streamer token reached the error: {rendered}"
         );
         assert_no_secret_leaked(&logs);
@@ -1112,13 +1241,13 @@ mod every_verb_reports_failures_alike {
     async fn an_absolute_url_is_refused_before_anything_is_sent() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         let venue = MockVenue::start(routes).await;
         let config = config_for(&venue);
 
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
         let before = venue.requests().len();
 
         let error = client
@@ -1174,13 +1303,13 @@ mod every_verb_reports_failures_alike {
     async fn an_unreachable_venue_reports_the_verb_without_the_url() {
         let mut routes = HashMap::new();
         routes.insert(
-            "POST /sessions".to_string(),
-            Route::ok(login_response_body()),
+            "POST /oauth/token".to_string(),
+            Route::ok(token_response_body()),
         );
         let venue = MockVenue::start(routes).await;
         let config = config_for(&venue);
 
-        let client = TastyTrade::login(&config).await.expect("login");
+        let client = TastyTrade::connect(&config).await.expect("authentication");
 
         // The venue goes away with the session still open, which is the shape
         // of a real outage: the client is configured for a host that has

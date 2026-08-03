@@ -9,8 +9,10 @@
 pub mod accounts;
 /// Response envelopes, pagination and the tolerant `Items<T>` listing.
 pub mod base;
-/// The client itself: login, session, and the generic HTTP verbs.
+/// The client itself: the OAuth2 session and the generic HTTP verbs.
 pub mod client;
+/// The OAuth2 session: token exchange, expiry and refresh.
+pub mod oauth;
 
 /// Option chains: flat, compact and nested.
 pub mod option_chain;

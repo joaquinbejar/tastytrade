@@ -27,7 +27,7 @@ include = [
 
 [dependencies]
 derive_builder = { workspace = true }
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "form"] }
 rust_decimal = { workspace = true, features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
@@ -67,7 +67,7 @@ members = [
 [workspace.dependencies]
 tastytrade = { path = "." }
 derive_builder = "0.20"
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 rust_decimal = { version = "1.42", features = [
     "serde-with-arbitrary-precision",
     "serde-with-float",
@@ -80,7 +80,7 @@ tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 tokio = { version = "1.53", features = ["full"] }
 futures-util = "0.3"
 erased-serde = "0.4"
-dxlink = "0.3"
+dxlink = "0.3.1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"

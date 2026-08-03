@@ -48,15 +48,35 @@ impl std::fmt::Display for SubRequestAction {
 ///
 /// This struct is used to send subscription requests to the server.
 /// The `value` field is optional and its type depends on the `action` field.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SubRequest<T: Serialize> {
-    /// Authentication token.
+    /// The OAuth2 access token, `Bearer `-prefixed.
+    ///
+    /// The venue documents this field as taking the same value as the
+    /// `Authorization` header, prefix included — it is not a bare token. It is
+    /// built by [`crate::oauth::AccessToken::bearer`] so the REST path and this
+    /// one cannot drift.
     auth_token: String,
     /// Action to be performed.
     action: SubRequestAction,
     /// Value associated with the action.  This field is optional.
     value: Option<T>,
+}
+
+impl<T: Serialize> std::fmt::Debug for SubRequest<T> {
+    /// Redacts the credential.
+    ///
+    /// The derived `Debug` printed the whole `Bearer …` value. Nothing logs a
+    /// `SubRequest` today, which is exactly why it was easy to miss: the next
+    /// person adding a trace to the writer would have leaked a live access
+    /// token on the first line they wrote.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubRequest")
+            .field("auth_token", &"***")
+            .field("action", &self.action)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Represents an action to be performed by a handler.
@@ -266,8 +286,13 @@ impl AccountStreamer {
         // closes on its own and a quiet socket would keep the loop alive after
         // its owner is gone. Only the streamer holds this.
         let (cancel_tx, mut cancelled) = oneshot::channel::<()>();
+        // A clone of the client rather than a copied token. Access tokens last
+        // about fifteen minutes and this connection is meant to last days, so
+        // there is no such thing as "the" token for a session: every frame asks
+        // the shared session for a live one, and the session refreshes when it
+        // has to.
+        let client = tasty.clone();
         let config = tasty.config.clone();
-        let mut token = tasty.session_token.clone();
         let mut session = Some(session);
 
         tokio::spawn(async move {
@@ -298,7 +323,7 @@ impl AccountStreamer {
 
                 let worked = run_session(
                     live,
-                    &token,
+                    &client,
                     &event_sender,
                     &action_receiver,
                     &mut cancelled,
@@ -322,25 +347,26 @@ impl AccountStreamer {
                     return;
                 }
 
-                // The session token may be why the socket dropped, so take a
-                // fresh one rather than presenting the same one again.
-                match TastyTrade::login(&config).await {
-                    Ok(client) => token = client.session_token.clone(),
-                    Err(e) => {
-                        if !policy.should_retry(&e) {
-                            terminal(
-                                &supervisor_state,
-                                "re-authentication was refused; the credentials no longer work"
-                                    .to_string(),
-                            )
-                            .await;
-                            return;
-                        }
-                        // Keep the old token and try the socket anyway: the
-                        // login endpoint being briefly unavailable does not
-                        // mean the session is invalid.
-                        warn!("Could not re-authenticate before reconnecting: {e}");
+                // An expired access token may be why the socket dropped, so ask
+                // the session for a live one before reconnecting rather than
+                // presenting the same one again. There is no username and
+                // password to fall back on: a refused refresh is the end.
+                if let Err(e) = client.access_token().await {
+                    if !policy.should_retry(&e) {
+                        terminal(
+                            &supervisor_state,
+                            "the refresh token was refused; authorize again to obtain a new grant"
+                                .to_string(),
+                        )
+                        .await;
+                        return;
                     }
+                    // A token endpoint that is briefly unavailable does not
+                    // mean the grant is invalid, so this follows the same
+                    // backoff as any other transient failure. The token in
+                    // hand may still be good; if it is not, the next session
+                    // fails and comes back through here.
+                    warn!("Could not refresh the access token before reconnecting: {e}");
                 }
 
                 // Connected is claimed only once what was being watched is
@@ -570,7 +596,7 @@ async fn resubscribe(
 /// one.
 async fn run_session(
     session: Session,
-    token: &str,
+    client: &TastyTrade,
     events: &flume::Sender<AccountEvent>,
     actions: &flume::Receiver<HandlerAction>,
     cancelled: &mut oneshot::Receiver<()>,
@@ -591,8 +617,20 @@ async fn run_session(
                 return wrote_successfully;
             }
             _ = heartbeat.tick() => {
+                // Every frame carries a token, and a token lasts a quarter of
+                // an hour, so the heartbeat is where a long-lived connection
+                // discovers it needs a new one. Usually cached; a refusal here
+                // ends the session and lets the supervisor's policy decide,
+                // which is terminal for a rejected grant.
+                let auth_token = match client.access_token().await {
+                    Ok(token) => token.bearer(),
+                    Err(e) => {
+                        warn!("Ending the account session: no usable access token ({e})");
+                        return wrote_successfully;
+                    }
+                };
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token: token.to_string(),
+                    auth_token,
                     action: SubRequestAction::Heartbeat,
                     value: None,
                 };
@@ -646,8 +684,19 @@ async fn run_session(
                     return wrote_successfully;
                 };
                 let ack = action.ack;
+                let auth_token = match client.access_token().await {
+                    Ok(token) => token.bearer(),
+                    Err(e) => {
+                        // The caller is waiting on this one, so it gets the
+                        // answer rather than a silent drop.
+                        report(ack, Err(TastyTradeError::Auth(format!(
+                            "the account stream has no usable access token: {e}"
+                        ))));
+                        return wrote_successfully;
+                    }
+                };
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token: token.to_string(),
+                    auth_token,
                     action: action.action,
                     value: action.value,
                 };
@@ -757,6 +806,45 @@ impl TastyTrade {
     /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.
     pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    use crate::accounts::AccountNumber;
+
+    /// The websocket takes the same `Bearer `-prefixed value as the HTTP
+    /// header, and the whole request must be safe to format. A derived `Debug`
+    /// rendered the live token.
+    #[test]
+    fn formatting_a_subscription_request_never_shows_the_token() {
+        const TOKEN: &str = "SENTINEL-access-token-5Nd9";
+
+        let message = SubRequest::<Vec<AccountNumber>> {
+            auth_token: crate::oauth::AccessToken::new(TOKEN).bearer(),
+            action: SubRequestAction::Connect,
+            value: Some(vec![AccountNumber("SENTINEL-5WX00042".to_string())]),
+        };
+
+        // What goes on the wire still carries it, prefix included.
+        let sent = serde_json::to_string(&message).expect("the request serializes");
+        assert!(
+            sent.contains(&format!(r#""auth-token":"Bearer {TOKEN}""#)),
+            "the prefix is part of the credential: {sent}"
+        );
+
+        // What goes anywhere else does not.
+        let rendered = format!("{message:?}");
+        assert!(
+            !rendered.contains(TOKEN),
+            "the token reached Debug: {rendered}"
+        );
+        assert!(rendered.contains("***"), "{rendered}");
+        assert!(
+            rendered.contains("Connect"),
+            "the action is safe: {rendered}"
+        );
     }
 }
 

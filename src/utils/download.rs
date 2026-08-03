@@ -171,9 +171,9 @@ pub async fn download_options_symbols_with(
     config: &TastyTradeConfig,
     limits: &DownloadLimits,
 ) -> TastyResult<DownloadReport> {
-    // login already refuses missing credentials without a network call, and
+    // connect already refuses missing credentials without a network call, and
     // says which variables to set.
-    let tasty = TastyTrade::login(config).await?;
+    let tasty = TastyTrade::connect(config).await?;
     let now = Utc::now();
 
     // The two sources are independent, so one failing must not discard the

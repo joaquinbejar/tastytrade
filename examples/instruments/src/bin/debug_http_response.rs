@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("🔐 Logging into TastyTrade...");
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
     info!("✅ Successfully logged in!");
 
     // Test different equity option endpoints to isolate the problem

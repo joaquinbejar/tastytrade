@@ -10,29 +10,34 @@ Snapshot taken 2026-08-03; the Orders spec was `order-api-swagger_20260427`.
 
 ## Summary
 
-| Area | Endpoints | Implemented | Missing | % |
-|------|-----------|-------------|---------|---|
-| Account Status | 1 | 0 | 1 | 0% |
-| Accounts and Customers | 4 | 2 | 2 | 50% |
-| Backtesting | 7 | 0 | 7 | 0% |
-| Balances and Positions | 4 | 3 | 1 | 75% |
-| Instruments | 24 | 22 | 2 | 92% |
-| Margin Requirements | 2 | 0 | 2 | 0% |
-| Market Data | 1 | 0 | 1 | 0% |
-| Market Metrics | 3 | 0 | 3 | 0% |
-| Market Sessions | 11 | 0 | 11 | 0% |
-| Net Liquidating Value History | 1 | 0 | 1 | 0% |
-| Orders | 19 | 4 | 15 | 21% |
-| Quote Alerts | 3 | 0 | 3 | 0% |
-| Risk Parameters | 4 | 0 | 4 | 0% |
-| Symbol Search | 1 | 0 | 1 | 0% |
-| Transactions | 3 | 0 | 3 | 0% |
-| Watchlists | 9 | 0 | 9 | 0% |
-| **TOTAL** | **97** | **31** | **66** | **32%** |
+| Area | Endpoints | Implemented | Missing | % | Issue |
+|------|-----------|-------------|---------|---|-------|
+| Account Status | 1 | 0 | 1 | 0% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
+| Accounts and Customers | 4 | 2 | 2 | 50% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
+| Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
+| Balances and Positions | 4 | 3 | 1 | 75% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
+| Instruments | 24 | 22 | 2 | 92% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
+| Margin Requirements | 2 | 0 | 2 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
+| Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
+| Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
+| Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
+| Net Liquidating Value History | 1 | 0 | 1 | 0% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
+| Orders | 19 | 4 | 15 | 21% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
+| Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
+| Risk Parameters | 4 | 0 | 4 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
+| Symbol Search | 1 | 0 | 1 | 0% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
+| Transactions | 3 | 0 | 3 | 0% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
+| Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
+| **TOTAL** | **97** | **31** | **66** | **32%** | |
 
-Not counted above because they are documented in prose rather than in a swagger
-document: the session lifecycle (`POST /sessions` — implemented) and OAuth2
-(`POST /oauth/token` — not implemented).
+Not counted above because it is documented in prose rather than in a swagger
+document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
+[#85](https://github.com/joaquinbejar/tastytrade/issues/85). The session
+lifecycle it replaced (`POST /sessions`) was decommissioned by the venue on
+2026-02-11.
+
+Streaming is not counted either; see the section at the end.
+`Doc/ROADMAP.md` sequences all of this by priority.
 
 ## Account Status
 
@@ -251,18 +256,136 @@ reconstruct what an account actually did.
 | `GET /pairs-watchlists` | ❌ |
 | `GET /pairs-watchlists/{pairs_watchlist_name}` | ❌ |
 
-## Gaps outside the endpoint list
+## Authentication — OAuth2
 
-- **Session lifecycle.** `POST /sessions` is implemented. There is no logout,
-  and the `remember-token` the venue returns in `LoginResponse` is parsed and
-  then dropped — nothing can re-authenticate with it, so `TASTYTRADE_REMEMBER_ME`
-  buys the caller nothing today.
-- **OAuth2.** `POST /oauth/token` and the refresh-token flow are not
-  implemented. This is the auth path tastytrade documents for third-party
-  applications; session tokens are the personal-use path.
-- **Streaming market data.** Candle events are documented under
-  `/streaming-market-data/#candle-events` and the crate does not subscribe to
-  them, so there is no historical bar data by any route.
-- **Account streamer.** The five documented actions (`heartbeat`, `connect`,
-  `public-watchlists-subscribe`, `quote-alerts-subscribe`,
-  `user-message-subscribe`) are all present in `SubRequestAction`.
+Implemented in [#85](https://github.com/joaquinbejar/tastytrade/issues/85).
+
+**`POST /sessions` was fully decommissioned on 2026-02-11.** From the official
+release notes: *"Legacy /sessions authentication has been fully decommissioned.
+If you are still using POST /sessions for your API application you likely are
+experiencing login issues. Please switch over to OAuth2 immediately."*
+
+| Endpoint / capability | Implemented |
+|---|---|
+| `POST /oauth/token`, `grant_type=refresh_token` | ✅ `TastyTrade::connect` |
+| `POST /oauth/token`, `grant_type=authorization_code` | ✅ `TastyTrade::connect_with_authorization_code` |
+| Authorization URL, both environments | ✅ `AuthorizationRequest::authorize_url` |
+| `state` round-trip | ✅ `AuthorizationRequest::verify_state` |
+| Access-token expiry tracking and renewal | ✅ `OAuthSession`, 60s margin |
+| `Authorization: Bearer` on every REST request | ✅ |
+| `Bearer `-prefixed `auth-token` on the account websocket | ✅ |
+| `POST /sessions`, `DELETE /sessions`, remember-token | ❌ retired by the venue, removed here |
+
+Access tokens last about 15 minutes. Renewal happens **before** a request, not
+as a retry after a `401`: a `POST` that may have placed an order is never
+replayed. A session is bound to the deployment it authenticated against, so
+neither a token nor the client secret can follow a changed `base_url`
+somewhere else.
+
+The logout and remember-token work originally filed here is moot: those are
+surfaces of a retired API. `TASTYTRADE_REMEMBER_ME` is no longer read.
+
+## Streaming
+
+Two websockets, neither counted in the 97 REST endpoints. On both, the crate
+subscribes to more than it can deliver.
+
+### DXLink market data — [#86](https://github.com/joaquinbejar/tastytrade/issues/86)
+
+dxlink 0.3.1 models eleven `MarketEvent` variants. The crate routes three.
+
+| Event type | Routed |
+|---|---|
+| `Quote` | ✅ |
+| `Trade` | ✅ |
+| `Greeks` | ✅ |
+| `Candle` | ❌ |
+| `Summary` | ❌ |
+| `TimeAndSale` | ❌ |
+| `Profile` | ❌ |
+| `Underlying` | ❌ |
+| `TheoPrice` | ❌ |
+| `TradeETH` | ❌ — new in 0.3.1 |
+| `Series` | ❌ — new in 0.3.1 |
+
+`Cargo.toml` pins `dxlink = "0.3"`, so `0.3.1` arrives on the next
+`cargo update`. `MarketEvent` is not `#[non_exhaustive]` and `event_kind()`
+matches exhaustively without a wildcard, so **the build stops compiling when
+the lock file moves** — the intended tripwire, and the starting point of #86.
+dxlink types are not re-exported here (`get_event` returns
+`crate::types::dxfeed::Event`), so this breaks our build, not our consumers'.
+
+`event_kind()` (`src/streaming/quote_streamer.rs:811`) already enumerates all
+nine exhaustively, so upstream coverage is known; `event_symbol()` (`:789`)
+returns `None` for six of them and they are logged and discarded at `:799`.
+`setup_feed` (`:677`) hardcodes `[Quote, Trade, Greeks]`, so the other six
+cannot arrive even if routing existed.
+
+Candles are the only historical bar data available anywhere in this library —
+there is no REST equivalent. They need the `{=5m}` streamer-symbol suffix plus
+`from_time`; `FeedSubscription::from_time` is already constructed in
+`feed_subscriptions()` (`:280`) and is always `None`.
+
+Also on this side: `create_sub(flags: i32)` takes a raw dxfeed bitmask, and
+`QuoteSubscription::subscribe(&self, _symbol: &[&str])` (`:605`) ignores its
+argument and does nothing.
+
+Event delivery itself was only fixed in #66/#69 and is **not yet verified
+against the venue** — `/smoke` is the check.
+
+### Account websocket — [#87](https://github.com/joaquinbejar/tastytrade/issues/87)
+
+All five documented actions are present in `SubRequestAction`
+(`src/streaming/account_streaming.rs:22`): `heartbeat`, `connect`,
+`public-watchlists-subscribe`, `quote-alerts-subscribe`,
+`user-message-subscribe`.
+
+`AccountMessage` (`:102`) cannot decode most of what those actions produce:
+
+| Notification | Decoded |
+|---|---|
+| Order | ✅ |
+| Account balance | ✅ |
+| Current position | ✅ |
+| Order chain | ⚠️ unit variant — `data` discarded |
+| External transaction | ⚠️ unit variant — `data` discarded |
+| Quote alert trigger | ❌ |
+| Public watchlist update | ❌ |
+| User message | ❌ |
+
+`AccountEvent` (`:166`) is `#[serde(untagged)]` with no catch-all, so an
+unrecognised notification type is a decode failure and disappears — the
+opposite of the `wire_enum!` `Unknown(String)` rule the REST side settled on.
+
+### DXLink as an account transport — [#54](https://github.com/joaquinbejar/tastytrade/issues/54), closed as not planned
+
+The premise did not hold. Two independent reasons:
+
+1. **tastytrade does not publish account data over DXLink.** Account
+   notifications go over the tastytrade account websocket at
+   `wss://streamer.[cert.]tastyworks.com`, authenticated with the session token
+   as the `auth-token` field of each `SubRequest`. DXLink is the market-data
+   streamer, reached through `GET /api-quote-tokens`. Different services,
+   different credentials.
+2. **In dxFeed, `Order` is order-book depth**, not "your order filled". A
+   decoder for it would produce correct events of the wrong kind. `Order` and
+   `Message` also have no decoder in dxlink 0.3 (`compact_fields()` → `None`),
+   so a row of either aborts the batch decode rather than being skipped.
+
+#17 removing DXLink from `AccountStreamer` was right for a stronger reason than
+recorded at the time: not merely unproven, but the wrong service. What remains
+of the account-streaming gap is tracked in
+[#87](https://github.com/joaquinbejar/tastytrade/issues/87).
+
+### Upstream (dxlink 0.3)
+
+Nothing this crate needs for market data is missing upstream — `MarketEvent`
+decodes all nine types the tastytrade docs describe, `CandleEvent` is complete,
+and `FeedSubscription::from_time` already exists. Six `EventType` variants are
+declared but undecoded (`Order`, `TradeETH`, `SpreadOrder`, `Series`,
+`Configuration`, `Message`). Two are worth having and are filed:
+[DXlink#66](https://github.com/joaquinbejar/DXlink/issues/66) (`TradeETH`,
+extended-hours prints) and
+[DXlink#67](https://github.com/joaquinbejar/DXlink/issues/67) (`Series`,
+per-expiration option data). The other four are order-book depth — likely
+outside this entitlement — or protocol plumbing.
