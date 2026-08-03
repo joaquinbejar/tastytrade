@@ -11,4 +11,5 @@
 
 mod support;
 
+mod account_stream;
 mod rest;

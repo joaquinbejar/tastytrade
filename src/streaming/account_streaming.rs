@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
@@ -403,7 +403,6 @@ impl AccountStreamer {
 
         let supervisor_state = state.clone();
         let supervisor_subscribed = subscribed.clone();
-        let supervisor_actions = action_sender.clone();
         // The supervisor holds its own action sender, so the receiver never
         // closes on its own and a quiet socket would keep the loop alive after
         // its owner is gone. Only the streamer holds this.
@@ -441,13 +440,19 @@ impl AccountStreamer {
                     },
                 };
 
-                *supervisor_state.write().await = ConnectionState::Connected;
-
+                // `Connected` is **not** claimed here. It used to be, one line
+                // before the session even started, while the comment beside
+                // the replay said it was claimed only once what was being
+                // watched was watched again. `run_session` restores the
+                // subscriptions and sets it when they land, so the two finally
+                // agree.
                 let worked = run_session(
                     live,
                     &client,
                     &event_sender,
                     &action_receiver,
+                    &supervisor_subscribed,
+                    &supervisor_state,
                     &mut cancelled,
                 )
                 .await;
@@ -491,15 +496,11 @@ impl AccountStreamer {
                     warn!("Could not refresh the access token before reconnecting: {e}");
                 }
 
-                // Connected is claimed only once what was being watched is
-                // watched again. Reporting it before restoration leaves a
-                // caller believing they are receiving events they are not.
-                if !resubscribe(&supervisor_actions, &supervisor_subscribed).await {
-                    warn!("Could not restore every subscription; reconnecting again");
-                    if !schedule(&policy, &mut attempt, &supervisor_state, &mut cancelled).await {
-                        return;
-                    }
-                }
+                // Nothing replays here any more. It used to, and it could not
+                // work: the replay was queued as an action and awaited an
+                // acknowledgement only `run_session` can send, at a point in
+                // the loop where no session is running. Restoration belongs to
+                // establishing a session, which is where it now is.
             }
         });
 
@@ -701,39 +702,69 @@ async fn schedule(
     }
 }
 
-/// Re-sends a Connect for every account that was subscribed before the drop.
-/// Replays every account that was subscribed before the drop.
+/// Writes one `connect` per account onto a freshly established session.
 ///
-/// Returns whether all of them landed. Each replay is acknowledged: a session
-/// that fails partway leaves the rest queued, and the next full replay would
-/// then append duplicates on top of them.
-async fn resubscribe(
-    actions: &flume::Sender<HandlerAction>,
-    subscribed: &Arc<Mutex<BTreeSet<AccountNumber>>>,
-) -> bool {
-    // Through `subscribed_of`, which recovers a poisoned lock. An `expect`
-    // here would abort the caller's process over a set of account numbers a
-    // panicking thread cannot have left in an unreadable state.
-    let accounts: Vec<AccountNumber> = subscribed_of(subscribed).iter().cloned().collect();
+/// **This writes to the socket rather than queueing an action, and that is the
+/// fix.** The previous version pushed a `HandlerAction` onto the channel and
+/// awaited its acknowledgement — but only `run_session` drains that channel,
+/// and the supervisor called this *between* sessions, after one had ended and
+/// before the next existed. Nothing could answer, so the supervisor parked for
+/// the lifetime of the process and the stream never came back. It reproduced
+/// for every caller who had used `subscribe_to_account`; an empty set returned
+/// immediately, which is why nothing noticed.
+///
+/// The quote streamer already worked this way — `replay` there writes straight
+/// to the client before the connection loop starts — so this is the shape this
+/// crate had already settled on, applied to the streamer that missed it.
+///
+/// Generic over the sink so the write can be tested without a websocket. The
+/// ids come back so the caller can tell a restoration acknowledgement apart
+/// from any other, and each one is registered in `pending` by the caller.
+///
+/// # Errors
+///
+/// Fails on the first write the socket refuses. A session that cannot restore
+/// what it was watching is not a session worth running: the caller ends it and
+/// the supervisor's policy decides whether to try again.
+async fn write_restoration<S>(
+    sink: &mut S,
+    auth_token: &str,
+    accounts: &[AccountNumber],
+    next_request_id: &mut u64,
+) -> TastyResult<Vec<u64>>
+where
+    S: SinkExt<Message> + Unpin,
+{
+    let mut written = Vec::with_capacity(accounts.len());
 
     for account in accounts {
-        let (ack, answered) = oneshot::channel();
-        let action = HandlerAction {
+        let request_id = *next_request_id;
+        *next_request_id += 1;
+
+        let message = SubRequest {
+            auth_token: auth_token.to_string(),
             action: SubRequestAction::Connect,
-            value: Some(Box::new(vec![account]) as Box<dyn erased_serde::Serialize + Send + Sync>),
-            ack: Some(ack),
+            value: Some(vec![account.clone()]),
+            request_id,
         };
 
-        if actions.send_async(action).await.is_err() {
-            return false;
-        }
-        match answered.await {
-            Ok(Ok(())) => {}
-            _ => return false,
-        }
+        let text = serde_json::to_string(&message).map_err(|_| {
+            // An account number cannot fail to serialize, so this is
+            // unreachable in practice — and a library does not get to say that
+            // with an unwrap.
+            TastyTradeError::Streaming("a subscription could not be serialized".to_string())
+        })?;
+
+        sink.send(Message::Text(text.into())).await.map_err(|_| {
+            TastyTradeError::Streaming(
+                "the account stream closed before its subscriptions could be restored".to_string(),
+            )
+        })?;
+
+        written.push(request_id);
     }
 
-    true
+    Ok(written)
 }
 
 /// How long an action waits for the venue to answer it.
@@ -764,7 +795,7 @@ struct PendingAction {
 /// frame with no id resolves the **oldest** action in flight with the same
 /// `action` name — imprecise when two of the same kind overlap, and far better
 /// than nothing.
-fn settle(pending: &mut HashMap<u64, PendingAction>, event: &AccountEvent) {
+fn settle(pending: &mut HashMap<u64, PendingAction>, event: &AccountEvent) -> Option<(u64, bool)> {
     let (request_id, action, outcome) = match event {
         AccountEvent::StatusMessage(status) => (status.request_id, status.action.as_str(), Ok(())),
         AccountEvent::ErrorMessage(error) => (
@@ -778,16 +809,17 @@ fn settle(pending: &mut HashMap<u64, PendingAction>, event: &AccountEvent) {
                 error.action, error.message
             ))),
         ),
-        _ => return,
+        _ => return None,
     };
 
+    let accepted = outcome.is_ok();
     let matched = match request_id {
         Some(id) if pending.contains_key(&id) => Some(id),
         Some(id) => {
             // An id that matches nothing is not an error: heartbeats carry one
             // and are deliberately not tracked.
             debug!("Account frame answered request {id}, which nothing is waiting on");
-            None
+            return None;
         }
         None => pending
             .iter()
@@ -796,12 +828,10 @@ fn settle(pending: &mut HashMap<u64, PendingAction>, event: &AccountEvent) {
             .map(|(id, _)| *id),
     };
 
-    let Some(id) = matched else {
-        return;
-    };
-    if let Some(waiting) = pending.remove(&id) {
-        report(waiting.ack, outcome);
-    }
+    let id = matched?;
+    let waiting = pending.remove(&id)?;
+    report(waiting.ack, outcome);
+    Some((id, accepted))
 }
 
 /// Fails every action still waiting, with `reason`.
@@ -825,11 +855,14 @@ fn abandon(pending: &mut HashMap<u64, PendingAction>, reason: &str) {
 /// is then dropped never gets that far, which is what stops a venue that
 /// accepts connections and rejects sessions from looping forever at attempt
 /// one.
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     session: Session,
     client: &TastyTrade,
     events: &flume::Sender<AccountEvent>,
     actions: &flume::Receiver<HandlerAction>,
+    subscribed: &Arc<Mutex<BTreeSet<AccountNumber>>>,
+    state: &Arc<RwLock<ConnectionState>>,
     cancelled: &mut oneshot::Receiver<()>,
 ) -> bool {
     let (mut write, mut read) = session;
@@ -849,6 +882,12 @@ async fn run_session(
     // entirely between this loop and the venue — a caller never sees one.
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
 
+    // What this session has to restore before it can call itself connected.
+    // Empty for a first connection, and for a reconnect it is everything
+    // `subscribe_to_account` recorded.
+    let accounts: Vec<AccountNumber> = subscribed_of(subscribed).iter().cloned().collect();
+    let mut restoring: HashSet<u64> = HashSet::new();
+
     // A labelled block rather than ten `return`s. Every way out of this loop
     // has to fail the actions still in flight, and the version that called
     // `abandon` at each exit had already missed five of them — a caller whose
@@ -856,6 +895,56 @@ async fn run_session(
     // was sent", which is both wrong and the opposite of useful. One exit, one
     // place to get it right.
     let wrote_successfully = 'session: {
+        if !accounts.is_empty() {
+            let auth_token = match client.access_token().await {
+                Ok(token) => token.bearer(),
+                Err(e) => {
+                    warn!("Cannot restore subscriptions: no usable access token ({e})");
+                    break 'session wrote_successfully;
+                }
+            };
+
+            match write_restoration(&mut write, &auth_token, &accounts, &mut next_request_id).await
+            {
+                Ok(ids) => {
+                    // **Not** the milestone. A write reaching the socket is the
+                    // venue accepting bytes, not accepting the session, and
+                    // treating it as success would reset the supervisor's
+                    // attempt budget on a venue that takes the socket and then
+                    // refuses the subscription — the accept-then-reject loop
+                    // `max_attempts` exists to bound. The milestone is the
+                    // acknowledgement, below.
+                    for id in ids {
+                        restoring.insert(id);
+                        pending.insert(
+                            id,
+                            PendingAction {
+                                action: SubRequestAction::Connect,
+                                deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                                // Nobody is awaiting these. The loop watches
+                                // `restoring` instead, because what it does
+                                // with the answer is decide whether the
+                                // session is fit to run.
+                                ack: None,
+                            },
+                        );
+                    }
+                    debug!(
+                        "Restoring {} subscription(s) on the new session",
+                        restoring.len()
+                    );
+                }
+                Err(e) => {
+                    warn!("Could not restore subscriptions: {e}");
+                    break 'session wrote_successfully;
+                }
+            }
+        } else {
+            // Nothing to restore, so the session is as connected as it will
+            // ever be.
+            *state.write().await = ConnectionState::Connected;
+        }
+
         loop {
             tokio::select! {
                 _ = &mut *cancelled => {
@@ -869,6 +958,7 @@ async fn run_session(
                         .filter(|(_, waiting)| waiting.deadline <= now)
                         .map(|(id, _)| *id)
                         .collect();
+                    let mut restoration_expired = false;
                     for id in expired {
                         if let Some(waiting) = pending.remove(&id) {
                             // The action name is safe to log; nothing else about it
@@ -879,6 +969,15 @@ async fn run_session(
                                 waiting.action
                             ))));
                         }
+                        restoration_expired |= restoring.remove(&id);
+                    }
+                    if restoration_expired {
+                        // Ends the attempt rather than running a session that
+                        // is quietly missing subscriptions — and rather than
+                        // parking the supervisor, which is the failure this
+                        // whole change exists to remove.
+                        warn!("A subscription was never restored; ending the session");
+                        break 'session wrote_successfully;
                     }
                 }
                 _ = heartbeat.tick() => {
@@ -948,7 +1047,31 @@ async fn run_session(
                     // and a caller reading the stream are usually the same task, so
                     // settling after a full event queue would deadlock the one on
                     // the other.
-                    settle(&mut pending, &event);
+                    // Restoration is settled here too: the ids are ordinary
+                    // pending actions, and what makes them special is only
+                    // what this session does with the answer.
+                    if let Some((id, accepted)) = settle(&mut pending, &event)
+                        && restoring.remove(&id)
+                    {
+                        if !accepted {
+                            // A session that cannot watch what it was watching
+                            // is not worth running. The action name only —
+                            // the venue's message can name an account.
+                            warn!("The venue refused a connect while restoring; ending the session");
+                            break 'session wrote_successfully;
+                        }
+                        // Here is the milestone. The venue answered an
+                        // authenticated request, which is evidence the session
+                        // works — where a successful write is only evidence
+                        // the socket is open.
+                        wrote_successfully = true;
+
+                        if restoring.is_empty() {
+                            // Connected means what it says: everything that was
+                            // being watched is being watched again.
+                            *state.write().await = ConnectionState::Connected;
+                        }
+                    }
 
                     if events.send_async(event).await.is_err() {
                         debug!("Account event receiver dropped, ending the session");
@@ -1261,6 +1384,211 @@ impl TastyTrade {
     /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.
     pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod restoration_tests {
+    use super::*;
+
+    const ACCOUNT_ONE: &str = "SENTINEL-5WX00042";
+    const ACCOUNT_TWO: &str = "SENTINEL-5WX00043";
+    const TOKEN: &str = "SENTINEL-access-token-5Nd9";
+
+    /// A sink that keeps what was written, so the restoration can be checked
+    /// without a websocket.
+    #[derive(Default)]
+    struct Recorder(Vec<String>);
+
+    impl futures_util::Sink<Message> for Recorder {
+        type Error = std::convert::Infallible;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(
+            mut self: std::pin::Pin<&mut Self>,
+            item: Message,
+        ) -> Result<(), Self::Error> {
+            if let Message::Text(text) = item {
+                self.0.push(text.to_string());
+            }
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink that refuses everything, standing in for a socket that has gone.
+    struct Broken;
+
+    impl futures_util::Sink<Message> for Broken {
+        type Error = std::io::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("gone")))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            Err(std::io::Error::other("gone"))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("gone")))
+        }
+
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("gone")))
+        }
+    }
+
+    fn accounts(numbers: &[&str]) -> Vec<AccountNumber> {
+        numbers
+            .iter()
+            .map(|number| AccountNumber(number.to_string()))
+            .collect()
+    }
+
+    /// The restoration goes onto the socket, one frame per account, each
+    /// correlatable and each authenticated.
+    #[tokio::test]
+    async fn every_subscribed_account_is_written_with_its_own_request_id() {
+        let mut sink = Recorder::default();
+        let mut next_request_id = 7;
+
+        let ids = write_restoration(
+            &mut sink,
+            &crate::oauth::AccessToken::new(TOKEN).bearer(),
+            &accounts(&[ACCOUNT_ONE, ACCOUNT_TWO]),
+            &mut next_request_id,
+        )
+        .await
+        .expect("a working socket accepts them");
+
+        assert_eq!(
+            ids,
+            vec![7, 8],
+            "each account gets its own id to be answered by"
+        );
+        assert_eq!(
+            next_request_id, 9,
+            "the counter moves on for the loop to use"
+        );
+        assert_eq!(sink.0.len(), 2);
+
+        for (frame, account) in sink.0.iter().zip([ACCOUNT_ONE, ACCOUNT_TWO]) {
+            assert!(frame.contains(r#""action":"connect""#), "{frame}");
+            assert!(frame.contains(account), "{frame}");
+            // The websocket takes the same prefixed credential as the HTTP
+            // header, and a restoration is no exception.
+            assert!(
+                frame.contains(&format!(r#""auth-token":"Bearer {TOKEN}""#)),
+                "{frame}"
+            );
+        }
+    }
+
+    /// Nothing subscribed, nothing written — and no `connect` inventing a
+    /// subscription the caller never asked for.
+    #[tokio::test]
+    async fn nothing_is_written_when_nothing_was_subscribed() {
+        let mut sink = Recorder::default();
+        let mut next_request_id = 1;
+
+        let ids = write_restoration(&mut sink, "Bearer x", &[], &mut next_request_id)
+            .await
+            .expect("an empty restoration is a success");
+
+        assert!(ids.is_empty());
+        assert!(sink.0.is_empty());
+        assert_eq!(next_request_id, 1);
+    }
+
+    /// A session that cannot restore what it was watching is not a session
+    /// worth running, so the write failure has to surface rather than be
+    /// swallowed into a half-restored stream.
+    #[tokio::test]
+    async fn a_socket_that_refuses_the_restoration_reports_it() {
+        let mut sink = Broken;
+        let mut next_request_id = 1;
+
+        let error = write_restoration(
+            &mut sink,
+            "Bearer x",
+            &accounts(&[ACCOUNT_ONE]),
+            &mut next_request_id,
+        )
+        .await
+        .expect_err("a dead socket cannot restore anything");
+
+        assert!(matches!(error, TastyTradeError::Streaming(_)), "{error:?}");
+        assert!(!format!("{error}").contains(ACCOUNT_ONE), "{error}");
+    }
+
+    /// `settle` has to say *what* it resolved, or the session cannot tell a
+    /// restoration acknowledgement from any other and would claim `Connected`
+    /// on the first heartbeat reply.
+    #[tokio::test]
+    async fn settling_reports_which_action_was_answered_and_how() {
+        let mut pending = HashMap::new();
+        pending.insert(
+            4,
+            PendingAction {
+                action: SubRequestAction::Connect,
+                deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                ack: None,
+            },
+        );
+
+        let accepted =
+            decode_account_frame(br#"{"status":"ok","action":"connect","request-id":4}"#)
+                .expect("valid JSON");
+        assert_eq!(settle(&mut pending, &accepted), Some((4, true)));
+
+        pending.insert(
+            5,
+            PendingAction {
+                action: SubRequestAction::Connect,
+                deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                ack: None,
+            },
+        );
+        let refused = decode_account_frame(
+            br#"{"status":"error","action":"connect","request-id":5,"message":"nope"}"#,
+        )
+        .expect("valid JSON");
+        assert_eq!(settle(&mut pending, &refused), Some((5, false)));
+
+        // A frame answering nothing resolves nothing.
+        let heartbeat =
+            decode_account_frame(br#"{"status":"ok","action":"heartbeat","request-id":99}"#)
+                .expect("valid JSON");
+        assert_eq!(settle(&mut pending, &heartbeat), None);
     }
 }
 

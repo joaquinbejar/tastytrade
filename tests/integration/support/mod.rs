@@ -6,9 +6,11 @@
 
 pub mod capture;
 pub mod venue;
+pub mod ws_venue;
 
 pub use capture::{CapturedLogs, capture_logs_at};
 pub use venue::{MockVenue, Route};
+pub use ws_venue::{WsVenue, one_account_body};
 
 /// Values that must never appear in a log line, an error, or any other place
 /// the crate hands back to a caller. Every sentinel is distinctive enough that
