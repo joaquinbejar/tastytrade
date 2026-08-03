@@ -107,13 +107,17 @@ async fn a_reconnect_restores_the_subscription_it_was_watching() {
     );
 }
 
-/// `Connected` has to mean what it says. It used to be set one line before the
-/// session started, while the comment beside the replay claimed it was set
-/// only once what was being watched was watched again.
+/// `Connected` has to mean what it says, and proving that needs the state to
+/// be observed **before** the acknowledgement arrives.
+///
+/// An earlier version of this test only waited for `Connected` to appear,
+/// which passes just as well when it is claimed too early — which is exactly
+/// the bug it is named after. The venue holds the restoration so the middle of
+/// the exchange is observable.
 #[tokio::test]
 async fn connected_is_claimed_only_once_the_subscription_is_restored() {
     let rest = rest_venue().await;
-    let ws = WsVenue::start(1).await;
+    let ws = WsVenue::holding_restoration(1).await;
     let config = config_for(&rest, &ws);
 
     let tasty = TastyTrade::connect(&config)
@@ -129,14 +133,25 @@ async fn connected_is_claimed_only_once_the_subscription_is_restored() {
         .await
         .expect("the venue acknowledges the subscription");
 
-    ws.wait_for("the reconnect to replay the subscription", |venue| {
-        venue.connections() >= 2 && !venue.actions_on(2).is_empty()
+    // The reconnect has written its restoration and the venue is sitting on
+    // the answer.
+    ws.wait_for("the restoration to be written", |venue| {
+        venue.connections() >= 2 && venue.actions_on(2).iter().any(|action| action == "connect")
     })
     .await;
 
-    // The venue acknowledges, so the restoration completes and the state
-    // follows it. A bounded wait rather than an assertion on a single read:
-    // the supervisor is a separate task and the point is that it *gets* there.
+    // The middle of the exchange: requested, not yet acknowledged. This is the
+    // assertion the previous version of this test could not make.
+    for _ in 0..5 {
+        assert!(
+            !matches!(streamer.state().await, ConnectionState::Connected),
+            "Connected was claimed before the venue acknowledged the restoration"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    ws.release_restoration();
+
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while tokio::time::Instant::now() < deadline {
         if matches!(streamer.state().await, ConnectionState::Connected) {
@@ -146,7 +161,55 @@ async fn connected_is_claimed_only_once_the_subscription_is_restored() {
     }
 
     panic!(
-        "the streamer never reported Connected after restoring; last state {:?}",
+        "the streamer never reported Connected after the restoration was answered; last state {:?}",
+        streamer.state().await
+    );
+}
+
+/// The accept-then-reject loop the backoff exists to bound.
+///
+/// A venue that takes the socket, takes the write, and then refuses the
+/// restoration must not look like a working session. An earlier version of
+/// this branch set the milestone when the frames were *written*, so every
+/// reconnect reset `attempt` to zero and the client retried forever despite
+/// `max_attempts`. The budget has to run out.
+#[tokio::test]
+async fn a_refused_restoration_does_not_reset_the_attempt_budget() {
+    let rest = rest_venue().await;
+    let ws = WsVenue::refusing_restoration(1).await;
+    let config = config_for(&rest, &ws);
+
+    let tasty = TastyTrade::connect(&config)
+        .await
+        .expect("authentication must succeed");
+    let accounts = tasty.accounts().await.expect("one account");
+    let streamer = AccountStreamer::connect_with_policy(&tasty, quick_policy())
+        .await
+        .expect("the loopback venue accepts the connection");
+
+    streamer
+        .subscribe_to_account(&accounts[0])
+        .await
+        .expect("the first connection acknowledges the subscription");
+
+    // `quick_policy` allows five attempts, so a client whose budget is being
+    // reset would never arrive here.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if let ConnectionState::Disconnected { reason } = streamer.state().await {
+            assert!(
+                reason.contains("attempts"),
+                "giving up must say the budget ran out: {reason}"
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "the streamer kept retrying a venue that refuses every restoration; \
+         {} connection(s) so far, last state {:?}",
+        ws.connections(),
         streamer.state().await
     );
 }

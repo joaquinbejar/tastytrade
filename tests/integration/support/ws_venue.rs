@@ -9,7 +9,7 @@
 //! answers and the ability to drop a connection on purpose, and a mock-server
 //! crate would be a new dependency to justify.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,14 @@ pub struct WsVenue {
     url: String,
     received: Arc<Mutex<Vec<RecordedFrame>>>,
     connections: Arc<AtomicUsize>,
+    /// While set, a `connect` on a reconnected session is recorded but not
+    /// answered.
+    ///
+    /// It exists so a test can look at the client *between* the request and
+    /// the acknowledgement. Without it a test can only assert that a state
+    /// eventually appears, which passes just as well when the state was
+    /// claimed too early — exactly the bug worth catching here.
+    hold_restoration: Arc<AtomicBool>,
     handle: JoinHandle<()>,
 }
 
@@ -55,6 +63,29 @@ impl WsVenue {
     ///
     /// `usize::MAX` keeps every connection open for the life of the test.
     pub async fn start(frames_before_close: usize) -> Self {
+        Self::start_with(frames_before_close, false, false).await
+    }
+
+    /// The same, but a `connect` arriving on a reconnected session is left
+    /// unanswered until [`WsVenue::release_restoration`].
+    pub async fn holding_restoration(frames_before_close: usize) -> Self {
+        Self::start_with(frames_before_close, true, false).await
+    }
+
+    /// A venue that accepts the socket and then refuses every restoration.
+    ///
+    /// The accept-then-reject shape the backoff exists to bound: without it a
+    /// client that counts a successful write as a working session resets its
+    /// attempt budget on every reconnect and retries forever.
+    pub async fn refusing_restoration(frames_before_close: usize) -> Self {
+        Self::start_with(frames_before_close, false, true).await
+    }
+
+    async fn start_with(
+        frames_before_close: usize,
+        hold_restoration: bool,
+        refuse_restoration: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback port must be available");
@@ -65,8 +96,10 @@ impl WsVenue {
 
         let received = Arc::new(Mutex::new(Vec::new()));
         let connections = Arc::new(AtomicUsize::new(0));
+        let hold_restoration = Arc::new(AtomicBool::new(hold_restoration));
         let recorder = received.clone();
         let counter = connections.clone();
+        let held = hold_restoration.clone();
 
         let handle = tokio::spawn(async move {
             loop {
@@ -107,6 +140,14 @@ impl WsVenue {
                             value,
                         });
 
+                    // A restoration the test is holding: recorded, and left
+                    // unanswered until it says otherwise.
+                    while connection > 1 && action == "connect" && held.load(Ordering::SeqCst) {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+
+                    let refusing = refuse_restoration && connection > 1 && action == "connect";
+
                     // Echo the id back, which is what the venue documents and
                     // what turns a socket write into a confirmed action.
                     //
@@ -115,11 +156,20 @@ impl WsVenue {
                     // emit invalid JSON for any value needing escaping. The
                     // client would then ignore the reply, and the test would
                     // fail as a timeout with nothing pointing at the cause.
-                    let mut reply = serde_json::json!({
-                        "status": "ok",
-                        "action": action,
-                        "web-socket-session-id": "test",
-                    });
+                    let mut reply = if refusing {
+                        serde_json::json!({
+                            "status": "error",
+                            "action": action,
+                            "web-socket-session-id": "test",
+                            "message": "connect-not-completed",
+                        })
+                    } else {
+                        serde_json::json!({
+                            "status": "ok",
+                            "action": action,
+                            "web-socket-session-id": "test",
+                        })
+                    };
                     if let Some(id) = frame.get("request-id")
                         && let Some(object) = reply.as_object_mut()
                     {
@@ -145,8 +195,14 @@ impl WsVenue {
             url,
             received,
             connections,
+            hold_restoration,
             handle,
         }
+    }
+
+    /// Answers the restoration this venue has been holding.
+    pub fn release_restoration(&self) {
+        self.hold_restoration.store(false, Ordering::SeqCst);
     }
 
     /// `ws://127.0.0.1:<port>`, ready to drop into `TastyTradeConfig`.

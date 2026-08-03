@@ -907,10 +907,13 @@ async fn run_session(
             match write_restoration(&mut write, &auth_token, &accounts, &mut next_request_id).await
             {
                 Ok(ids) => {
-                    // The venue accepted authenticated writes, so this session
-                    // worked even if it later drops: that is what stops an
-                    // accept-then-reject venue from looping at attempt one.
-                    wrote_successfully = true;
+                    // **Not** the milestone. A write reaching the socket is the
+                    // venue accepting bytes, not accepting the session, and
+                    // treating it as success would reset the supervisor's
+                    // attempt budget on a venue that takes the socket and then
+                    // refuses the subscription — the accept-then-reject loop
+                    // `max_attempts` exists to bound. The milestone is the
+                    // acknowledgement, below.
                     for id in ids {
                         restoring.insert(id);
                         pending.insert(
@@ -1057,6 +1060,12 @@ async fn run_session(
                             warn!("The venue refused a connect while restoring; ending the session");
                             break 'session wrote_successfully;
                         }
+                        // Here is the milestone. The venue answered an
+                        // authenticated request, which is evidence the session
+                        // works — where a successful write is only evidence
+                        // the socket is open.
+                        wrote_successfully = true;
+
                         if restoring.is_empty() {
                             // Connected means what it says: everything that was
                             // being watched is being watched again.
