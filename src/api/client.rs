@@ -22,6 +22,7 @@ use crate::types::market_metrics::{
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::types::order::LiveOrderRecord;
 use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
+use crate::types::quote_alert::{NewQuoteAlert, QuoteAlert};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
 use reqwest::ClientBuilder;
@@ -1081,6 +1082,55 @@ impl TastyTrade {
             )
             .await?;
         resp.into_items()
+    }
+
+    /// Every quote alert this **user** has set.
+    ///
+    /// Alerts are per user, not per account, which is why this hangs off the
+    /// client rather than off [`crate::accounts::Account`] — putting it there
+    /// would imply a scoping the venue does not have.
+    ///
+    /// # Errors
+    ///
+    /// Fails when alerts arrive but none can be decoded; a user with no alerts
+    /// is `Ok` with an empty vector.
+    pub async fn quote_alerts(&self) -> TastyResult<Vec<QuoteAlert>> {
+        let resp: Items<QuoteAlert> = self.get("/quote-alerts").await?;
+        resp.into_items()
+    }
+
+    /// Sets a quote alert.
+    ///
+    /// The alert fires over the **account websocket**, to a caller subscribed
+    /// with [`crate::prelude::SubRequestAction::QuoteAlertsSubscribe`] — and it
+    /// arrives as the same [`QuoteAlert`] type this returns, so the two halves
+    /// cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the symbol or threshold is
+    /// blank, or the threshold is zero. Propagates the venue's error otherwise.
+    pub async fn create_quote_alert(&self, alert: &NewQuoteAlert) -> TastyResult<QuoteAlert> {
+        alert.validate()?;
+
+        self.post("/quote-alerts", alert).await
+    }
+
+    /// Cancels a quote alert.
+    ///
+    /// **Mutates user state.**
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for an alert that is
+    /// already gone.
+    pub async fn cancel_quote_alert(&self, alert_external_id: &str) -> TastyResult<QuoteAlert> {
+        self.delete(format!(
+            "/quote-alerts/{}",
+            encode_path_segment(alert_external_id)
+        ))
+        .await
     }
 
     /// One page of SPAN risk rows for a date and exchange.

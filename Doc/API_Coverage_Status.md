@@ -31,12 +31,12 @@ difference is exactly what
 | Market Sessions | 11 | 11 | 0 | 100% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
 | Orders | 19 | 19 | 0 | 100% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
-| Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
+| Quote Alerts | 3 | 3 | 0 | 100% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
 | Risk Parameters | 4 | 4 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **78** | **19** | **80%** | |
+| **TOTAL** | **97** | **81** | **16** | **84%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -456,14 +456,31 @@ and they go through the shared path encoder.
 
 ## Quote Alerts
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /quote-alerts` | ❌ |
-| `POST /quote-alerts` | ❌ |
-| `DELETE /quote-alerts/{alert_external_id}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /quote-alerts` | `quote_alerts()` | ✅ |
+| `POST /quote-alerts` | `create_quote_alert()` | ✅ |
+| `DELETE /quote-alerts/{alert_external_id}` | `cancel_quote_alert()` | ✅ |
 
-`AccountStreamer` already handles the `quote-alerts-subscribe` action, so the
-streaming half exists with no way to create or list the alerts it delivers.
+The two halves share one type. `AccountStreamer` already delivered `QuoteAlert`
+through `quote-alerts-subscribe`; the REST side returns the **same** struct, so a
+caller cannot set an alert with one shape and receive it as another.
+
+Alerts are per **user**, not per account, so they hang off `TastyTrade` rather
+than `Account` — putting them on an account would imply a scoping the venue does
+not have.
+
+`QuoteAlertField` and `QuoteAlertOperator` are `wire_enum!`s over the values the
+create body enumerates (`Last`, `Bid`, `Ask`, `IV`; `>` and `<`). They keep an
+`Unknown` arm because the same types appear on the **read** side, where a value
+the venue adds later would otherwise make the alert carrying it vanish through
+`Items<T>`.
+
+`NewQuoteAlert::new` takes the threshold once and renders it into both wire
+forms, so they cannot disagree — a threshold that disagrees with itself is an
+alert that fires at the wrong price. A threshold of zero is refused locally:
+it would fire on the first quote, which is almost always a caller who forgot to
+set one.
 
 ## Risk Parameters
 

@@ -698,6 +698,42 @@
 //! [`QuoteStreamer::create_sub_with_capacity`](streaming::quote_streamer::QuoteStreamer::create_sub_with_capacity)
 //! when the default does not fit the history you are asking for.
 //!
+//! ## Quote alerts
+//!
+//! A threshold on a symbol. Setting one is REST; being told it fired is the
+//! account websocket — and both halves use the **same** [`prelude::QuoteAlert`]
+//! type, so a caller cannot set an alert with one shape and receive it as
+//! another.
+//!
+//! ```rust,no_run
+//! # use rust_decimal::Decimal;
+//! # use tastytrade::prelude::*;
+//! # async fn watch(tasty: &TastyTrade, price: Decimal)
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! let alert = tasty
+//!     .create_quote_alert(&NewQuoteAlert::new(
+//!         "AAPL",
+//!         QuoteAlertField::Last,
+//!         QuoteAlertOperator::Above,
+//!         price,
+//!     ))
+//!     .await?;
+//!
+//! // …and it arrives on the account streamer, subscribed with
+//! // `SubRequestAction::QuoteAlertsSubscribe`.
+//! # let _ = alert;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Alerts are per **user**, not per account, so they hang off the client —
+//! putting them on an `Account` would imply a scoping the venue does not have.
+//!
+//! The threshold is given once and rendered into both wire forms, so they
+//! cannot disagree; a threshold of zero is refused locally, because an alert
+//! that fires on the first quote is almost always a caller who forgot to set
+//! one.
+//!
 //! ## Account streaming
 //!
 //! The account websocket publishes a **full object** on every change — never a
