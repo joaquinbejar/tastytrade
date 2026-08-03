@@ -272,7 +272,12 @@ impl AiSearchToken {
             .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
     }
 
-    /// How many bytes the response was. Safe to log; the contents are not.
+    /// How many bytes the response is when written back out compactly.
+    ///
+    /// Not the length of the HTTP body: that carried whatever whitespace and
+    /// key order the venue chose, and this is a re-serialization of the parsed
+    /// value. It exists so the redacted renderings can say something about
+    /// size, which is the only property of a credential that is safe to log.
     pub fn len(&self) -> usize {
         self.raw.to_string().len()
     }
@@ -299,11 +304,23 @@ impl fmt::Display for AiSearchToken {
     }
 }
 
-// Serialising a credential is how it ends up in a file, so the round trip the
-// generic verbs need is provided explicitly and is the only one there is.
+/// Serializes to the same redacted text `Display` writes.
+///
+/// The generic response types require `T: Serialize`, so this type needs the
+/// implementation whether or not anything calls it — and a pass-through one
+/// made the credential reachable by `serde_json::to_string`, which is exactly
+/// how it ends up in a cache file or a structured log field. Redaction is a
+/// property of the type rather than of the call site, so every rendering
+/// including this one has to agree.
+///
+/// The consequence is that the value does not round-trip: serializing and
+/// deserializing gives back a token whose payload is the redaction notice. A
+/// credential that can be written out and read back is the thing being
+/// prevented, so that is the intended outcome rather than a limitation.
+/// [`AiSearchToken::expose`] stays the one way out.
 impl Serialize for AiSearchToken {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.raw.serialize(serializer)
+        serializer.collect_str(&format_args!("<redacted, {} bytes>", self.len()))
     }
 }
 
@@ -331,6 +348,32 @@ mod tests {
             "the token reached a rendering: {rendered}"
         );
         assert!(rendered.contains("redacted"), "{rendered}");
+    }
+
+    /// Serialization is a rendering too, and it is the one that writes to a
+    /// file. `Debug` and `Display` redacting while `serde_json::to_string`
+    /// did not is a leak that looks exactly like a fixed one.
+    #[test]
+    fn the_ai_search_token_never_serializes_itself() {
+        let token = token();
+        let written = serde_json::to_string(&token).expect("a token must serialize");
+        assert!(
+            !written.contains(SENTINEL),
+            "the token was written: {written}"
+        );
+        assert!(written.contains("redacted"), "{written}");
+
+        // And nested inside something else, which is where a derive would
+        // have carried it.
+        #[derive(Serialize)]
+        struct Envelope {
+            token: AiSearchToken,
+        }
+        let written = serde_json::to_string(&Envelope { token }).expect("must serialize");
+        assert!(
+            !written.contains(SENTINEL),
+            "the token was written: {written}"
+        );
     }
 
     /// The one place it can leave the process, and it still works.
