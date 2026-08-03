@@ -849,173 +849,184 @@ async fn run_session(
     // entirely between this loop and the venue — a caller never sees one.
     let mut sweep = tokio::time::interval(Duration::from_secs(1));
 
-    loop {
-        tokio::select! {
-            _ = &mut *cancelled => {
-                debug!("Account streamer dropped, ending the session");
-                abandon(&mut pending, "the account stream was closed before the venue answered");
-                return wrote_successfully;
-            }
-            _ = sweep.tick() => {
-                let now = tokio::time::Instant::now();
-                let expired: Vec<u64> = pending
-                    .iter()
-                    .filter(|(_, waiting)| waiting.deadline <= now)
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in expired {
-                    if let Some(waiting) = pending.remove(&id) {
-                        // The action name is safe to log; nothing else about it
-                        // is.
-                        warn!("The venue did not answer a {} within {ACTION_TIMEOUT:?}", waiting.action);
-                        report(waiting.ack, Err(TastyTradeError::Streaming(format!(
-                            "the venue did not acknowledge the {} within {ACTION_TIMEOUT:?}",
-                            waiting.action
-                        ))));
+    // A labelled block rather than ten `return`s. Every way out of this loop
+    // has to fail the actions still in flight, and the version that called
+    // `abandon` at each exit had already missed five of them — a caller whose
+    // `connect` was written and never answered got "closed before the action
+    // was sent", which is both wrong and the opposite of useful. One exit, one
+    // place to get it right.
+    let wrote_successfully = 'session: {
+        loop {
+            tokio::select! {
+                _ = &mut *cancelled => {
+                    debug!("Account streamer dropped, ending the session");
+                    break 'session wrote_successfully;
+                }
+                _ = sweep.tick() => {
+                    let now = tokio::time::Instant::now();
+                    let expired: Vec<u64> = pending
+                        .iter()
+                        .filter(|(_, waiting)| waiting.deadline <= now)
+                        .map(|(id, _)| *id)
+                        .collect();
+                    for id in expired {
+                        if let Some(waiting) = pending.remove(&id) {
+                            // The action name is safe to log; nothing else about it
+                            // is.
+                            warn!("The venue did not answer a {} within {ACTION_TIMEOUT:?}", waiting.action);
+                            report(waiting.ack, Err(TastyTradeError::Streaming(format!(
+                                "the venue did not acknowledge the {} within {ACTION_TIMEOUT:?}",
+                                waiting.action
+                            ))));
+                        }
                     }
                 }
-            }
-            _ = heartbeat.tick() => {
-                // Every frame carries a token, and a token lasts a quarter of
-                // an hour, so the heartbeat is where a long-lived connection
-                // discovers it needs a new one. Usually cached; a refusal here
-                // ends the session and lets the supervisor's policy decide,
-                // which is terminal for a rejected grant.
-                let auth_token = match client.access_token().await {
-                    Ok(token) => token.bearer(),
-                    Err(e) => {
-                        warn!("Ending the account session: no usable access token ({e})");
-                        return wrote_successfully;
-                    }
-                };
-                let request_id = next_request_id;
-                next_request_id += 1;
-                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token,
-                    action: SubRequestAction::Heartbeat,
-                    value: None,
-                    request_id,
-                };
-                let Ok(text) = serde_json::to_string(&message) else {
-                    continue;
-                };
-                if write.send(Message::Text(text.into())).await.is_err() {
-                    debug!("Account websocket heartbeat failed, ending the session");
-                    abandon(&mut pending, "the account stream dropped before the venue answered");
-                    return wrote_successfully;
-                }
-                // Deliberately not tracked. Nobody is awaiting a heartbeat, and
-                // its acknowledgement matching nothing is what `settle` treats
-                // as ordinary rather than as an error.
-                // The venue accepted an authenticated write, so this is a
-                // session that actually worked.
-                wrote_successfully = true;
-            }
-            frame = read.next() => {
-                let Some(message) = frame else {
-                    debug!("Account websocket stream ended");
-                    return wrote_successfully;
-                };
-                let frame = match message {
-                    Ok(frame) => frame,
-                    Err(e) => {
-                        error!("Account websocket read failed, ending the session: {e}");
-                        return wrote_successfully;
-                    }
-                };
-
-                // Control frames are protocol noise, not account data.
-                let data = match frame {
-                    Message::Text(text) => text.as_bytes().to_vec(),
-                    Message::Binary(bytes) => bytes.to_vec(),
-                    Message::Close(_) => {
-                        debug!("Account websocket closed by the venue");
-                        return wrote_successfully;
-                    }
-                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-                };
-
-                let Some(event) = decode_account_frame(&data) else {
-                    continue;
-                };
-
-                // Resolved first, then delivered. A caller awaiting the action
-                // and a caller reading the stream are usually the same task, so
-                // settling after a full event queue would deadlock the one on
-                // the other.
-                settle(&mut pending, &event);
-
-                if events.send_async(event).await.is_err() {
-                    debug!("Account event receiver dropped, ending the session");
-                    abandon(&mut pending, "the account stream was closed before the venue answered");
-                    return wrote_successfully;
-                }
-            }
-            action = actions.recv_async() => {
-                let Ok(action) = action else {
-                    debug!("Account action sender dropped, ending the session");
-                    return wrote_successfully;
-                };
-                let ack = action.ack;
-                let auth_token = match client.access_token().await {
-                    Ok(token) => token.bearer(),
-                    Err(e) => {
-                        // The caller is waiting on this one, so it gets the
-                        // answer rather than a silent drop.
-                        report(ack, Err(TastyTradeError::Auth(format!(
-                            "the account stream has no usable access token: {e}"
-                        ))));
-                        return wrote_successfully;
-                    }
-                };
-                let request_id = next_request_id;
-                next_request_id += 1;
-                let requested = action.action;
-                let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
-                    auth_token,
-                    action: action.action,
-                    value: action.value,
-                    request_id,
-                };
-                let text = match serde_json::to_string(&message) {
-                    Ok(text) => text,
-                    Err(e) => {
-                        // A caller's own Serialize failed. Their action is
-                        // lost, which they must be told, but it is not a
-                        // reason to drop the connection.
-                        error!("Dropping an account action that could not be serialized: {e}");
-                        report(ack, Err(TastyTradeError::Streaming(
-                            "the action could not be serialized".to_string(),
-                        )));
+                _ = heartbeat.tick() => {
+                    // Every frame carries a token, and a token lasts a quarter of
+                    // an hour, so the heartbeat is where a long-lived connection
+                    // discovers it needs a new one. Usually cached; a refusal here
+                    // ends the session and lets the supervisor's policy decide,
+                    // which is terminal for a rejected grant.
+                    let auth_token = match client.access_token().await {
+                        Ok(token) => token.bearer(),
+                        Err(e) => {
+                            warn!("Ending the account session: no usable access token ({e})");
+                            break 'session wrote_successfully;
+                        }
+                    };
+                    let request_id = next_request_id;
+                    next_request_id += 1;
+                    let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
+                        auth_token,
+                        action: SubRequestAction::Heartbeat,
+                        value: None,
+                        request_id,
+                    };
+                    let Ok(text) = serde_json::to_string(&message) else {
                         continue;
+                    };
+                    if write.send(Message::Text(text.into())).await.is_err() {
+                        debug!("Account websocket heartbeat failed, ending the session");
+                        break 'session wrote_successfully;
                     }
-                };
+                    // Deliberately not tracked. Nobody is awaiting a heartbeat, and
+                    // its acknowledgement matching nothing is what `settle` treats
+                    // as ordinary rather than as an error.
+                    // The venue accepted an authenticated write, so this is a
+                    // session that actually worked.
+                    wrote_successfully = true;
+                }
+                frame = read.next() => {
+                    let Some(message) = frame else {
+                        debug!("Account websocket stream ended");
+                        break 'session wrote_successfully;
+                    };
+                    let frame = match message {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            error!("Account websocket read failed, ending the session: {e}");
+                            break 'session wrote_successfully;
+                        }
+                    };
 
-                match write.send(Message::Text(text.into())).await {
-                    Ok(()) => {
-                        wrote_successfully = true;
-                        // **Not** resolved here. The write reaching the socket
-                        // is not the venue accepting the action, and treating
-                        // it as such is what let a refused `connect` return
-                        // `Ok` and be recorded for every future reconnect.
-                        pending.insert(request_id, PendingAction {
-                            action: requested,
-                            deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
-                            ack,
-                        });
+                    // Control frames are protocol noise, not account data.
+                    let data = match frame {
+                        Message::Text(text) => text.as_bytes().to_vec(),
+                        Message::Binary(bytes) => bytes.to_vec(),
+                        Message::Close(_) => {
+                            debug!("Account websocket closed by the venue");
+                            break 'session wrote_successfully;
+                        }
+                        Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+                    };
+
+                    let Some(event) = decode_account_frame(&data) else {
+                        continue;
+                    };
+
+                    // Resolved first, then delivered. A caller awaiting the action
+                    // and a caller reading the stream are usually the same task, so
+                    // settling after a full event queue would deadlock the one on
+                    // the other.
+                    settle(&mut pending, &event);
+
+                    if events.send_async(event).await.is_err() {
+                        debug!("Account event receiver dropped, ending the session");
+                        break 'session wrote_successfully;
                     }
-                    Err(e) => {
-                        debug!("Account websocket write failed: {e}");
-                        report(ack, Err(TastyTradeError::Streaming(
-                            "the account stream closed before the action was sent".to_string(),
-                        )));
-                        abandon(&mut pending, "the account stream dropped before the venue answered");
-                        return wrote_successfully;
+                }
+                action = actions.recv_async() => {
+                    let Ok(action) = action else {
+                        debug!("Account action sender dropped, ending the session");
+                        break 'session wrote_successfully;
+                    };
+                    let ack = action.ack;
+                    let auth_token = match client.access_token().await {
+                        Ok(token) => token.bearer(),
+                        Err(e) => {
+                            // The caller is waiting on this one, so it gets the
+                            // answer rather than a silent drop.
+                            report(ack, Err(TastyTradeError::Auth(format!(
+                                "the account stream has no usable access token: {e}"
+                            ))));
+                            break 'session wrote_successfully;
+                        }
+                    };
+                    let request_id = next_request_id;
+                    next_request_id += 1;
+                    let requested = action.action;
+                    let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
+                        auth_token,
+                        action: action.action,
+                        value: action.value,
+                        request_id,
+                    };
+                    let text = match serde_json::to_string(&message) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            // A caller's own Serialize failed. Their action is
+                            // lost, which they must be told, but it is not a
+                            // reason to drop the connection.
+                            error!("Dropping an account action that could not be serialized: {e}");
+                            report(ack, Err(TastyTradeError::Streaming(
+                                "the action could not be serialized".to_string(),
+                            )));
+                            continue;
+                        }
+                    };
+
+                    match write.send(Message::Text(text.into())).await {
+                        Ok(()) => {
+                            wrote_successfully = true;
+                            // **Not** resolved here. The write reaching the socket
+                            // is not the venue accepting the action, and treating
+                            // it as such is what let a refused `connect` return
+                            // `Ok` and be recorded for every future reconnect.
+                            pending.insert(request_id, PendingAction {
+                                action: requested,
+                                deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                                ack,
+                            });
+                        }
+                        Err(e) => {
+                            debug!("Account websocket write failed: {e}");
+                            report(ack, Err(TastyTradeError::Streaming(
+                                "the account stream closed before the action was sent".to_string(),
+                            )));
+                            break 'session wrote_successfully;
+                        }
                     }
                 }
             }
         }
-    }
+    };
+
+    abandon(
+        &mut pending,
+        "the account stream ended before the venue answered",
+    );
+
+    wrote_successfully
 }
 
 impl Drop for AccountStreamer {
@@ -1386,6 +1397,47 @@ mod acknowledgement_tests {
         );
 
         assert_eq!(pending.len(), 1);
+    }
+
+    /// The venue never answering is not the same as the socket dying, and a
+    /// caller must be able to tell: an acknowledgement that has not arrived in
+    /// ten seconds is missing, not late.
+    #[tokio::test]
+    async fn an_action_the_venue_never_answers_times_out() {
+        let mut pending = HashMap::new();
+        let (mut connect, connected) = waiting(SubRequestAction::Connect);
+        // Already past its deadline, which is what the sweep looks for.
+        connect.deadline = tokio::time::Instant::now();
+        pending.insert(1, connect);
+
+        // The same expiry the session loop performs on its ticker.
+        let now = tokio::time::Instant::now();
+        let expired: Vec<u64> = pending
+            .iter()
+            .filter(|(_, waiting)| waiting.deadline <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            if let Some(waiting) = pending.remove(&id) {
+                report(
+                    waiting.ack,
+                    Err(TastyTradeError::Streaming(format!(
+                        "the venue did not acknowledge the {} within {ACTION_TIMEOUT:?}",
+                        waiting.action
+                    ))),
+                );
+            }
+        }
+
+        let error = connected
+            .await
+            .expect("answered")
+            .expect_err("an unanswered action is not a success");
+        assert!(
+            format!("{error}").contains("did not acknowledge"),
+            "{error}"
+        );
+        assert!(pending.is_empty());
     }
 
     /// A session that ends takes its in-flight actions with it: the socket
