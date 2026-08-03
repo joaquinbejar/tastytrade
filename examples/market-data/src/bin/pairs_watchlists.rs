@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(
             "{}: {} equation(s), order index {:?}",
             list.name,
-            list.pairs_equations.len(),
+            list.equations().map_or(0, <[_]>::len),
             list.order_index
         );
     }

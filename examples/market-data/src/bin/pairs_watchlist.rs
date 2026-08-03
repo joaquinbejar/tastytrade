@@ -28,10 +28,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let list = tasty.pairs_watchlist(&first.name).await?;
-    info!("{}: {} equation(s)", list.name, list.pairs_equations.len());
+    // The schema types this `object` with no properties, so the array
+    // shape is what the mock sends rather than something the contract
+    // promises. `equations()` says so instead of assuming.
+    match list.equations() {
+        Some(equations) => info!("{}: {} equation(s)", list.name, equations.len()),
+        None => info!(
+            "{}: the venue sent equations in a shape this crate does not iterate",
+            list.name
+        ),
+    }
     // The equations have no published schema, so they are printed as the JSON
     // that arrived rather than through a type invented for them.
-    for equation in list.pairs_equations.iter().take(10) {
+    for equation in list.equations().unwrap_or_default().iter().take(10) {
         info!("  {equation}");
     }
 

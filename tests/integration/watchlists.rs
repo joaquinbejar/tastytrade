@@ -213,6 +213,50 @@ async fn a_pairs_watchlist_keeps_its_equations() {
         .expect("the lists must decode");
 
     assert_eq!(lists.len(), 1);
-    assert_eq!(lists[0].pairs_equations.len(), 1);
+    assert_eq!(
+        lists[0]
+            .equations()
+            .expect("the mock sends the array shape")
+            .len(),
+        1
+    );
     assert_eq!(lists[0].pairs_equations[0]["left-symbol"], "AAPL");
+}
+
+/// A blank name never reaches the venue on the destructive path.
+///
+/// `delete_watchlist` takes a bare name rather than a `NewWatchlist`, so the
+/// body's validation never ran on it and a blank argument went out as
+/// `DELETE /watchlists/` or an encoded blank segment. The assertion is that
+/// nothing was sent, not merely that an error came back: an error alone would
+/// not distinguish a refusal from a 404 for a route that does not exist.
+#[tokio::test]
+async fn a_blank_watchlist_name_never_leaves_the_process() {
+    let venue = venue_with(vec![]).await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+    let before = venue.requests().len();
+
+    for name in ["", "   "] {
+        let error = client
+            .delete_watchlist(name)
+            .await
+            .expect_err("a blank name must be refused");
+        assert!(
+            matches!(error, tastytrade::TastyTradeError::Precondition(_)),
+            "{name:?} was rejected as {error:?} rather than a caller mistake"
+        );
+        assert!(!error.is_retryable(), "nothing was sent");
+    }
+
+    assert_eq!(
+        venue.requests().len(),
+        before,
+        "a refused deletion still reached the venue: {:?}",
+        venue
+            .requests()
+            .last()
+            .map(|request| request.target.clone())
+    );
 }

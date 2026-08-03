@@ -1252,6 +1252,11 @@ impl TastyTrade {
     /// Propagates the venue's error, including a `404` for a list that is
     /// already gone.
     pub async fn delete_watchlist(&self, name: &str) -> TastyResult<Watchlist> {
+        // The body's validation never ran on this path, because there is no
+        // body. A blank name went out as `DELETE /watchlists/` or an encoded
+        // blank segment, which is a request against a route nobody meant to
+        // call — on the one method here that destroys data irreversibly.
+        crate::types::watchlist::validate_watchlist_name(name)?;
         self.delete(format!("/watchlists/{}", encode_path_segment(name)))
             .await
     }
