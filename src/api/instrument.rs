@@ -433,7 +433,13 @@ impl TastyTrade {
             .await
     }
 
-    /// Tradable cryptocurrencies.
+    /// Cryptocurrencies the venue lists.
+    ///
+    /// **Listed, not currently tradable through this API.** tastytrade
+    /// disabled cryptocurrency order routing on
+    /// [`crate::prelude::CRYPTOCURRENCY_TRADING_SUSPENDED_ON`] until further
+    /// notice. Discovery and market data — this method, the quote streamer —
+    /// are unaffected; placing an order is refused locally.
     ///
     /// These trade in fractions, which is why quantities across this crate are
     /// `Decimal` rather than integers.

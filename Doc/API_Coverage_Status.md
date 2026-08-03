@@ -167,6 +167,26 @@ existing call fail if the note is wrong. The probe in
 `/instruments/equity-options` as one of its controls; running it settles this
 at the same time.
 
+### The cryptocurrency suspension — [#91](https://github.com/joaquinbejar/tastytrade/issues/91)
+
+tastytrade disabled cryptocurrency **trading** through the API on 2026-06-29,
+until further notice ([release notes](https://developer.tastytrade.com/release-notes/)).
+
+Discovery and market data are unaffected: `list_cryptocurrencies`,
+`get_cryptocurrency` and the DXLink feed all keep working, and the two endpoints
+above are counted as implemented because they are.
+
+Order **routing** for a cryptocurrency leg is refused locally as a non-retryable
+`Precondition`, on the placement path, the dry-run path and the complex-order
+path alike — a dry run that succeeded while placement refused would be a worse
+answer than one consistent refusal.
+
+The whole decision is one constant, `CRYPTOCURRENCY_TRADING_ENABLED`. Restoring
+trading is flipping it; no business rule is baked into the order paths that
+would be wrong the day the venue changes its mind, and a unit test fails if the
+constant and the guard ever disagree. `TastyTrade::post` is public and unguarded
+for a caller who finds the venue restored it before this crate did.
+
 ### Pagination and filters
 
 Every listing above that the spec paginates returns `Paginated<T>` and takes a

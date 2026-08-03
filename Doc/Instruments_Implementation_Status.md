@@ -45,9 +45,10 @@ endpoint-by-endpoint detail.
 | `GET /instruments/cryptocurrencies` | `list_cryptocurrencies()` |
 | `GET /instruments/cryptocurrencies/{symbol}` | `get_cryptocurrency()` |
 
-Cryptocurrency **trading** through the API is disabled by the venue as of
-2026-06-29. Discovery and market data are unaffected; order routing is tracked
-in [#91](https://github.com/joaquinbejar/tastytrade/issues/91).
+Cryptocurrency **trading** through the API was disabled by the venue on
+2026-06-29. Discovery and market data are unaffected; order routing for a
+cryptocurrency leg is refused locally, and the decision lives in one constant
+(`CRYPTOCURRENCY_TRADING_ENABLED`) so restoring it is a one-line change.
 
 ### Equities
 

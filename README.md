@@ -208,6 +208,27 @@ new status vanish from a listing without an error, and
 [`prelude::OrderStatus::is_terminal`] answers `false` for it: a status this
 crate has not seen says nothing about whether the order is finished.
 
+#### The cryptocurrency suspension
+
+tastytrade **disabled cryptocurrency trading through the API on
+2026-06-29**, until further notice
+([release notes](https://developer.tastytrade.com/release-notes/)). Order
+routing for a cryptocurrency leg is refused locally as a non-retryable
+[`TastyTradeError::Precondition`], on the placement path, the dry-run path
+and the complex-order path alike — a dry run that succeeded while placement
+refused would be a worse answer than one consistent refusal.
+
+**Instrument discovery and market data are unaffected.**
+[`TastyTrade::list_cryptocurrencies`], [`TastyTrade::get_cryptocurrency`]
+and the DXLink feed all keep working; only routing is closed.
+
+The whole decision is [`prelude::CRYPTOCURRENCY_TRADING_ENABLED`], one
+constant. Restoring trading is flipping it — there is no second place to
+remember, and no business rule baked into the order paths that would be
+wrong the day the venue changes its mind. A caller who finds the venue has
+restored trading before this crate has can still reach the endpoint through
+[`TastyTrade::post`], which is public and unguarded.
+
 #### Complex orders
 
 OCO, OTOCO, PAIRS and the rest: a container of component orders whose fates

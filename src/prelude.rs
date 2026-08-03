@@ -45,6 +45,12 @@ pub use crate::types::order::{
     TimeInForce,
 };
 
+// Re-export the venue-level capability switches
+pub use crate::types::capability::{
+    CRYPTOCURRENCY_TRADING_ENABLED, CRYPTOCURRENCY_TRADING_SOURCE,
+    CRYPTOCURRENCY_TRADING_SUSPENDED_ON,
+};
+
 // Re-export complex orders
 pub use crate::api::accounts::{
     ComplexOrderReceipt, PairsThresholdReceipt, ReviewedComplexOrder, ReviewedPairsThreshold,
