@@ -40,6 +40,14 @@ pub struct QuoteAlert {
     #[serde(default)]
     pub dx_symbol: Option<DxFeedSymbol>,
     /// The instrument type of `symbol`.
+    ///
+    /// `String`, not the crate's [`InstrumentType`](crate::InstrumentType),
+    /// and deliberately. That enum is a closed set with no unknown arm, so a
+    /// value outside it fails the whole struct — and losing an entire alert
+    /// because the venue named an instrument type this crate has not seen is
+    /// a bad trade for a field most callers only display. No captured frame
+    /// establishes the set the alerts endpoint actually uses; convert it once
+    /// `/smoke` records one, or once `InstrumentType` grows an unknown arm.
     #[serde(default)]
     pub instrument_type: Option<String>,
     /// Which quoted value the threshold applies to, such as `Last`.

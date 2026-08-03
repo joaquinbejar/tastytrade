@@ -45,6 +45,15 @@ pub struct WatchlistEntry {
     /// The instrument symbol. Required by the venue's schema.
     pub symbol: Symbol,
     /// What kind of instrument it is, when the venue says.
+    ///
+    /// `String`, not the crate's [`InstrumentType`](crate::InstrumentType),
+    /// for the same reason as [`QuoteAlert::instrument_type`]: that enum is a
+    /// closed set with no unknown arm, and tastytrade's curated lists are
+    /// exactly where an instrument type this crate has not modelled would turn
+    /// up first. One unrecognised entry would cost the caller the whole
+    /// watchlist.
+    ///
+    /// [`QuoteAlert::instrument_type`]: crate::types::quote_alert::QuoteAlert::instrument_type
     #[serde(default)]
     pub instrument_type: Option<String>,
 }
