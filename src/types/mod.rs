@@ -6,6 +6,7 @@
 
 pub(crate) mod account_filter;
 pub(crate) mod balance;
+pub(crate) mod complex_order;
 pub(crate) mod customer;
 pub(crate) mod event;
 pub(crate) mod instrument;

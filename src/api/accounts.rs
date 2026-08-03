@@ -4,6 +4,9 @@ use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
 use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter, SnapshotRange};
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
+use crate::types::complex_order::{
+    ComplexOrder, ComplexOrderId, ComplexOrderRequest, PairsThresholdEdit,
+};
 use crate::types::margin::{
     EffectiveMarginRequirement, MarginEstimate, MarginOrderRequest, MarginRequirementsReport,
     PositionLimit,
@@ -360,6 +363,162 @@ impl ReviewedAmendment {
     /// Whether it will be applied as a replacement or an edit.
     pub fn intent(&self) -> AmendmentIntent {
         self.intent
+    }
+}
+
+/// Evidence that a specific complex order was dry-run against this account.
+///
+/// Produced only by [`Account::review_complex_order`]. Not `Clone`.
+#[derive(Debug)]
+pub struct ComplexOrderReceipt {
+    account_number: AccountNumber,
+    origin: String,
+    request: ComplexOrderRequest,
+    result: DryRunResult,
+}
+
+impl ComplexOrderReceipt {
+    /// Everything the venue said about it.
+    pub fn result(&self) -> &DryRunResult {
+        &self.result
+    }
+
+    /// The warnings the venue attached.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.result.warnings
+    }
+
+    /// The container this receipt is about.
+    pub fn request(&self) -> &ComplexOrderRequest {
+        &self.request
+    }
+
+    /// Whether the venue attached anything that needs reading.
+    pub fn is_clean(&self) -> bool {
+        self.result.warnings.is_empty()
+    }
+
+    /// Accepts a clean dry run.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::Precondition`] when the venue attached
+    /// warnings. A refusal to proceed *silently*, not a refusal to proceed.
+    pub fn accept(self) -> TastyResult<ReviewedComplexOrder> {
+        if !self.is_clean() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "the venue attached {} warning(s) to this complex order; read them and \
+                 use accept_with_warnings to proceed deliberately",
+                self.result.warnings.len()
+            )));
+        }
+        Ok(self.into_reviewed())
+    }
+
+    /// Accepts a dry run that carried warnings, having read them.
+    pub fn accept_with_warnings(self) -> ReviewedComplexOrder {
+        self.into_reviewed()
+    }
+
+    fn into_reviewed(self) -> ReviewedComplexOrder {
+        ReviewedComplexOrder {
+            account_number: self.account_number,
+            origin: self.origin,
+            request: self.request,
+        }
+    }
+}
+
+/// A complex order that has been dry-run and accepted. Not `Clone`.
+#[derive(Debug)]
+pub struct ReviewedComplexOrder {
+    account_number: AccountNumber,
+    origin: String,
+    request: ComplexOrderRequest,
+}
+
+impl ReviewedComplexOrder {
+    /// The account this was reviewed against.
+    pub fn account_number(&self) -> &AccountNumber {
+        &self.account_number
+    }
+}
+
+/// Evidence that a threshold change was dry-run. Not `Clone`.
+#[derive(Debug)]
+pub struct PairsThresholdReceipt {
+    account_number: AccountNumber,
+    origin: String,
+    complex_order_id: ComplexOrderId,
+    edit: PairsThresholdEdit,
+    result: DryRunResult,
+}
+
+impl PairsThresholdReceipt {
+    /// Everything the venue said about it.
+    pub fn result(&self) -> &DryRunResult {
+        &self.result
+    }
+
+    /// The warnings the venue attached.
+    pub fn warnings(&self) -> &[Warning] {
+        &self.result.warnings
+    }
+
+    /// Whether the venue attached anything that needs reading.
+    pub fn is_clean(&self) -> bool {
+        self.result.warnings.is_empty()
+    }
+
+    /// Accepts a clean dry run.
+    ///
+    /// # Errors
+    ///
+    /// As [`ComplexOrderReceipt::accept`].
+    pub fn accept(self) -> TastyResult<ReviewedPairsThreshold> {
+        if !self.is_clean() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "the venue attached {} warning(s) to this threshold change; read them \
+                 and use accept_with_warnings to proceed deliberately",
+                self.result.warnings.len()
+            )));
+        }
+        Ok(self.into_reviewed())
+    }
+
+    /// Accepts a dry run that carried warnings, having read them.
+    pub fn accept_with_warnings(self) -> ReviewedPairsThreshold {
+        self.into_reviewed()
+    }
+
+    fn into_reviewed(self) -> ReviewedPairsThreshold {
+        ReviewedPairsThreshold {
+            account_number: self.account_number,
+            origin: self.origin,
+            complex_order_id: self.complex_order_id,
+            edit: self.edit,
+        }
+    }
+}
+
+/// A threshold change that has been dry-run and accepted. Not `Clone`.
+#[derive(Debug)]
+pub struct ReviewedPairsThreshold {
+    account_number: AccountNumber,
+    origin: String,
+    complex_order_id: ComplexOrderId,
+    edit: PairsThresholdEdit,
+}
+
+impl ReviewedPairsThreshold {
+    /// The account this was reviewed against.
+    pub fn account_number(&self) -> &AccountNumber {
+        &self.account_number
+    }
+
+    /// Which complex order it changes.
+    pub fn complex_order_id(&self) -> &ComplexOrderId {
+        &self.complex_order_id
     }
 }
 
@@ -971,6 +1130,196 @@ impl Account<'_> {
             AmendmentIntent::Replace => self.tasty.put(&path, &reviewed.amendment).await,
             AmendmentIntent::Edit => self.tasty.patch(&path, &reviewed.amendment).await,
         }
+    }
+
+    /// One page of the account's complex orders.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// containers arrive but none can be decoded.
+    pub async fn complex_orders(&self, page: &PageRequest) -> TastyResult<Paginated<ComplexOrder>> {
+        let mut query = QueryBuilder::new();
+        page.write_into(&mut query);
+        self.tasty
+            .get_with_query::<Items<ComplexOrder>, _, _>(
+                &self.path("/complex-orders"),
+                &query.pairs(),
+            )
+            .await
+    }
+
+    /// Complex orders with components placed today.
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::positions`].
+    pub async fn live_complex_orders(&self) -> TastyResult<Vec<ComplexOrder>> {
+        let resp: Items<ComplexOrder> = self.tasty.get(&self.path("/complex-orders/live")).await?;
+        resp.into_items()
+    }
+
+    /// One complex order in full.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404`.
+    pub async fn complex_order(&self, id: &ComplexOrderId) -> TastyResult<ComplexOrder> {
+        self.tasty
+            .get(&self.path(&format!("/complex-orders/{}", encode_path_segment(&id.0))))
+            .await
+    }
+
+    /// Dry-runs a complex order and returns evidence bound to this account.
+    ///
+    /// The entry point to the reviewed path, and the only way to obtain a
+    /// [`ComplexOrderReceipt`]. A complex order routes real money, so it gets
+    /// the same discipline as a plain one.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the container cannot be
+    /// what the venue accepts — too few components for the strategy, or a
+    /// PAIRS trade with no threshold. Propagates the venue's error otherwise.
+    pub async fn review_complex_order(
+        &self,
+        request: &ComplexOrderRequest,
+    ) -> TastyResult<ComplexOrderReceipt> {
+        request.validate()?;
+
+        let result: DryRunResult = self
+            .tasty
+            .post(&self.path("/complex-orders/dry-run"), request)
+            .await?;
+
+        Ok(ComplexOrderReceipt {
+            account_number: self.number(),
+            origin: self.tasty.config.base_url.clone(),
+            request: request.clone(),
+            result,
+        })
+    }
+
+    /// Places a reviewed complex order.
+    ///
+    /// **Mutates account state and routes real money.**
+    ///
+    /// # Errors
+    ///
+    /// [`crate::TastyTradeError::Precondition`] when the receipt was produced
+    /// against a different account or a different deployment.
+    pub async fn place_reviewed_complex_order(
+        &self,
+        reviewed: ReviewedComplexOrder,
+    ) -> TastyResult<ComplexOrder> {
+        self.check_origin(&reviewed.account_number, &reviewed.origin, "complex order")?;
+
+        self.tasty
+            .post(&self.path("/complex-orders"), &reviewed.request)
+            .await
+    }
+
+    /// Cancels a complex order.
+    ///
+    /// **Mutates account state.** The venue requests cancellation of every
+    /// component that is not already terminal; a component that has filled
+    /// stays filled.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a refusal to cancel.
+    pub async fn cancel_complex_order(&self, id: &ComplexOrderId) -> TastyResult<ComplexOrder> {
+        self.tasty
+            .delete(&self.path(&format!("/complex-orders/{}", encode_path_segment(&id.0))))
+            .await
+    }
+
+    /// Dry-runs a change to a PAIRS trade's threshold price.
+    ///
+    /// The only thing `PATCH /complex-orders/{id}` changes, and it goes behind
+    /// a receipt like every other change to a working order.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn review_pairs_threshold(
+        &self,
+        id: &ComplexOrderId,
+        edit: &PairsThresholdEdit,
+    ) -> TastyResult<PairsThresholdReceipt> {
+        let result: DryRunResult = self
+            .tasty
+            .post(
+                &self.path(&format!(
+                    "/complex-orders/{}/dry-run",
+                    encode_path_segment(&id.0)
+                )),
+                edit,
+            )
+            .await?;
+
+        Ok(PairsThresholdReceipt {
+            account_number: self.number(),
+            origin: self.tasty.config.base_url.clone(),
+            complex_order_id: id.clone(),
+            edit: edit.clone(),
+            result,
+        })
+    }
+
+    /// Applies a reviewed threshold change.
+    ///
+    /// **Mutates account state.**
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::place_reviewed_complex_order`].
+    pub async fn place_reviewed_pairs_threshold(
+        &self,
+        reviewed: ReviewedPairsThreshold,
+    ) -> TastyResult<ComplexOrder> {
+        self.check_origin(
+            &reviewed.account_number,
+            &reviewed.origin,
+            "threshold change",
+        )?;
+
+        self.tasty
+            .patch(
+                &self.path(&format!(
+                    "/complex-orders/{}",
+                    encode_path_segment(&reviewed.complex_order_id.0)
+                )),
+                &reviewed.edit,
+            )
+            .await
+    }
+
+    /// The account-and-deployment check every reviewed placement makes.
+    ///
+    /// Shared so the receipts cannot drift apart on the part that matters:
+    /// certification reuses production account numbering, so the number alone
+    /// does not identify what a dry run was answered by.
+    fn check_origin(
+        &self,
+        account_number: &AccountNumber,
+        origin: &str,
+        what: &str,
+    ) -> TastyResult<()> {
+        if account_number != &self.number() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "this {what} was reviewed against a different account; \
+                 review it again against the account you mean to trade"
+            )));
+        }
+        if origin != self.tasty.config.base_url {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "this {what} was reviewed against a different venue; \
+                 a dry run on one environment says nothing about another"
+            )));
+        }
+        Ok(())
     }
 
     /// Cancels a working order.

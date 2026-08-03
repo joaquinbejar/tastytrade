@@ -30,13 +30,13 @@ difference is exactly what
 | Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
 | Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
-| Orders | 19 | 11 | 8 | 58% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
+| Orders | 19 | 19 | 0 | 100% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
 | Risk Parameters | 4 | 4 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **55** | **42** | **57%** | |
+| **TOTAL** | **97** | **63** | **34** | **65%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -325,14 +325,14 @@ read-only production opt-in and never places or modifies anything.
 | `PATCH /accounts/{account_number}/orders/{id}` | `place_reviewed_amendment()` (Edit) | ✅ |
 | `DELETE /accounts/{account_number}/orders/{id}` | `cancel_order()` | ✅ |
 | `POST /accounts/{account_number}/orders/{id}/dry-run` | `review_amendment()` | ✅ |
-| `GET /accounts/{account_number}/complex-orders` | — | ❌ |
-| `POST /accounts/{account_number}/complex-orders` | — | ❌ |
-| `POST /accounts/{account_number}/complex-orders/dry-run` | — | ❌ |
-| `GET /accounts/{account_number}/complex-orders/live` | — | ❌ |
-| `GET /accounts/{account_number}/complex-orders/{id}` | — | ❌ |
-| `PATCH /accounts/{account_number}/complex-orders/{id}` | — | ❌ |
-| `DELETE /accounts/{account_number}/complex-orders/{id}` | — | ❌ |
-| `POST /accounts/{account_number}/complex-orders/{id}/dry-run` | — | ❌ |
+| `GET /accounts/{account_number}/complex-orders` | `complex_orders()` | ✅ |
+| `POST /accounts/{account_number}/complex-orders` | `place_reviewed_complex_order()` | ✅ |
+| `POST /accounts/{account_number}/complex-orders/dry-run` | `review_complex_order()` | ✅ |
+| `GET /accounts/{account_number}/complex-orders/live` | `live_complex_orders()` | ✅ |
+| `GET /accounts/{account_number}/complex-orders/{id}` | `complex_order()` | ✅ |
+| `PATCH /accounts/{account_number}/complex-orders/{id}` | `place_reviewed_pairs_threshold()` | ✅ |
+| `DELETE /accounts/{account_number}/complex-orders/{id}` | `cancel_complex_order()` | ✅ |
+| `POST /accounts/{account_number}/complex-orders/{id}/dry-run` | `review_pairs_threshold()` | ✅ |
 | `GET /customers/{customer_id}/orders` | `customer_orders()` | ✅ |
 | `GET /customers/{customer_id}/orders/live` | `customer_live_orders()` | ✅ |
 
@@ -359,7 +359,19 @@ adds later would have made the order carrying it vanish from a live-orders
 listing without an error. `is_terminal()` answers `false` for an unknown value:
 a status this crate has not seen says nothing about whether the order is done.
 
-Complex orders (OCO, OTOCO, PAIRS) are absent entirely.
+Complex orders go through the same receipt discipline, for the same reason:
+they route real money. Local checks run first — an OCO with one component is not
+an OCO, and a PAIRS trade with no threshold has no trigger — so neither reaches
+the venue. `minimum_components` matches on `ComplexOrderType` **exhaustively
+with no wildcard**, so a strategy the venue adds later breaks the build rather
+than inheriting whichever default a `_` arm gave it.
+
+`PATCH /complex-orders/{id}` changes only the threshold price of a PAIRS trade,
+which is narrower than the plain-order patch, so it has its own type and its own
+receipt.
+
+Complex-order identifiers are **strings**, not the `u64` a plain order carries,
+and they go through the shared path encoder.
 
 ## Quote Alerts
 

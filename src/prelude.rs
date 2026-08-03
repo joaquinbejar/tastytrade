@@ -45,6 +45,15 @@ pub use crate::types::order::{
     TimeInForce,
 };
 
+// Re-export complex orders
+pub use crate::api::accounts::{
+    ComplexOrderReceipt, PairsThresholdReceipt, ReviewedComplexOrder, ReviewedPairsThreshold,
+};
+pub use crate::types::complex_order::{
+    ComplexOrder, ComplexOrderComponent, ComplexOrderId, ComplexOrderRequest, ComplexOrderType,
+    PairsThresholdEdit, RatioPriceComparator, RelatedOrder,
+};
+
 // Re-export the order lifecycle
 pub use crate::api::accounts::{AmendmentIntent, AmendmentReceipt, ReviewedAmendment};
 pub use crate::types::order::OrderAmendment;
