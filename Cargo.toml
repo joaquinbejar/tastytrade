@@ -60,6 +60,7 @@ path = "tests/integration/mod.rs"
 
 [workspace]
 members = [
+    "examples/account-data",
     "examples/accounts-status",
     "examples/quote-streaming",
     "cli",

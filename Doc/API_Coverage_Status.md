@@ -21,7 +21,7 @@ difference is exactly what
 | Area | Endpoints | Implemented | Missing | % | Issue |
 |------|-----------|-------------|---------|---|-------|
 | Account Status | 1 | 0 | 1 | 0% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
-| Accounts and Customers | 4 | 2 | 2 | 50% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
+| Accounts and Customers | 4 | 4 | 0 | 100% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
 | Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 0 | 3 | 0% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **35** | **62** | **36%** | |
+| **TOTAL** | **97** | **37** | **60** | **38%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -62,13 +62,22 @@ an order will be rejected for account reasons before sending it.
 | Endpoint | Method | Status |
 |----------|--------|--------|
 | `GET /api-quote-tokens` | `quote_streamer_tokens()` | ✅ |
-| `GET /customers/{customer_id}` | — | ❌ |
+| `GET /customers/{customer_id}` | `customer()` / `customer_by_id()` / `find_customer()` | ✅ |
 | `GET /customers/{customer_id}/accounts` | `accounts()` | ✅ |
-| `GET /customers/{customer_id}/accounts/{account_number}` | — | ❌ |
+| `GET /customers/{customer_id}/accounts/{account_number}` | `account_by_number()` | ✅ |
 
-`accounts()` hardcodes `me` as the customer id. `account(number)` fetches the
-whole list and filters client-side instead of calling the single-account
-endpoint.
+`account(number)` no longer fetches the whole listing and filters it here. That
+mattered because `Items<T>` skips an item it cannot parse, so a **sibling**
+account failing to deserialize made the requested one disappear and the call
+returned `Ok(None)` — indistinguishable from "this session cannot see that
+account", and exactly the shape of the `is-test-drive` bug in
+[#5](https://github.com/joaquinbejar/tastytrade/issues/5). `Ok(None)` now means
+the venue returned `404`.
+
+`Customer` is the most sensitive object in the API — names, addresses, tax
+identifiers, birth dates, net worth. Nothing in it renders itself: `Debug` and
+`Display` print a field count. `find_customer()` sends the documented
+`allow-missing`.
 
 ## Backtesting
 

@@ -27,6 +27,12 @@ pub use crate::api::base::TastyResult;
 // Re-export error types
 pub use crate::error::{ApiError, DxFeedError, Environment, RequestContext, TastyTradeError};
 
+// Re-export the customer resource. Personal data: nothing here renders itself.
+pub use crate::types::customer::{
+    Customer, CustomerAddress, CustomerEntity, CustomerPerson, CustomerSuitability, EntityOfficer,
+    EntitySuitability,
+};
+
 // Re-export account types
 pub use crate::api::accounts::{
     Account, AccountDetails, AccountInner, AccountNumber, DryRunReceipt, ReviewedOrder,

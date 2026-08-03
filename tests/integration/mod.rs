@@ -13,6 +13,7 @@ mod support;
 
 mod account_stream;
 mod balances;
+mod customer;
 mod instrument_listings;
 mod paths;
 mod rest;
