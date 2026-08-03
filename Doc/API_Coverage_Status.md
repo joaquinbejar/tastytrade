@@ -26,7 +26,7 @@ difference is exactly what
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
-| Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
+| Market Data | 1 | 1 | 0 | 100% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
 | Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **63** | **34** | **65%** | |
+| **TOTAL** | **97** | **64** | **33** | **66%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -273,12 +273,27 @@ is the kind of wrong that looks plausible.
 
 ## Market Data
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /market-data/by-type` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /market-data/by-type` | `market_data_by_type()` | ✅ |
 
-Snapshot quotes over REST for up to 100 symbols. Today the only way to get a
-price out of this crate is to open a DXLink websocket.
+Snapshot quotes over REST for up to 100 symbols, without opening a websocket.
+
+The encoding is unlike everything else here: **one parameter per instrument
+type**, each a comma-separated list — `equity=AAPL,TSLA&cryptocurrency=BTC/USD`
+— rather than the repeated keys the instrument listings use. Getting it backwards
+returns one symbol per type and looks like thin data rather than a client bug.
+
+The 100-symbol cap counts **every type together**, which is the part a caller
+building one watchlist per type gets wrong. Over it is a non-retryable
+`Precondition`, refused before anything is sent.
+
+Every price is `Decimal`. The `f64` exemption is for the DXFeed streaming types,
+where the feed imposes it; these are different types with a different field set.
+
+The venue sends `-1` for `halt-start-time` when nothing is halted. That is a
+sentinel, not a time, and it stays the integer it is rather than becoming a
+timestamp in 1969.
 
 ## Market Metrics
 

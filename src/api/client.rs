@@ -15,6 +15,7 @@ use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
 use crate::types::margin::{MarginConfiguration, SpanExchange, SpanRow};
+use crate::types::market_data::{MarketDataRequest, MarketDataSnapshot};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::types::order::LiveOrderRecord;
 use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
@@ -986,6 +987,33 @@ impl TastyTrade {
     /// Propagates the venue's error.
     pub async fn margin_requirements_configuration(&self) -> TastyResult<MarginConfiguration> {
         self.get("/margin-requirements-public-configuration").await
+    }
+
+    /// One snapshot of prices for up to a hundred symbols.
+    ///
+    /// The REST alternative to opening a DXLink channel and waiting: a
+    /// portfolio mark, a screener pass, a pre-trade sanity check. Every price
+    /// is `Decimal` — the `f64` exemption is for the streaming types, where the
+    /// feed imposes it, and these are not those types.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the request asks for more
+    /// than [`crate::prelude::MAX_MARKET_DATA_SYMBOLS`] symbols across all
+    /// types, or for none at all. Fails when snapshots arrive but none can be
+    /// decoded; a genuinely empty result is `Ok`.
+    pub async fn market_data_by_type(
+        &self,
+        request: &MarketDataRequest,
+    ) -> TastyResult<Vec<MarketDataSnapshot>> {
+        request.validate()?;
+
+        let query = request.to_query();
+        let resp: Items<MarketDataSnapshot> = self
+            .get_with_query("/market-data/by-type", &query.pairs())
+            .await?;
+        resp.into_items()
     }
 
     /// One page of SPAN risk rows for a date and exchange.

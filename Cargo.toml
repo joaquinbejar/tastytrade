@@ -21,6 +21,7 @@ include = [
     "Doc/margin_requirements.json",
     "Doc/margin_dry_run.json",
     "Doc/order_dry_run.json",
+    "Doc/market_data_by_type.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -71,6 +72,7 @@ members = [
     "cli",
     "examples/miscellaneous",
     "examples/instruments",
+    "examples/market-data",
     "examples/orders",
 ]
 
