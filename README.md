@@ -19,11 +19,29 @@ trading functionality, market data, and account information.
 
 ### Features
 
-- Authentication with Tastytrade accounts
+- OAuth2 authentication, with automatic access-token renewal
 - Real-time market data streaming via DxFeed
 - Account and positions information
 - Order management (placing, modifying, canceling)
 - Real-time account streaming for balance updates and order status changes
+
+### Authentication
+
+tastytrade **decommissioned `POST /sessions` on 2026-02-11**. Username and
+password authentication, session tokens and remember tokens are gone from
+the venue, and gone from this crate with it; OAuth2 is the only flow that
+works.
+
+Create an OAuth application and a personal grant under Manage > My Profile
+> API on [my.tastytrade.com](https://my.tastytrade.com). That gives you a
+**client secret** and a **refresh token**, which are what
+[`utils::config::TastyTradeConfig`] reads from
+`TASTYTRADE_CLIENT_SECRET` and `TASTYTRADE_REFRESH_TOKEN`.
+
+Access tokens last about fifteen minutes. You do not have to manage that:
+every request renews the token first when the one in hand is about to
+expire, so a long-lived client keeps working. A renewal is never a *retry* —
+a `POST` that may have placed an order is not replayed on a `401`.
 
 ### Usage
 
@@ -33,10 +51,10 @@ use tastytrade::utils::config::TastyTradeConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Login to Tastytrade
+    // Authenticate with the personal refresh-token grant
 
     let config = TastyTradeConfig::from_env();
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
 
     // Get account information
     let accounts = tasty.accounts().await?;
@@ -67,7 +85,7 @@ use tastytrade::dxfeed;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TastyTradeConfig::from_env();
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
     let mut quote_streamer = tasty.create_quote_streamer().await?;
     let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
 
@@ -100,8 +118,44 @@ Only a value that parses as `false` selects production. A missing, empty or
 misspelled variable resolves to certification, so a typo cannot be what
 points an order at a funded account.
 
-Logging in without `TASTYTRADE_USERNAME` and `TASTYTRADE_PASSWORD` fails
-locally with `TastyTradeError::ConfigError` and never reaches the network.
+Connecting without `TASTYTRADE_CLIENT_SECRET` and
+`TASTYTRADE_REFRESH_TOKEN` fails locally with
+`TastyTradeError::ConfigError` and never reaches the network.
+
+A session is bound to the deployment it authenticated against: it will not
+present a certification token to production, and it will not send the
+client secret to a host it did not authenticate with.
+
+### Authorizing other people's accounts
+
+A **trusted third-party** application — one tastytrade has reviewed — sends
+a customer to the authorization page and exchanges the code it gets back:
+
+```rust
+use tastytrade::TastyTrade;
+use tastytrade::oauth::{AuthorizationRequest, Scope};
+use tastytrade::utils::config::TastyTradeConfig;
+
+let config = TastyTradeConfig::from_env();
+
+let request = AuthorizationRequest::new(&config.client_id, &config.redirect_uri)
+    .with_scopes([Scope::Read, Scope::Trade])
+    // Tie this to the browser session that started the flow. This crate
+    // does not invent one: a nonce the application cannot correlate
+    // proves nothing.
+    .with_state(state);
+
+// Send the customer here. The URL carries no secret.
+let url = request.authorize_url(config.environment())?;
+
+// …they come back to your redirect URI with `code` and `state`.
+request.verify_state(returned_state)?;
+let tasty = TastyTrade::connect_with_authorization_code(&config, code).await?;
+
+// Store this. It does not expire, and having it means never sending the
+// customer through the authorization page again.
+let refresh_token = tasty.refresh_token().await;
+```
 
 ### Placing an order
 
@@ -223,17 +277,37 @@ binary that cares about them should install one before building the config.
 This crate also includes a sample CLI application in the `tastytrade-cli` directory
 that demonstrates a portfolio viewer with real-time updates.
 
-It reads its credentials from the environment, and takes `--login` to point
-at a different account than `TASTYTRADE_USERNAME`. There is no `--password`
-flag on purpose: a password given on the command line is visible to every
-process on the machine and is kept in the shell history.
+It reads its credentials from the environment, and takes `--config` to read
+them from a JSON file instead. Neither credential is a flag on purpose: a
+secret given on the command line is visible to every process on the machine
+and is kept in the shell history.
 
  ```shell
- export TASTYTRADE_USERNAME=you@example.com
- export TASTYTRADE_PASSWORD=...
+ export TASTYTRADE_CLIENT_SECRET=...
+ export TASTYTRADE_REFRESH_TOKEN=...
  export TASTYTRADE_USE_DEMO=true      # certification, the safe default
  cargo run -p tastytrade-cli
  ```
+
+### Migrating from 0.3
+
+Every authentication surface changed, because the API behind it was
+retired. This is a breaking release and `cargo semver-checks` reports it as
+one.
+
+| Removed | Replacement |
+|---|---|
+| `TastyTrade::login(&config)` | [`TastyTrade::connect`] |
+| `TastyTrade::default()` | [`TastyTrade::from_env`] |
+| `LoginCredentials`, `LoginResponse`, `LoginResponseUser` | [`oauth::TokenResponse`] |
+| `TastyTradeConfig::username`, `::password` | `client_secret`, `refresh_token` |
+| `TastyTradeConfig::remember_me`, `TASTYTRADE_REMEMBER_ME` | nothing — it configured a retired API |
+| `TASTYTRADE_USERNAME`, `TASTYTRADE_PASSWORD` | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN` |
+| CLI `--login` | CLI `--config` |
+
+There is no deprecation window: a deprecated `login()` would still be a
+call to an endpoint that no longer exists, so leaving one in place would
+only move the failure from compile time to run time.
 
  ## Testing
 

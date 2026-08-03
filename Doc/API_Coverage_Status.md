@@ -30,10 +30,11 @@ Snapshot taken 2026-08-03; the Orders spec was `order-api-swagger_20260427`.
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
 | **TOTAL** | **97** | **31** | **66** | **32%** | |
 
-Not counted above because they are documented in prose rather than in a swagger
-document: the session lifecycle (`POST /sessions` — implemented) and OAuth2
-(`POST /oauth/token` — not implemented). Both are tracked in
-[#85](https://github.com/joaquinbejar/tastytrade/issues/85).
+Not counted above because it is documented in prose rather than in a swagger
+document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
+[#85](https://github.com/joaquinbejar/tastytrade/issues/85). The session
+lifecycle it replaced (`POST /sessions`) was decommissioned by the venue on
+2026-02-11.
 
 Streaming is not counted either; see the section at the end.
 `Doc/ROADMAP.md` sequences all of this by priority.
@@ -255,26 +256,34 @@ reconstruct what an account actually did.
 | `GET /pairs-watchlists` | ❌ |
 | `GET /pairs-watchlists/{pairs_watchlist_name}` | ❌ |
 
-## Authentication — broken against the live venue
+## Authentication — OAuth2
 
-Tracked in [#85](https://github.com/joaquinbejar/tastytrade/issues/85).
+Implemented in [#85](https://github.com/joaquinbejar/tastytrade/issues/85).
 
 **`POST /sessions` was fully decommissioned on 2026-02-11.** From the official
 release notes: *"Legacy /sessions authentication has been fully decommissioned.
 If you are still using POST /sessions for your API application you likely are
 experiencing login issues. Please switch over to OAuth2 immediately."*
 
-`TastyTrade::login()` is the only authentication this crate implements, so
-every row marked ✅ above is implemented but unreachable in practice: REST,
-both streamers, the CLI, every example and `/smoke` all start from that call.
+| Endpoint / capability | Implemented |
+|---|---|
+| `POST /oauth/token`, `grant_type=refresh_token` | ✅ `TastyTrade::connect` |
+| `POST /oauth/token`, `grant_type=authorization_code` | ✅ `TastyTrade::connect_with_authorization_code` |
+| Authorization URL, both environments | ✅ `AuthorizationRequest::authorize_url` |
+| `state` round-trip | ✅ `AuthorizationRequest::verify_state` |
+| Access-token expiry tracking and renewal | ✅ `OAuthSession`, 60s margin |
+| `Authorization: Bearer` on every REST request | ✅ |
+| `Bearer `-prefixed `auth-token` on the account websocket | ✅ |
+| `POST /sessions`, `DELETE /sessions`, remember-token | ❌ retired by the venue, removed here |
 
-OAuth2 (`POST /oauth/token`, both the personal refresh-token grant and the
-third-party authorization-code grant) is the replacement and is not
-implemented. Access tokens last about 15 minutes and go in
-`Authorization: Bearer`, including the account websocket's `auth-token` field.
+Access tokens last about 15 minutes. Renewal happens **before** a request, not
+as a retry after a `401`: a `POST` that may have placed an order is never
+replayed. A session is bound to the deployment it authenticated against, so
+neither a token nor the client secret can follow a changed `base_url`
+somewhere else.
 
 The logout and remember-token work originally filed here is moot: those are
-surfaces of a retired API.
+surfaces of a retired API. `TASTYTRADE_REMEMBER_ME` is no longer read.
 
 ## Streaming
 

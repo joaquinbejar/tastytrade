@@ -83,8 +83,12 @@ pub use crate::utils::{
     parse::*,
 };
 
-// Re-export login types
-pub use crate::types::login::{LoginCredentials, LoginResponse, LoginResponseUser};
+// Re-export OAuth2 types
+pub use crate::api::oauth::OAuthSession;
+pub use crate::types::oauth::{
+    AccessToken, AuthorizationCode, AuthorizationRequest, ClientSecret, IdToken, OAuthGrant,
+    RefreshToken, Scope, TokenResponse,
+};
 
 // Re-export event types
 pub use crate::types::event::TastyEvent;

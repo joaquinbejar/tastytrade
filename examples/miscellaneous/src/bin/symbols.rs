@@ -15,11 +15,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("-----------------------------------");
 
     // Check if environment variables are set
-    if env::var("TASTYTRADE_USERNAME").is_err() || env::var("TASTYTRADE_PASSWORD").is_err() {
-        info!("Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables.");
+    if env::var("TASTYTRADE_CLIENT_SECRET").is_err()
+        || env::var("TASTYTRADE_REFRESH_TOKEN").is_err()
+    {
+        info!(
+            "Please set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN environment variables."
+        );
         info!("Example:");
-        info!("  export TASTYTRADE_USERNAME=your_username");
-        info!("  export TASTYTRADE_PASSWORD=your_password");
+        info!("  export TASTYTRADE_CLIENT_SECRET=your_oauth_client_secret");
+        info!("  export TASTYTRADE_REFRESH_TOKEN=your_oauth_refresh_token");
         info!("  export TASTYTRADE_USE_DEMO=true");
         info!("  export LOGLEVEL=DEBUG");
         std::process::exit(1);
@@ -37,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Login to the TastyTrade API
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
     info!("Successfully logged in!");
 
     // Get account information

@@ -14,6 +14,7 @@ use crossterm::{
 use futures_util::StreamExt;
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use tui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -38,42 +39,40 @@ use tastytrade::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// tastytrade username or email; overrides TASTYTRADE_USERNAME
+    /// Read credentials from this JSON configuration file instead of the
+    /// environment.
     ///
-    /// The password is never a flag. It comes from TASTYTRADE_PASSWORD, so it
-    /// stays out of the shell history and out of the process list every other
-    /// user on the machine can read.
+    /// Neither OAuth credential is a flag. A client secret or refresh token
+    /// given on the command line is visible to every process on the machine
+    /// and is kept in the shell history, and both are worth as much as a
+    /// password. `--login` is gone with the API it named: tastytrade retired
+    /// username and password authentication on 2026-02-11.
     #[arg(short, long)]
-    login: Option<String>,
+    config: Option<PathBuf>,
 }
 
 /// Applies the command line on top of the environment.
 ///
-/// `--login` overrides `TASTYTRADE_USERNAME`; everything else, the password
-/// included, comes from the environment. Both flags used to be required and
-/// then discarded, so the CLI could not start without being handed credentials
-/// it ignored, and it logged into whatever `.env` happened to hold.
-fn resolve_config(mut config: TastyTradeConfig, args: &Args) -> Result<TastyTradeConfig> {
-    if let Some(login) = &args.login {
-        let login = login.trim();
-        if login.is_empty() {
-            anyhow::bail!("--login was given but is blank");
-        }
-        config.username = login.to_string();
-    }
+/// Both OAuth credentials come from the environment or from `--config`; there
+/// is no flag that carries one.
+fn resolve_config(config: TastyTradeConfig, args: &Args) -> Result<TastyTradeConfig> {
+    let config = match &args.config {
+        Some(path) => TastyTradeConfig::from_file(path)
+            .with_context(|| format!("could not read {}", path.display()))?,
+        None => config,
+    };
 
-    // Checked here so the message can name the missing piece. Login reports
-    // this too, but by then the operator has already been told which account
-    // and which environment, which reads as though the credential was fine.
-    if config.username.trim().is_empty() {
-        anyhow::bail!("no username: pass --login or set TASTYTRADE_USERNAME");
-    }
-    if config.password.trim().is_empty() {
+    // Checked here so the message can name the missing piece. Connecting
+    // reports this too, but by then the operator has already been told which
+    // environment, which reads as though the credential was fine.
+    if !config.has_valid_credentials() {
         anyhow::bail!(
-            "no password: set TASTYTRADE_PASSWORD. \
-             There is no --password flag: a password given on the command line \
-             is visible to every process on the machine and is kept in the \
-             shell history"
+            "no OAuth credentials: set TASTYTRADE_CLIENT_SECRET and \
+             TASTYTRADE_REFRESH_TOKEN, or pass --config with a file that \
+             provides both. Create them under Manage > My Profile > API on \
+             my.tastytrade.com. There is no flag for either: a secret given on \
+             the command line is visible to every process on the machine and is \
+             kept in the shell history"
         );
     }
 
@@ -200,7 +199,7 @@ async fn main() -> Result<()> {
     // to know before watching an account, and certification reuses production
     // account numbering, so "which one am I looking at" is a real question.
     println!("Logging in to {}...", config.environment());
-    let tasty = TastyTrade::login(&config)
+    let tasty = TastyTrade::connect(&config)
         .await
         .context("Logging into tastytrade")?;
 
@@ -473,80 +472,70 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tastytrade::prelude::{ClientSecret, RefreshToken};
+
+    const SECRET: &str = "SENTINEL-client-secret-3Qv7";
+    const REFRESH: &str = "SENTINEL-refresh-token-8Hb2";
 
     fn config() -> TastyTradeConfig {
         TastyTradeConfig {
-            username: "env-user@example.com".to_string(),
-            password: "env-password".to_string(),
+            client_secret: ClientSecret::new(SECRET),
+            refresh_token: RefreshToken::new(REFRESH),
+            client_id: String::new(),
+            redirect_uri: String::new(),
             use_demo: true,
             log_level: "INFO".to_string(),
-            remember_me: true,
             base_url: "https://api.cert.tastyworks.com".to_string(),
             websocket_url: "wss://streamer.cert.tastyworks.com".to_string(),
         }
     }
 
-    /// The defect this fixes: the flag was required, parsed, and discarded, so
-    /// the CLI logged into whatever the environment held.
-    #[test]
-    fn a_login_flag_decides_which_account_is_used() {
-        let resolved = resolve_config(
-            config(),
-            &Args {
-                login: Some("flag-user@example.com".to_string()),
-            },
-        )
-        .expect("a complete pair resolves");
-
-        assert_eq!(resolved.username, "flag-user@example.com");
-        assert_eq!(
-            resolved.password, "env-password",
-            "the password still comes from the environment"
-        );
-    }
-
-    /// Without the flag the environment decides, which is how every existing
+    /// Without a flag the environment decides, which is how every existing
     /// invocation works.
     #[test]
-    fn without_the_flag_the_environment_decides() {
-        let resolved = resolve_config(config(), &Args { login: None }).expect("resolves");
+    fn without_a_flag_the_environment_decides() {
+        let resolved = resolve_config(config(), &Args { config: None }).expect("resolves");
 
-        assert_eq!(resolved.username, "env-user@example.com");
+        assert_eq!(resolved.client_secret.expose_secret(), SECRET);
+        assert_eq!(resolved.refresh_token.expose_secret(), REFRESH);
     }
 
-    /// A blank flag is a shell accident, not a username. Accepting it would
-    /// send an unusable credential to the venue instead of failing here.
+    /// The message has to name the variables, and has to say that the flags it
+    /// would be natural to reach for do not exist, so the reader stops looking
+    /// for them.
     #[test]
-    fn a_blank_login_is_refused_rather_than_sent() {
-        let error = resolve_config(
-            config(),
-            &Args {
-                login: Some("   ".to_string()),
-            },
-        )
-        .expect_err("a blank login is not a login");
-
-        assert!(format!("{error}").contains("blank"), "{error}");
-    }
-
-    /// The message has to name the variable, and has to say that the flag it
-    /// would be natural to reach for does not exist, so the reader stops
-    /// looking for it.
-    #[test]
-    fn a_missing_password_names_the_variable_and_not_a_flag() {
+    fn missing_credentials_name_the_variables_and_not_a_flag() {
         let missing = TastyTradeConfig {
-            password: String::new(),
+            refresh_token: RefreshToken::new(""),
             ..config()
         };
 
-        let error = resolve_config(missing, &Args { login: None })
-            .expect_err("there is nothing to log in with");
+        let error = resolve_config(missing, &Args { config: None })
+            .expect_err("there is nothing to authenticate with");
         let message = format!("{error}");
 
-        assert!(message.contains("TASTYTRADE_PASSWORD"), "{message}");
+        assert!(message.contains("TASTYTRADE_CLIENT_SECRET"), "{message}");
+        assert!(message.contains("TASTYTRADE_REFRESH_TOKEN"), "{message}");
         assert!(
-            message.contains("no --password flag"),
-            "the message must say the flag is absent on purpose: {message}"
+            message.contains("no flag for either"),
+            "the message must say the flags are absent on purpose: {message}"
+        );
+    }
+
+    /// A shell accident is not a credential, and the message must not suggest
+    /// the venue refused anything.
+    #[test]
+    fn whitespace_is_not_a_credential() {
+        let blank = TastyTradeConfig {
+            client_secret: ClientSecret::new("   "),
+            ..config()
+        };
+
+        let error =
+            resolve_config(blank, &Args { config: None }).expect_err("whitespace is not a secret");
+        assert!(
+            format!("{error}").contains("no OAuth credentials"),
+            "{error}"
         );
     }
 
@@ -556,15 +545,31 @@ mod tests {
     fn no_error_repeats_a_credential() {
         let error = resolve_config(
             TastyTradeConfig {
-                password: String::new(),
+                refresh_token: RefreshToken::new(""),
                 ..config()
             },
+            &Args { config: None },
+        )
+        .expect_err("no refresh token");
+
+        assert!(!format!("{error}").contains("SENTINEL"), "{error}");
+    }
+
+    /// A missing configuration file is the operator's mistake, and the message
+    /// names the path rather than reporting a bare io error.
+    #[test]
+    fn a_missing_config_file_names_the_path() {
+        let error = resolve_config(
+            config(),
             &Args {
-                login: Some("flag-user@example.com".to_string()),
+                config: Some(PathBuf::from("/nonexistent/tastytrade-cli.json")),
             },
         )
-        .expect_err("no password");
+        .expect_err("the file is not there");
 
-        assert!(!format!("{error}").contains("env-password"), "{error}");
+        assert!(
+            format!("{error}").contains("/nonexistent/tastytrade-cli.json"),
+            "{error}"
+        );
     }
 }

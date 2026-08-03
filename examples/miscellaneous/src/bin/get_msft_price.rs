@@ -31,13 +31,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("-----------------------------------------");
 
     // Check if environment variables are set
-    if env::var("TASTYTRADE_USERNAME").is_err() || env::var("TASTYTRADE_PASSWORD").is_err() {
-        info!("Please set TASTYTRADE_USERNAME and TASTYTRADE_PASSWORD environment variables.");
+    if env::var("TASTYTRADE_CLIENT_SECRET").is_err()
+        || env::var("TASTYTRADE_REFRESH_TOKEN").is_err()
+    {
+        info!(
+            "Please set TASTYTRADE_CLIENT_SECRET and TASTYTRADE_REFRESH_TOKEN environment variables."
+        );
         std::process::exit(1);
     }
 
     // Login to the TastyTrade API
-    let tasty = TastyTrade::login(&config).await?;
+    let tasty = TastyTrade::connect(&config).await?;
     info!("Successfully logged in!");
 
     // Define the symbol
