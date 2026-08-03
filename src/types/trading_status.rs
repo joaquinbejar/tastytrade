@@ -13,17 +13,23 @@
 //! them is safe to act on.
 
 use chrono::{DateTime, FixedOffset, NaiveDate};
-use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use crate::api::accounts::AccountNumber;
+
 /// What an account is allowed to do right now.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+///
+/// `Debug` and `Display` render the status with both account identifiers
+/// replaced. The derives went through `Serialize`, so a `{status:?}` in a log
+/// line printed them — and the `tracing` macros do exactly that. Serializing
+/// keeps the real values: writing the record out is an explicit act.
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct TradingStatus {
     /// Which account this is about. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<AccountNumber>,
     /// Whether deep in-the-money options may be carried.
     #[serde(default)]
     pub are_deep_itm_carry_options_enabled: Option<bool>,
@@ -41,7 +47,7 @@ pub struct TradingStatus {
     pub autotrade_account_type: Option<String>,
     /// The clearing firm's account number. Account PII.
     #[serde(default)]
-    pub clearing_account_number: Option<String>,
+    pub clearing_account_number: Option<AccountNumber>,
     /// How the clearing firm aggregates this account.
     #[serde(default)]
     pub clearing_aggregation_identifier: Option<String>,
@@ -180,7 +186,20 @@ impl TradingStatus {
     pub fn is_reduce_only(&self) -> bool {
         self.is_closing_only == Some(true) || self.is_risk_reducing_only == Some(true)
     }
+
+    /// Whether every flag [`TradingStatus::is_reduce_only`] reads arrived.
+    ///
+    /// The companion [`TradingStatus::is_known_blocked`] is to
+    /// [`TradingStatus::is_blocked`]. Without it, `false` from a sparse
+    /// payload said "the account may trade freely" when what the venue
+    /// actually said was nothing — and this is the flag that decides whether
+    /// an order will be accepted.
+    pub fn is_known_reduce_only(&self) -> bool {
+        self.is_closing_only.is_some() && self.is_risk_reducing_only.is_some()
+    }
 }
+
+crate::types::wire::redacted_account_render!(TradingStatus);
 
 #[cfg(test)]
 mod tests {
@@ -263,6 +282,46 @@ mod tests {
             !sparse.is_known_blocked(),
             "nothing was said, so nothing is known"
         );
+
+        // The same distinction on the flag that decides whether an order will
+        // be accepted. `false` from a sparse payload used to be the only
+        // answer available, and it read as "may trade freely".
+        assert_eq!(sparse.is_closing_only, None);
+        assert_eq!(sparse.is_risk_reducing_only, None);
+        assert!(!sparse.is_reduce_only());
+        assert!(
+            !sparse.is_known_reduce_only(),
+            "nothing was said, so nothing is known"
+        );
+    }
+
+    /// Neither account identifier reaches a rendering.
+    ///
+    /// The derives went through `Serialize`, so both printed verbatim as soon
+    /// as anything wrote `{status:?}` — which is what a `tracing` field does.
+    /// `AccountNumber` alone does not fix it: it serializes transparently.
+    #[test]
+    fn a_trading_status_renders_without_either_account_identifier() {
+        const ACCOUNT: &str = "SENTINEL-5WX00042";
+        const CLEARING: &str = "SENTINEL-clearing-99887";
+
+        let status: TradingStatus = serde_json::from_str(&format!(
+            r#"{{"account-number": "{ACCOUNT}", "clearing-account-number": "{CLEARING}",
+                 "is-frozen": false, "options-level": "No Restrictions"}}"#
+        ))
+        .expect("the status must decode");
+
+        let rendered = format!("{status:?} {status} {}", format_args!("{status:#?}"));
+        assert!(!rendered.contains(ACCOUNT), "rendered: {rendered}");
+        assert!(!rendered.contains(CLEARING), "rendered: {rendered}");
+        assert!(rendered.contains("{account}"), "{rendered}");
+        // The rest of the status is still readable, which is the point of
+        // redacting the identifiers rather than the record.
+        assert!(rendered.contains("No Restrictions"), "{rendered}");
+
+        // Serialization is explicit and keeps both.
+        let written = serde_json::to_string(&status).expect("must serialize");
+        assert!(written.contains(ACCOUNT) && written.contains(CLEARING));
     }
 
     #[test]

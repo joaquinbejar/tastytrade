@@ -543,9 +543,18 @@ where
 /// Serialization itself is untouched. Writing the record out is an explicit act
 /// with an explicit destination; rendering it is not.
 pub(crate) fn redacted_render(value: &impl serde::Serialize) -> String {
-    /// Keys whose value names an account, in the spellings the venue uses.
+    /// Keys whose value names an account.
+    ///
+    /// Matched on the **suffix** rather than the whole name, because the venue
+    /// qualifies the concept: `clearing-account-number` is an account number
+    /// too, and an exact list missed it. A suffix rule covers the qualified
+    /// spellings that exist and the ones that arrive later.
     fn is_account_key(key: &str) -> bool {
-        matches!(key, "account-number" | "account_number" | "account-numbers")
+        let key = key.replace('_', "-");
+        key == "account-number"
+            || key == "account-numbers"
+            || key.ends_with("-account-number")
+            || key.ends_with("-account-numbers")
     }
 
     fn redact(value: &mut serde_json::Value) {

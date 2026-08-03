@@ -101,7 +101,7 @@ pub struct Transaction {
     pub id: i64,
     /// Which account it belongs to. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<crate::api::accounts::AccountNumber>,
     /// What kind of event this was.
     #[serde(default)]
     pub transaction_type: Option<TransactionType>,
