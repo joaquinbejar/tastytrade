@@ -303,6 +303,14 @@ async fn a_single_account_lookup_does_not_depend_on_its_siblings() {
 
     assert_eq!(account.number().0, sentinel::ACCOUNT_NUMBER);
     assert_eq!(account.details().nickname, "Test");
+
+    // The two endpoints answer with different objects, and the difference is
+    // visible rather than flattened. The listing decorates each account with
+    // an authority level; the single fetch returns the account itself, so
+    // there is nothing to report and `None` says so. An empty string here
+    // would have read as a level the venue supplied and left blank.
+    assert_eq!(listed[0].authority_level(), Some("owner"));
+    assert_eq!(account.authority_level(), None);
 }
 
 /// `Ok(None)` means 404, and only 404.
@@ -373,5 +381,82 @@ async fn the_single_account_path_encodes_and_redacts_the_number() {
     assert!(
         !rendered.contains("00042"),
         "the account number reached the error: {rendered}"
+    );
+}
+
+/// The customer identifier gets the account number's treatment.
+///
+/// It is the other identifier this crate puts in a path, and it reached the
+/// same three places the account number was kept out of: the request context
+/// carried in every `TastyTradeError::Request`, the `Display` a caller prints,
+/// and the DEBUG line the client writes about the request it is making. A
+/// failing response is the case that matters, because that is when the value
+/// is rendered rather than merely held.
+#[tokio::test]
+async fn a_customer_identifier_stays_out_of_the_error_and_the_logs() {
+    const CUSTOMER_ID: &str = "SENTINEL-customer-78a1f0c2";
+
+    let venue = venue_with(vec![(
+        &format!("GET /customers/{CUSTOMER_ID}"),
+        Route::status(500, r#"{"error":{"code":"oops","message":"server"}}"#),
+    )])
+    .await;
+
+    let (errors, logs) = capture_logs_at(Level::TRACE, async {
+        let client = TastyTrade::connect(&config_for(&venue))
+            .await
+            .expect("authentication must succeed");
+        // Both methods that take an identifier. `find_customer` adds a query
+        // parameter, which is where the redaction used to swallow the rest of
+        // the path along with the value.
+        let by_id = client
+            .customer_by_id(CUSTOMER_ID)
+            .await
+            .expect_err("a 500 must surface as an error");
+        let found = client
+            .find_customer(CUSTOMER_ID)
+            .await
+            .expect_err("a 500 must surface as an error");
+        (by_id, found)
+    })
+    .await;
+    let error = errors.0;
+
+    // Both were really sent, so this is not passing because nothing happened.
+    let targets: Vec<String> = venue
+        .requests()
+        .into_iter()
+        .filter(|request| request.target.starts_with("/customers/"))
+        .map(|request| request.target)
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            format!("/customers/{CUSTOMER_ID}"),
+            format!("/customers/{CUSTOMER_ID}?allow-missing=true"),
+        ]
+    );
+
+    let rendered = format!("{error} {error:?} {} {:?}", errors.1, errors.1);
+    assert!(
+        !rendered.contains(CUSTOMER_ID),
+        "the customer identifier reached the error: {rendered}"
+    );
+    assert!(
+        rendered.contains("{customer}"),
+        "the error lost the path it was reaching for: {rendered}"
+    );
+    // `find_customer` sends `allow-missing`, and the query has to survive the
+    // redaction: an error that cannot say which request failed is worse than
+    // one that says too much.
+    assert!(
+        rendered.contains("allow-missing"),
+        "the redaction ate the query string: {rendered}"
+    );
+
+    let captured = logs.contents();
+    assert!(
+        !captured.contains(CUSTOMER_ID),
+        "the customer identifier reached a log line"
     );
 }

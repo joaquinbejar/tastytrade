@@ -53,27 +53,63 @@ impl Display for TastyTrade {
     }
 }
 
-/// Replaces the account number in an account-scoped URL with a placeholder.
+/// Replaces the identifiers an API path carries with placeholders.
 ///
-/// Every `/accounts/{number}/…` request embeds the identifier in its path. That
-/// URL is useful context in an error, the identifier is not: an error value is
-/// logged, reported, or shown wherever the caller decides, so it must not carry
-/// something the caller never chose to handle.
+/// Every `/accounts/{number}/…` request embeds the account number in its path,
+/// and every `/customers/{id}/…` request embeds the customer identifier. That
+/// URL is useful context in an error, the identifiers are not: an error value
+/// is logged, reported, or shown wherever the caller decides, so it must not
+/// carry something the caller never chose to handle.
+///
+/// `/customers/me` is left alone. It is a literal the venue defines rather than
+/// an identifier, it is by far the most common form, and redacting it would
+/// make the ordinary path unreadable while hiding nothing.
 fn redact_account_path(url: &str) -> String {
+    /// What the next segment is an identifier *of*, when it is one.
+    enum Next {
+        Nothing,
+        Account,
+        Customer,
+    }
+
     let mut out = String::with_capacity(url.len());
-    let mut redact_next = false;
+    let mut next = Next::Nothing;
 
     for (index, segment) in url.split('/').enumerate() {
         if index > 0 {
             out.push('/');
         }
-        if redact_next && !segment.is_empty() {
-            out.push_str("{account}");
-            redact_next = false;
-        } else {
-            out.push_str(segment);
-            redact_next = segment == "accounts";
+        // An identifier can be the last path segment, in which case the query
+        // string is part of the same split. Only the identifier is replaced:
+        // the query is request context worth keeping, and dropping it here
+        // would silently shorten every error about a paginated endpoint.
+        let (identifier, tail) = match segment.find(['?', '#']) {
+            Some(at) => segment.split_at(at),
+            None => (segment, ""),
+        };
+
+        match next {
+            Next::Account if !identifier.is_empty() => {
+                out.push_str("{account}");
+                out.push_str(tail);
+                next = Next::Nothing;
+                continue;
+            }
+            Next::Customer if !identifier.is_empty() && identifier != "me" => {
+                out.push_str("{customer}");
+                out.push_str(tail);
+                next = Next::Nothing;
+                continue;
+            }
+            _ => {}
         }
+
+        out.push_str(segment);
+        next = match identifier {
+            "accounts" => Next::Account,
+            "customers" => Next::Customer,
+            _ => Next::Nothing,
+        };
     }
 
     out
@@ -964,5 +1000,46 @@ mod tests {
         ] {
             assert_eq!(redact_account_path(url), url);
         }
+    }
+
+    /// A customer identifier is the account number's equal, and it reaches the
+    /// same places: `RequestReport.operation`, every DEBUG line about the
+    /// request, and the `Display` of every error the request produces. It was
+    /// passing through because the redaction only knew about `/accounts/`.
+    #[test]
+    fn redacts_the_customer_identifier() {
+        assert_eq!(
+            redact_account_path("https://api.tastyworks.com/customers/78a1f0c2-4d31"),
+            "https://api.tastyworks.com/customers/{customer}"
+        );
+        // Both identifiers in one path, which is what the account endpoints
+        // under a named customer look like.
+        assert_eq!(
+            redact_account_path("https://api.tastyworks.com/customers/78a1f0c2/accounts/5WX12345"),
+            "https://api.tastyworks.com/customers/{customer}/accounts/{account}"
+        );
+        // And with a query string, which the paginated listings carry.
+        let redacted =
+            redact_account_path("https://api.tastyworks.com/customers/78a1f0c2?per-page=100");
+        assert!(!redacted.contains("78a1f0c2"), "{redacted}");
+        assert!(redacted.contains("per-page=100"), "{redacted}");
+    }
+
+    /// `me` is a literal the venue defines rather than an identifier. It is the
+    /// form nearly every request uses, and redacting it would cost the whole
+    /// path its readability while hiding nothing.
+    #[test]
+    fn leaves_the_me_alias_readable() {
+        for url in [
+            "https://api.tastyworks.com/customers/me",
+            "https://api.tastyworks.com/customers/me/accounts",
+        ] {
+            assert_eq!(redact_account_path(url), url);
+        }
+        // The account number after it is still redacted.
+        assert_eq!(
+            redact_account_path("https://api.tastyworks.com/customers/me/accounts/5WX12345"),
+            "https://api.tastyworks.com/customers/me/accounts/{account}"
+        );
     }
 }

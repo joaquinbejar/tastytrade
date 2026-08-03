@@ -389,8 +389,8 @@ pub struct CustomerEntity {
     #[serde(default)]
     pub business_nature: Option<String>,
     /// Date of trust creation.
-    #[serde(default)]
-    pub date_of_trust_creation: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub date_of_trust_creation: Option<NaiveDate>,
     /// Email.
     #[serde(default)]
     pub email: Option<String>,
@@ -406,8 +406,8 @@ pub struct CustomerEntity {
     #[serde(default)]
     pub foreign_institution: Option<String>,
     /// Grantor birth date.
-    #[serde(default)]
-    pub grantor_birth_date: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub grantor_birth_date: Option<NaiveDate>,
     /// Grantor email.
     #[serde(default)]
     pub grantor_email: Option<String>,
@@ -528,8 +528,8 @@ pub struct Customer {
     #[serde(default)]
     pub work_phone_number_details: Option<String>,
     /// Birth date.
-    #[serde(default)]
-    pub birth_date: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub birth_date: Option<NaiveDate>,
     /// Email.
     #[serde(default)]
     pub email: Option<String>,
@@ -552,8 +552,8 @@ pub struct Customer {
     #[serde(default)]
     pub citizenship_country: Option<String>,
     /// Visa expiration date.
-    #[serde(default)]
-    pub visa_expiration_date: Option<String>,
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub visa_expiration_date: Option<NaiveDate>,
     /// Visa type.
     #[serde(default)]
     pub visa_type: Option<String>,

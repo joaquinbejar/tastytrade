@@ -14,7 +14,7 @@
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
-use tracing::info;
+use tracing::{debug, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,16 +40,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match tasty.account_by_number(number.clone()).await? {
         Some(account) => {
             let details = account.details();
-            info!(
-                "Single fetch: {} — {} ({}, opened {})",
-                account.number().redacted(),
-                details.nickname,
-                details.account_type_name,
-                details.opened_at
+            // The nickname is something a person typed and can be a real name,
+            // so it is account data rather than structure. INFO reaches a log
+            // aggregator by default; what goes there says an account was
+            // fetched, not who it belongs to.
+            info!("Single fetch: {} answered", account.number().redacted());
+            debug!(
+                "  nickname: {} ({}, opened {})",
+                details.nickname, details.account_type_name, details.opened_at
             );
             info!("  margin or cash: {}", details.margin_or_cash);
             // A flag the venue omitted is unknown, never false.
             info!("  futures approved: {:?}", details.is_futures_approved);
+            // Reported by the listing, absent from the single fetch.
+            info!("  authority level: {:?}", account.authority_level());
         }
         None => info!("The venue does not know that account number"),
     }

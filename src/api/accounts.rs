@@ -258,11 +258,17 @@ impl Account<'_> {
 
     /// What this session may do with the account, e.g. `owner`.
     ///
-    /// Empty when the account came from the single-account endpoint, which
+    /// `None` when the account came from the single-account endpoint, which
     /// answers with the account itself rather than the listing's authority
-    /// decorator. Empty means "not reported", not "none".
-    pub fn authority_level(&self) -> &str {
-        &self.inner.authority_level
+    /// decorator, so there is no level to report. Not reported is not the same
+    /// as none, and returning `""` made the two indistinguishable — the caller
+    /// would have had to know which call produced the account to read the
+    /// value correctly.
+    ///
+    /// The listing always sends the field, so an empty string can only come
+    /// from the endpoint that does not send it at all.
+    pub fn authority_level(&self) -> Option<&str> {
+        Some(self.inner.authority_level.as_str()).filter(|level| !level.is_empty())
     }
 
     /// `/accounts/{this account}{suffix}`, with the number percent-encoded.
