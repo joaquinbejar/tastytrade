@@ -200,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !aapl_options.is_empty() {
                 // Test with first few AAPL options
                 for option in aapl_options.iter().take(3) {
-                    match tasty.get_equity_option(&option.symbol.0).await {
+                    match tasty.get_equity_option(&option.symbol.0, None).await {
                         Ok(specific_option) => {
                             info!("✅ Retrieved specific option: {}", specific_option.symbol.0);
                             debug!("   📊 Details:");

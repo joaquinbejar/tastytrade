@@ -12,8 +12,10 @@
 //! transformation stage is pure, and the report says which parts of the answer
 //! are missing rather than leaving that in the logs.
 
+use crate::api::query::PageRequest;
 use crate::prelude::{SymbolEntry, TastyTradeConfig};
 use crate::types::instrument::{FuturesNestedOptionChain, NestedOptionChain};
+use crate::types::instrument_filter::ActiveEquityFilter;
 use crate::utils::parse::expiration_instant;
 use crate::{InstrumentType, TastyResult, TastyTrade, TastyTradeError};
 use chrono::{DateTime, Utc};
@@ -24,6 +26,12 @@ use tracing::{debug, info, warn};
 
 /// The venue this crate labels downloaded symbols with.
 const EXCHANGE: &str = "TASTYTRADE";
+
+/// Items per page when walking a listing.
+///
+/// The value `list_active_equities` used to hard-code before the page size
+/// became the caller's decision.
+const LISTING_PAGE_SIZE: u32 = 1000;
 
 /// Future products that do not carry option chains.
 ///
@@ -273,6 +281,22 @@ pub async fn download_options_symbols_with(
     })
 }
 
+/// The wire form of a page index, or nothing when it has no wire form.
+///
+/// `max_equity_pages` is a `usize` and the venue's `page-offset` is a `u32`, so
+/// a limit above `u32::MAX` runs out of representable offsets before it runs
+/// out of iterations. Saturating there is worse than stopping: every remaining
+/// iteration would ask for the same last page, so the walk would keep issuing
+/// authenticated requests that return the same items, and a misconfigured limit
+/// would look like a very slow download rather than a mistake.
+fn page_offset(page: usize) -> Option<u32> {
+    let offset = u32::try_from(page).ok();
+    if offset.is_none() {
+        warn!("stopping the listing walk at page {page}: the venue's page offset is a u32");
+    }
+    offset
+}
+
 /// Walks the active-equities pages up to the configured limit.
 async fn discover_equities(
     tasty: &TastyTrade,
@@ -281,17 +305,28 @@ async fn discover_equities(
     let mut found = Vec::new();
 
     for page in 0..limits.max_equity_pages {
-        let paginated = tasty.list_active_equities(page).await?;
+        // The page size the walk has always used. Explicit now rather than
+        // buried in the endpoint method, because it is a decision about this
+        // downloader and not about the endpoint.
+        let Some(offset) = page_offset(page) else {
+            break;
+        };
+        let request = PageRequest::new()
+            .with_per_page(LISTING_PAGE_SIZE)
+            .with_page_offset(offset);
+        let filter = ActiveEquityFilter::new().with_page(request);
+        let paginated = tasty.list_active_equities(&filter).await?;
         let pagination = &paginated.pagination;
         debug!(
             "active equities page {}/{}: {} items",
             pagination.page_offset, pagination.total_pages, pagination.current_item_count
         );
 
-        let last_page = pagination.page_offset + 1 >= pagination.total_pages;
+        // Read before the items move out of `paginated`.
+        let has_more = paginated.has_more();
         found.extend(paginated.items);
 
-        if last_page {
+        if !has_more {
             break;
         }
     }
@@ -313,12 +348,39 @@ async fn discover_future_products(
     tasty: &TastyTrade,
     limits: &DownloadLimits,
 ) -> TastyResult<Vec<crate::types::instrument::FutureProduct>> {
-    let mut products: Vec<_> = tasty
-        .list_future_products()
-        .await?
-        .into_iter()
-        .filter(|product| !PRODUCTS_WITHOUT_OPTIONS.contains(&product.code.as_str()))
-        .collect();
+    // Future products paginate now, so this walks pages instead of assuming
+    // one response is the whole catalogue. Bounded by the same page budget as
+    // equities: a downloader that walks until the venue says stop is a
+    // downloader that hangs when the venue is wrong about that.
+    let mut products: Vec<crate::types::instrument::FutureProduct> = Vec::new();
+
+    for page in 0..limits.max_equity_pages {
+        let Some(offset) = page_offset(page) else {
+            break;
+        };
+        let request = PageRequest::new()
+            .with_per_page(LISTING_PAGE_SIZE)
+            .with_page_offset(offset);
+        let paginated = tasty.list_future_products(&request).await?;
+        let pagination = &paginated.pagination;
+        debug!(
+            "future products page {}/{}: {} items",
+            pagination.page_offset, pagination.total_pages, pagination.current_item_count
+        );
+
+        // Read before the items move out of `paginated`.
+        let has_more = paginated.has_more();
+        products.extend(
+            paginated
+                .items
+                .into_iter()
+                .filter(|product| !PRODUCTS_WITHOUT_OPTIONS.contains(&product.code.as_str())),
+        );
+
+        if !has_more {
+            break;
+        }
+    }
 
     if products.len() > limits.max_future_products {
         info!(

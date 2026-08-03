@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use tastytrade::TastyTrade;
+use tastytrade::prelude::ActiveEquityFilter;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::{Environment, TastyTradeError};
 use tracing::Level;
@@ -637,7 +638,7 @@ async fn a_listing_without_pagination_is_an_error_not_a_panic() {
         .expect("authentication must succeed");
 
     let error = client
-        .list_active_equities(0)
+        .list_active_equities(&ActiveEquityFilter::new())
         .await
         .expect_err("a missing pagination block must not panic");
 

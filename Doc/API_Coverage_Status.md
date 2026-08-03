@@ -133,6 +133,23 @@ The crate also implements `GET /instruments/equity-options` and
 `list_equity_options()` and `list_future_options()`. Both work against the
 venue but no longer appear in the published spec; keep them.
 
+**They keep returning `Vec<T>`**, unlike every other listing. The `20250715`
+release note says they paginate, and the spec published the same day does not
+describe them at all — so there is nothing to check the return type against,
+and switching them to `Paginated<T>` on the release note alone would make every
+existing call fail if the note is wrong. The probe in
+[#90](https://github.com/joaquinbejar/tastytrade/issues/90) covers
+`/instruments/equity-options` as one of its controls; running it settles this
+at the same time.
+
+### Pagination and filters
+
+Every listing above that the spec paginates returns `Paginated<T>` and takes a
+typed filter. The filters are `EquityFilter`, `ActiveEquityFilter` and
+`FutureFilter`; `PageRequest` is the page itself and is shared. An unset
+parameter is **omitted**, so the venue's own defaults survive — that matters
+for `only-active-futures`, which the venue defaults to true.
+
 ### Named in a release note, absent from the spec — [#90](https://github.com/joaquinbejar/tastytrade/issues/90)
 
 Two routes are described by the official release notes and documented nowhere

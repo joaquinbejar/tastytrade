@@ -198,6 +198,54 @@ pub struct Paginated<T> {
     pub pagination: Pagination,
 }
 
+impl<T> Paginated<T> {
+    /// How many items are on this page.
+    ///
+    /// The page, not the listing — [`Pagination::total_items`] is the listing.
+    /// Two numbers that are equal on a short result and are not the point at
+    /// which a caller should stop paging.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Whether this page carries nothing.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// The items on this page, borrowed.
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.items.iter()
+    }
+
+    /// Whether the listing continues past this page.
+    ///
+    /// The condition a paging loop actually needs, and the one that is easy to
+    /// write off by one: page offsets count from zero, so the last page is
+    /// `total_pages - 1`.
+    pub fn has_more(&self) -> bool {
+        self.pagination.page_offset.saturating_add(1) < self.pagination.total_pages
+    }
+}
+
+impl<T> IntoIterator for Paginated<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Paginated<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
 /// The result type every fallible call in this crate returns.
 pub type TastyResult<T> = Result<T, TastyTradeError>;
 
@@ -205,6 +253,46 @@ pub type TastyResult<T> = Result<T, TastyTradeError>;
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    fn paginated_at(page_offset: usize, total_pages: usize) -> Paginated<u8> {
+        Paginated {
+            items: vec![1, 2, 3],
+            pagination: Pagination {
+                per_page: 3,
+                page_offset,
+                item_offset: 0,
+                total_items: 3,
+                total_pages,
+                current_item_count: 3,
+                previous_link: None,
+                next_link: None,
+                paging_link_template: None,
+            },
+        }
+    }
+
+    /// The off-by-one every paging loop gets wrong, in one place so no loop
+    /// has to get it right again.
+    #[test]
+    fn a_page_walk_stops_on_the_last_page_and_not_before() {
+        assert!(paginated_at(0, 3).has_more());
+        assert!(paginated_at(1, 3).has_more());
+        assert!(!paginated_at(2, 3).has_more(), "offset 2 of 3 is the last");
+        // A single page, and the degenerate listing the venue sends when there
+        // is nothing at all.
+        assert!(!paginated_at(0, 1).has_more());
+        assert!(!paginated_at(0, 0).has_more());
+    }
+
+    /// `page_offset` is venue-supplied, so the arithmetic that reads it is on
+    /// a public request path and must not be able to panic. `+ 1` on the
+    /// maximum aborts a debug build; the saturating form answers the question
+    /// the caller asked, which is whether there is another page after this one.
+    #[test]
+    fn the_largest_page_offset_the_venue_could_send_does_not_overflow() {
+        assert!(!paginated_at(usize::MAX, usize::MAX).has_more());
+        assert!(!paginated_at(usize::MAX, 1).has_more());
+    }
     use std::io;
     use std::sync::{Arc, Mutex};
     use tracing::Level;

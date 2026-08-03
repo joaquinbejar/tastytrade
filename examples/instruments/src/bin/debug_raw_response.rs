@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test with functional equity option endpoints
     info!("\n🔍 Testing with individual equity option lookup...");
     let test_symbol = "AAPL  241220C00200000";
-    match tasty.get_equity_option(test_symbol).await {
+    match tasty.get_equity_option(test_symbol, None).await {
         Ok(option) => {
             info!("✅ Success! Retrieved equity option: {}", option.symbol.0);
             info!(

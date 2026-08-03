@@ -7,6 +7,7 @@
 pub(crate) mod balance;
 pub(crate) mod event;
 pub(crate) mod instrument;
+pub(crate) mod instrument_filter;
 pub(crate) mod order;
 pub(crate) mod position;
 pub(crate) mod quote_alert;

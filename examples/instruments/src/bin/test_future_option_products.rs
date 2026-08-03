@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 1: List all future option products
     info!("\n📊 Test 1: Listing all future option products...");
-    match tasty.list_future_option_products().await {
+    match tasty
+        .list_future_option_products(&PageRequest::first())
+        .await
+    {
         Ok(products) => {
             info!("✅ Found {} future option products", products.len());
 
