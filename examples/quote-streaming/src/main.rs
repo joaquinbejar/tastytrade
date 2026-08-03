@@ -47,7 +47,7 @@ async fn main() {
     };
 
     // Create a subscription for SPX quotes
-    let mut quote_sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+    let mut quote_sub = streamer.create_sub([dxfeed::EventKind::Quote]);
 
     // Subscribe to SPX symbol
     let symbols = [Symbol::from("SPX")];

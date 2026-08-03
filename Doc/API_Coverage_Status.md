@@ -292,46 +292,43 @@ subscribes to more than it can deliver.
 
 ### DXLink market data — [#86](https://github.com/joaquinbejar/tastytrade/issues/86)
 
-dxlink 0.3.1 models eleven `MarketEvent` variants. The crate routes three.
+dxlink 0.3.1 models eleven `MarketEvent` variants. The crate routes all eleven.
 
-| Event type | Routed |
-|---|---|
-| `Quote` | ✅ |
-| `Trade` | ✅ |
-| `Greeks` | ✅ |
-| `Candle` | ❌ |
-| `Summary` | ❌ |
-| `TimeAndSale` | ❌ |
-| `Profile` | ❌ |
-| `Underlying` | ❌ |
-| `TheoPrice` | ❌ |
-| `TradeETH` | ❌ — new in 0.3.1 |
-| `Series` | ❌ — new in 0.3.1 |
+| Event type | Routed | Notes |
+|---|---|---|
+| `Quote` | ✅ | |
+| `Trade` | ✅ | regular session only |
+| `TradeETH` | ✅ | the only route to an extended-hours last price |
+| `Greeks` | ✅ | |
+| `Candle` | ✅ | the only route to a price series anywhere in this crate |
+| `Summary` | ✅ | |
+| `TimeAndSale` | ✅ | |
+| `Profile` | ✅ | |
+| `Underlying` | ✅ | |
+| `TheoPrice` | ✅ | |
+| `Series` | ✅ | |
 
-`Cargo.toml` pins `dxlink = "0.3"`, so `0.3.1` arrives on the next
-`cargo update`. `MarketEvent` is not `#[non_exhaustive]` and `event_kind()`
-matches exhaustively without a wildcard, so **the build stops compiling when
-the lock file moves** — the intended tripwire, and the starting point of #86.
-dxlink types are not re-exported here (`get_event` returns
-`crate::types::dxfeed::Event`), so this breaks our build, not our consumers'.
+`event_kind()` still matches every variant with **no wildcard**, and
+`MarketEvent` is still not `#[non_exhaustive]`, so a twelfth upstream variant
+breaks the build rather than being silently dropped. That tripwire is what
+produced #86: `0.3.1` added `TradeETH` and `Series` and the build stopped
+compiling.
 
-`event_kind()` (`src/streaming/quote_streamer.rs:811`) already enumerates all
-nine exhaustively, so upstream coverage is known; `event_symbol()` (`:789`)
-returns `None` for six of them and they are logged and discarded at `:799`.
-`setup_feed` (`:677`) hardcodes `[Quote, Trade, Greeks]`, so the other six
-cannot arrive even if routing existed.
+The channel is configured for the event types its subscriptions asked for,
+reconfigured when a later subscription wants more. It used to be set up at
+connect time for a hardcoded Quote, Trade and Greeks, so any other
+subscription was accepted locally and then delivered nothing.
 
-Candles are the only historical bar data available anywhere in this library —
-there is no REST equivalent. They need the `{=5m}` streamer-symbol suffix plus
-`from_time`; `FeedSubscription::from_time` is already constructed in
-`feed_subscriptions()` (`:280`) and is always `None`.
+Candles are addressed by a symbol carrying their period — `AAPL{=5m}` — and
+routing is keyed by `(streamer symbol, event type)`, so two periods of one
+underlying, and two subscriptions asking for different types on one symbol,
+never receive each other's events. `from_time` is required on
+`add_candles`; a reconnect resumes one millisecond past the last bar
+delivered.
 
-Also on this side: `create_sub(flags: i32)` takes a raw dxfeed bitmask, and
-`QuoteSubscription::subscribe(&self, _symbol: &[&str])` (`:605`) ignores its
-argument and does nothing.
-
-Event delivery itself was only fixed in #66/#69 and is **not yet verified
-against the venue** — `/smoke` is the check.
+**Not verified against the venue.** Event delivery was only fixed in #66/#69
+and has never been confirmed live; `/smoke` against certification is what would
+settle it.
 
 ### Account websocket — [#87](https://github.com/joaquinbejar/tastytrade/issues/87)
 
