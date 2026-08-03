@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut quote_streamer = tasty.create_quote_streamer().await?;
     info!("Quote streamer created successfully");
 
-    let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]);
+    let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]).await?;
     info!("Subscription created successfully");
 
     info!(

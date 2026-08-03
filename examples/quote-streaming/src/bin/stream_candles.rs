@@ -50,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Two subscriptions, one per period. They could be one — the routing is by
     // streamer symbol, and the period is part of it — but two makes the
     // separation visible: whatever arrives on `five` is a five-minute bar.
-    let mut five = streamer.create_sub([EventKind::Candle]);
-    let mut hour = streamer.create_sub([EventKind::Candle]);
+    let mut five = streamer.create_sub([EventKind::Candle]).await?;
+    let mut hour = streamer.create_sub([EventKind::Candle]).await?;
 
     five.add_candles(&watched, five_minutes, from_time).await?;
     hour.add_candles(&watched, hourly, from_time).await?;

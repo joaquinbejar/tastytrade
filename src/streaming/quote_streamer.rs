@@ -507,37 +507,6 @@ fn convert_event(event: MarketEvent) -> Option<dxfeed::Event> {
     })
 }
 
-impl Clone for QuoteSubscription {
-    fn clone(&self) -> Self {
-        // Create a new channel for DXLink events
-        let (tx, rx) = mpsc::channel(100);
-
-        // Register this new channel with the streamer
-        if let Some(cmd_tx) = &self.streamer.commands {
-            let cmd_tx_clone = cmd_tx.clone();
-            let sub_id = self.id.0;
-
-            tokio::spawn(async move {
-                if let Err(e) = cmd_tx_clone
-                    .send(DXLinkCommand::AddEventSender(sub_id as u32, tx))
-                    .await
-                {
-                    error!("Failed to register cloned event sender: {}", e);
-                }
-            });
-        }
-
-        Self {
-            id: self.id,
-            streamer: self.streamer.clone(),
-            kinds: self.kinds.clone(),
-            event_receiver: self.event_receiver.clone(), // This requires flume::Receiver to implement Clone
-            dxlink_receiver: rx,
-            targets: self.targets.clone(),
-        }
-    }
-}
-
 // Commands for DXLink client to execute.
 // Subscribe/Unsubscribe carry the subscription id so events can be routed
 // back to the subscription that requested each symbol.
@@ -550,6 +519,15 @@ fn answer(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()
         let _ = ack.send(outcome);
     }
 }
+
+/// How many events a subscription may fall behind by before losing some.
+///
+/// A candle history is the reason this is not the old hundred: a day of
+/// one-minute bars is about 1440 events and they arrive at once, so a hundred
+/// meant a caller reading a series lost most of it before it ever looked.
+/// Large enough to absorb a documented history, still bounded — an unbounded
+/// channel turns a slow consumer into unbounded memory.
+const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
 /// One thing a subscription is subscribed to.
 ///
@@ -787,33 +765,54 @@ impl QuoteStreamer {
     /// [`QuoteSubscription::add_candles`]; candles are not subscribed by
     /// [`QuoteSubscription::add_symbols`], because a bare symbol has neither a
     /// period nor a history start.
-    pub fn create_sub(
+    ///
+    /// **`async`, and that is the fix rather than an inconvenience.** The
+    /// returned subscription's event route is registered with the command loop
+    /// *before* this returns. It used to be registered from a detached
+    /// `tokio::spawn`, so a caller that subscribed immediately could have the
+    /// subscribe reach the loop first — and a candle subscription's history
+    /// arrives at once, so the first bars were routed to a subscription the
+    /// loop did not know about yet and dropped.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer is closed, which is the only way registration
+    /// can not happen. Returning a subscription that can never receive
+    /// anything would be the same silent failure in a different place.
+    pub async fn create_sub(
         &mut self,
         kinds: impl IntoIterator<Item = EventKind>,
-    ) -> Box<QuoteSubscription> {
+    ) -> TastyResult<Box<QuoteSubscription>> {
         let kinds: BTreeSet<EventKind> = kinds.into_iter().collect();
         let id = SubscriptionId(self.next_sub_id);
         self.next_sub_id += 1;
+        let sub_id = id.0 as u32;
 
-        // Set up channels for events
-        let (dxlink_tx, dxlink_rx) = mpsc::channel(100);
+        // Two channels, because the streamer keeps a copy of the subscription
+        // and the caller gets one. Both are registered here, awaited, before
+        // anything can subscribe.
+        let (kept_tx, kept_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (caller_tx, caller_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let (_event_sender, event_receiver) = flume::unbounded();
 
-        // Register the event sender. There is no stream to ask for any more:
-        // the supervisor forwards from the receiver `connect` returns, from
-        // the moment each connection is established.
-        if let Some(client_tx) = &self.dxlink_command_tx {
-            let client_tx_clone = client_tx.clone();
-            let sub_id = id.0 as u32;
+        let Some(commands) = &self.dxlink_command_tx else {
+            return Err(TastyTradeError::Streaming(
+                "the quote streamer has no command channel; reconnect before subscribing"
+                    .to_string(),
+            ));
+        };
 
-            tokio::spawn(async move {
-                if let Err(e) = client_tx_clone
-                    .send(DXLinkCommand::AddEventSender(sub_id, dxlink_tx))
-                    .await
-                {
-                    error!("Failed to register event sender: {}", e);
-                }
-            });
+        for sender in [kept_tx, caller_tx] {
+            commands
+                .send(DXLinkCommand::AddEventSender(sub_id, sender))
+                .await
+                .map_err(|_| {
+                    TastyTradeError::Streaming(
+                        "the quote streamer is closed; it cannot route events to a new \
+                         subscription"
+                            .to_string(),
+                    )
+                })?;
         }
 
         // Create subscription
@@ -826,27 +825,33 @@ impl QuoteStreamer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
-                id.0 as u32,
+                sub_id,
                 SubscriptionRecord {
                     kinds: kinds.clone(),
                     targets: targets.clone(),
                 },
             );
 
-        let subscription = QuoteSubscription {
+        self.subscription_map.insert(
+            id,
+            QuoteSubscription {
+                id,
+                streamer: self.handle(),
+                kinds: kinds.clone(),
+                event_receiver: event_receiver.clone(),
+                dxlink_receiver: kept_rx,
+                targets: targets.clone(),
+            },
+        );
+
+        Ok(Box::new(QuoteSubscription {
             id,
             streamer: self.handle(),
             kinds,
             event_receiver,
-            dxlink_receiver: dxlink_rx,
+            dxlink_receiver: caller_rx,
             targets,
-        };
-
-        // Store subscription in map and return a boxed clone
-        let sub_clone = subscription.clone();
-        self.subscription_map.insert(id, subscription);
-
-        Box::new(sub_clone)
+        }))
     }
 
     /// Retrieve a subscription by id.
@@ -1072,29 +1077,49 @@ async fn forward_events(
         let symbol = symbol.to_string();
         let kind = event_kind(&event);
 
-        // A bar that has been delivered is a bar a reconnect must not send
-        // again. Recorded before delivery: a consumer that is not keeping up
-        // loses the event either way, and resuming from a bar it did receive
-        // is the safer of the two errors.
-        if let MarketEvent::Candle(candle) = &event {
-            let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
-            let latest = seen.entry(symbol.clone()).or_insert(candle.time);
-            *latest = (*latest).max(candle.time);
-        }
-
         let routing = routing.read().await;
         let Some(sub_ids) = routing.routes.get(&(symbol.clone(), kind)) else {
             debug!("No subscription registered for {kind} on {symbol}");
             continue;
         };
+
+        let mut delivered = false;
+        let mut dropped = 0usize;
         for sub_id in sub_ids {
             if let Some(sender_list) = routing.senders.get(sub_id) {
                 for sender in sender_list {
                     // A consumer that is not keeping up loses events rather
                     // than stalling everyone else's.
-                    let _ = sender.try_send(event.clone());
+                    match sender.try_send(event.clone()) {
+                        Ok(()) => delivered = true,
+                        Err(_) => dropped += 1,
+                    }
                 }
             }
+        }
+
+        if dropped > 0 {
+            // Loud, because for a candle series a dropped event is a hole, and
+            // a hole is worse than a duplicate: nothing downstream can see it.
+            // The symbol and the type only — market data never travels with
+            // the warning.
+            warn!(
+                "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
+                 subscription channel(s)"
+            );
+        }
+
+        // A bar is recorded as seen only once it has actually been handed to
+        // somebody. Recording before delivery meant a bar dropped for a slow
+        // consumer still advanced the resume point, so the reconnect skipped
+        // it permanently — the crate deciding, silently, that a gap in a price
+        // series was acceptable.
+        if delivered
+            && let MarketEvent::Candle(candle) = &event
+        {
+            let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+            let latest = seen.entry(symbol.clone()).or_insert(candle.time);
+            *latest = (*latest).max(candle.time);
         }
     }
 }
@@ -1679,7 +1704,10 @@ mod lifecycle_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub([EventKind::Quote]);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL"), Symbol::from("MSFT")])
             .await
             .expect("subscribing succeeds");
@@ -1719,7 +1747,10 @@ mod lifecycle_tests {
             Err(TastyTradeError::Streaming("venue said no".to_string()))
         });
 
-        let sub = streamer.create_sub([EventKind::Quote]);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         let error = sub
             .add_symbols(&[Symbol::from("AAPL")])
             .await
@@ -1742,7 +1773,10 @@ mod lifecycle_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub([EventKind::Quote]);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
         sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
 
@@ -1764,7 +1798,10 @@ mod lifecycle_tests {
         let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
         let mut streamer = streamer_with(tx, shutdown_tx);
 
-        let sub = streamer.create_sub([EventKind::Quote]);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         drop(rx); // the command loop is gone
 
         sub.add_symbols(&[Symbol::from("AAPL")])
@@ -1921,6 +1958,19 @@ mod reconnect_tests {
     /// No candle has been delivered yet.
     fn no_progress() -> CandleProgress {
         Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// One candle for `symbol` at `time`.
+    fn candle(symbol: &str, time: i64) -> MarketEvent {
+        let MarketEvent::Candle(mut candle) = every_event_type(symbol)
+            .into_iter()
+            .find(|event| matches!(event, MarketEvent::Candle(_)))
+            .expect("a candle")
+        else {
+            unreachable!("filtered on the variant")
+        };
+        candle.time = time;
+        MarketEvent::Candle(candle)
     }
 
     /// One event of every type the feed models, all for `symbol`.
@@ -2155,7 +2205,10 @@ mod reconnect_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let _loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub([EventKind::Quote]);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL")])
             .await
             .expect("subscribing succeeds");
@@ -2618,7 +2671,10 @@ mod reconnect_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let _loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let quotes = streamer.create_sub([EventKind::Quote]);
+        let quotes = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         let error = quotes
             .add_candles(
                 &[Symbol::from("AAPL")],
@@ -2632,7 +2688,10 @@ mod reconnect_tests {
             "{error:?}"
         );
 
-        let candles = streamer.create_sub([EventKind::Candle]);
+        let candles = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
         let error = candles
             .add_symbols(&[Symbol::from("AAPL")])
             .await
@@ -2652,7 +2711,10 @@ mod reconnect_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub([EventKind::Candle]);
+        let sub = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
         sub.add_candles(
             &[Symbol::from("AAPL")],
             CandlePeriod::minutes(5).expect("a period"),
@@ -2670,6 +2732,109 @@ mod reconnect_tests {
         drop(streamer);
         let sent = loop_handle.await.expect("the stand-in loop finishes");
         assert_eq!(sent, vec!["AAPL{=5m}".to_string()]);
+    }
+
+    /// The ordering bug candles made acute. `create_sub` used to register the
+    /// returned subscription's event route from a detached `tokio::spawn`, so
+    /// a caller that subscribed immediately could have the subscribe reach the
+    /// command loop first — and a candle history arrives at once, so the first
+    /// bars were routed to a subscription the loop did not know about and
+    /// dropped.
+    ///
+    /// Registration is now awaited, so it is on the queue before `create_sub`
+    /// returns and therefore before anything the caller does next.
+    #[tokio::test]
+    async fn the_event_route_is_registered_before_a_subscription_can_be_used() {
+        let (tx, mut rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+
+        let sub = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
+
+        // Both senders are already queued — nothing was left to a task that
+        // may or may not have run.
+        let mut registrations = 0;
+        while let Ok(DXLinkCommand::AddEventSender(id, _)) = rx.try_recv() {
+            assert_eq!(id, sub.id.0 as u32);
+            registrations += 1;
+        }
+        assert_eq!(
+            registrations, 2,
+            "the streamer's copy and the caller's must both be routable before \
+             create_sub returns"
+        );
+    }
+
+    /// A closed streamer cannot route events, so handing back a subscription
+    /// that can never receive anything would be the same silent failure in a
+    /// different place.
+    #[tokio::test]
+    async fn creating_a_subscription_on_a_closed_streamer_fails() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        drop(rx);
+
+        let Err(error) = streamer.create_sub([EventKind::Quote]).await else {
+            panic!("a closed streamer cannot register a route");
+        };
+        assert!(matches!(error, TastyTradeError::Streaming(_)), "{error:?}");
+    }
+
+    /// A bar that was dropped for a slow consumer must not advance the resume
+    /// point: the reconnect would skip it permanently, and a hole in a price
+    /// series is worse than a duplicate because nothing downstream can see it.
+    #[tokio::test]
+    async fn a_dropped_bar_does_not_advance_the_resume_point() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        // Capacity one, and nothing ever reads it: the second bar is dropped.
+        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        routing.write().await.senders.insert(1, vec![full_tx]);
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: "AAPL{=5m}".to_string(),
+                from_time: Some(0),
+            }]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(8);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        for time in [1_000i64, 2_000, 3_000] {
+            events_tx
+                .send(candle("AAPL{=5m}", time))
+                .await
+                .expect("the feed accepts");
+        }
+
+        // Give the forwarder time to process all three.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let seen = progress
+            .lock()
+            .expect("not poisoned in tests")
+            .get("AAPL{=5m}")
+            .copied();
+        assert_eq!(
+            seen,
+            Some(1_000),
+            "only the bar that was actually delivered may be resumed past"
+        );
+
+        forwarder.abort();
     }
 
     /// The budget is bounded, and running out is reported rather than

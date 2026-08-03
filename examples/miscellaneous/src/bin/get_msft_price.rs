@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!("Quote streamer created successfully");
 
     // Create subscription
-    let quote_sub = &mut *quote_streamer.create_sub([EventKind::Quote]);
+    let quote_sub = &mut *quote_streamer.create_sub([EventKind::Quote]).await?;
     debug!("Subscription created successfully");
 
     // Get streamer symbol

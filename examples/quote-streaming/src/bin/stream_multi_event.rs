@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let mut streamer = tasty.create_quote_streamer().await?;
-    let mut sub = streamer.create_sub(kinds);
+    let mut sub = streamer.create_sub(kinds).await?;
     sub.add_symbols(&watched).await?;
 
     info!(

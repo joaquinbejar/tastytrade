@@ -67,7 +67,7 @@ pub async fn stream_one(
     let mut streamer = tasty.create_quote_streamer().await?;
     // The channel is configured for exactly this event type, because that is
     // what the subscription asked for.
-    let mut sub = streamer.create_sub([kind]);
+    let mut sub = streamer.create_sub([kind]).await?;
     sub.add_symbols(&symbols).await?;
 
     info!(

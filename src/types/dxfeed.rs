@@ -95,106 +95,147 @@ impl std::fmt::Display for EventKind {
     }
 }
 
+/// The unit a candle period is counted in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum CandleUnit {
+    /// `s`
+    Seconds,
+    /// `m`
+    Minutes,
+    /// `h`
+    Hours,
+    /// `d`
+    Days,
+    /// `w`
+    Weeks,
+    /// `mo`
+    Months,
+}
+
+impl CandleUnit {
+    /// The suffix letter the feed uses.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CandleUnit::Seconds => "s",
+            CandleUnit::Minutes => "m",
+            CandleUnit::Hours => "h",
+            CandleUnit::Days => "d",
+            CandleUnit::Weeks => "w",
+            CandleUnit::Months => "mo",
+        }
+    }
+}
+
+impl std::fmt::Display for CandleUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// How long one candle covers.
 ///
 /// Rendered into the symbol as `{=<n><unit>}`, so `AAPL` at five minutes is the
 /// streamer symbol `AAPL{=5m}`. Typed so a caller never builds that string by
 /// hand: a malformed suffix is accepted by the venue and then delivers
 /// nothing, which is indistinguishable from a quiet market.
+///
+/// The count is a [`NonZeroU32`](std::num::NonZeroU32) and the field is
+/// private, so a zero-length period is **unrepresentable** rather than merely
+/// rejected by the constructors. An earlier version was an enum with public
+/// payloads, and `CandlePeriod::Minutes(0)` walked straight past the
+/// validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum CandlePeriod {
-    /// `{=<n>s}`
-    Seconds(u32),
-    /// `{=<n>m}`
-    Minutes(u32),
-    /// `{=<n>h}`
-    Hours(u32),
-    /// `{=<n>d}`
-    Days(u32),
-    /// `{=<n>w}`
-    Weeks(u32),
-    /// `{=<n>mo}`
-    Months(u32),
+pub struct CandlePeriod {
+    count: std::num::NonZeroU32,
+    unit: CandleUnit,
 }
 
 impl CandlePeriod {
-    /// A period of `count` seconds.
+    /// A period of `count` of `unit`.
     ///
     /// # Errors
     ///
     /// A zero-length candle is not a candle. It renders a suffix the venue
     /// accepts and never fills, so it is refused here instead.
+    pub fn new(count: u32, unit: CandleUnit) -> crate::TastyResult<Self> {
+        let count = std::num::NonZeroU32::new(count).ok_or_else(|| {
+            crate::TastyTradeError::Precondition(
+                "a candle period of zero is not a period; the venue accepts the suffix \
+                 and then delivers nothing, which looks exactly like a quiet market"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(Self { count, unit })
+    }
+
+    /// A period of `count` seconds.
+    ///
+    /// # Errors
+    ///
+    /// As [`CandlePeriod::new`].
     pub fn seconds(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Seconds)
+        Self::new(count, CandleUnit::Seconds)
     }
 
     /// A period of `count` minutes.
     ///
     /// # Errors
     ///
-    /// As [`CandlePeriod::seconds`].
+    /// As [`CandlePeriod::new`].
     pub fn minutes(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Minutes)
+        Self::new(count, CandleUnit::Minutes)
     }
 
     /// A period of `count` hours.
     ///
     /// # Errors
     ///
-    /// As [`CandlePeriod::seconds`].
+    /// As [`CandlePeriod::new`].
     pub fn hours(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Hours)
+        Self::new(count, CandleUnit::Hours)
     }
 
     /// A period of `count` days.
     ///
     /// # Errors
     ///
-    /// As [`CandlePeriod::seconds`].
+    /// As [`CandlePeriod::new`].
     pub fn days(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Days)
+        Self::new(count, CandleUnit::Days)
     }
 
     /// A period of `count` weeks.
     ///
     /// # Errors
     ///
-    /// As [`CandlePeriod::seconds`].
+    /// As [`CandlePeriod::new`].
     pub fn weeks(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Weeks)
+        Self::new(count, CandleUnit::Weeks)
     }
 
     /// A period of `count` months.
     ///
     /// # Errors
     ///
-    /// As [`CandlePeriod::seconds`].
+    /// As [`CandlePeriod::new`].
     pub fn months(count: u32) -> crate::TastyResult<Self> {
-        Self::checked(count, CandlePeriod::Months)
+        Self::new(count, CandleUnit::Months)
     }
 
-    fn checked(count: u32, build: fn(u32) -> Self) -> crate::TastyResult<Self> {
-        if count == 0 {
-            return Err(crate::TastyTradeError::Precondition(
-                "a candle period of zero is not a period; the venue accepts the suffix \
-                 and then delivers nothing, which looks exactly like a quiet market"
-                    .to_string(),
-            ));
-        }
-        Ok(build(count))
+    /// How many of [`CandlePeriod::unit`] this period covers.
+    pub fn count(&self) -> u32 {
+        self.count.get()
+    }
+
+    /// What the count is counted in.
+    pub fn unit(&self) -> CandleUnit {
+        self.unit
     }
 
     /// The `{=…}` suffix this period appends to a symbol.
     pub fn suffix(&self) -> String {
-        let (count, unit) = match self {
-            CandlePeriod::Seconds(count) => (count, "s"),
-            CandlePeriod::Minutes(count) => (count, "m"),
-            CandlePeriod::Hours(count) => (count, "h"),
-            CandlePeriod::Days(count) => (count, "d"),
-            CandlePeriod::Weeks(count) => (count, "w"),
-            CandlePeriod::Months(count) => (count, "mo"),
-        };
-        format!("{{={count}{unit}}}")
+        format!("{{={}{}}}", self.count, self.unit.as_str())
     }
 
     /// The streamer symbol for `symbol` at this period.
@@ -803,8 +844,14 @@ mod tests {
 
     /// A zero-length candle renders a suffix the venue accepts and never
     /// fills, which is indistinguishable from a quiet market.
+    ///
+    /// The constructors refuse it — and, more to the point, there is no way
+    /// around them. An earlier version was an enum with public payloads, so
+    /// `CandlePeriod::Minutes(0)` walked straight past the validation; the
+    /// count is now a private `NonZeroU32`, which makes zero unrepresentable
+    /// rather than merely rejected.
     #[test]
-    fn a_zero_period_is_refused() {
+    fn a_zero_period_is_refused_and_cannot_be_built_another_way() {
         for period in [
             CandlePeriod::seconds(0),
             CandlePeriod::minutes(0),
@@ -819,6 +866,30 @@ mod tests {
                 "{error:?}"
             );
         }
+
+        // Every unit, through the general constructor too.
+        for unit in [
+            CandleUnit::Seconds,
+            CandleUnit::Minutes,
+            CandleUnit::Hours,
+            CandleUnit::Days,
+            CandleUnit::Weeks,
+            CandleUnit::Months,
+        ] {
+            assert!(CandlePeriod::new(0, unit).is_err(), "{unit}");
+            let period = CandlePeriod::new(1, unit).expect("one is a period");
+            assert_eq!(period.count(), 1);
+            assert_eq!(period.unit(), unit);
+        }
+
+        // A period that exists always renders a non-zero count, so no
+        // constructed value can produce `{=0…}`.
+        assert!(
+            !CandlePeriod::minutes(5)
+                .expect("a period")
+                .suffix()
+                .contains("=0")
+        );
     }
 
     /// Two periods of one underlying are two different streamer symbols. That

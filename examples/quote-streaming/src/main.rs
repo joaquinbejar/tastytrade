@@ -47,7 +47,13 @@ async fn main() {
     };
 
     // Create a subscription for SPX quotes
-    let mut quote_sub = streamer.create_sub([dxfeed::EventKind::Quote]);
+    let mut quote_sub = match streamer.create_sub([dxfeed::EventKind::Quote]).await {
+        Ok(sub) => sub,
+        Err(e) => {
+            eprintln!("❌ Failed to create subscription: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Subscribe to SPX symbol
     let symbols = [Symbol::from("SPX")];
