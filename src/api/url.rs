@@ -155,15 +155,42 @@ mod tests {
     /// had their own `.replace(...)` chain and eight more had none, which is
     /// exactly the failure this module exists to end — and a reviewer adding a
     /// twelfth endpoint has no reason to know that.
+    ///
+    /// The module list is read from the directory rather than written out, so
+    /// a module added later is covered without anyone remembering to add it
+    /// here. An enumerated list is how this check goes stale: it would still
+    /// pass, and it would still claim to cover `src/api/`.
     #[test]
     fn no_endpoint_rolls_its_own_encoding() {
-        for (name, source) in [
-            ("accounts.rs", include_str!("accounts.rs")),
-            ("client.rs", include_str!("client.rs")),
-            ("instrument.rs", include_str!("instrument.rs")),
-            ("option_chain.rs", include_str!("option_chain.rs")),
-            ("quote_streaming.rs", include_str!("quote_streaming.rs")),
-        ] {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api");
+        let entries = std::fs::read_dir(&dir).expect("src/api must be readable from the manifest");
+
+        let mut scanned = 0;
+        for entry in entries {
+            let path = entry.expect("directory entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // This module's own tests quote both spellings as expected values.
+            if name == "url.rs" {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("module must be readable");
+            // A test asserting on an encoded value has to spell one out, which
+            // is not the thing being prohibited. Every module in this crate
+            // keeps its tests in a trailing `#[cfg(test)]` module, so cutting
+            // there leaves exactly the code that builds requests.
+            let source = match source.find("#[cfg(test)]") {
+                Some(at) => &source[..at],
+                None => &source[..],
+            };
+            scanned += 1;
+
             assert!(
                 !source.contains(r#".replace("/""#),
                 "{name} encodes a path separator by hand; use encode_path_segment"
@@ -173,5 +200,11 @@ mod tests {
                 "{name} writes a percent-escape by hand; use encode_path_segment"
             );
         }
+
+        // A read that silently found nothing would pass every assertion above.
+        assert!(
+            scanned >= 5,
+            "expected to scan the api modules, only found {scanned}"
+        );
     }
 }

@@ -200,6 +200,79 @@ async fn an_input_that_looks_encoded_is_treated_as_literal_text() {
     );
 }
 
+/// A symbol that is entirely a dot or two is refused rather than sent.
+///
+/// This is the one case the encoder cannot solve. The WHATWG URL Standard folds
+/// `%2e` back into `.` before removing dot segments, so every spelling of a
+/// segment that is only dots is consumed during resolution: `get_equity("..")`
+/// reached `/instruments/`, which answers 200 with the list of instrument
+/// routes, and `get_equity(".")` reached `/instruments/equities/`, the whole
+/// listing. Neither looks like a failure from the caller's side.
+///
+/// The assertion is that nothing was sent at all. An error alone would not
+/// distinguish a refusal from a 404, and a 404 is what a *sent* request would
+/// most likely have produced against a mock venue.
+#[tokio::test]
+async fn a_segment_made_only_of_dots_never_reaches_the_wire() {
+    let (venue, client) = client_on_a_venue().await;
+    let before = venue.requests().len();
+
+    for symbol in [".", ".."] {
+        let error = client
+            .get_equity(symbol)
+            .await
+            .expect_err("a dot-only segment must be refused before it is sent");
+        assert!(
+            matches!(error, tastytrade::TastyTradeError::Precondition(_)),
+            "{symbol:?} was rejected as {error:?} rather than a caller mistake"
+        );
+    }
+
+    // The escaped spellings the URL Standard folds back. A symbol cannot
+    // produce these — `encode_path_segment` escapes the `%` — so they are
+    // checked through the raw path verb, which is where a hand-built path
+    // enters. `%252E`, the encoded form of the literal text `%2E`, is not one
+    // of them and is covered by the round trip below.
+    for path in [
+        "/instruments/equities/%2E",
+        "/instruments/equities/%2e%2E",
+        "/instruments/equities/.%2E",
+        "/instruments/equities/%2e.",
+    ] {
+        let error = client
+            .get::<serde_json::Value, _>(path)
+            .await
+            .expect_err("a dot-only segment must be refused before it is sent");
+        assert!(
+            matches!(error, tastytrade::TastyTradeError::Precondition(_)),
+            "{path:?} was rejected as {error:?} rather than a caller mistake"
+        );
+    }
+
+    assert_eq!(
+        venue.requests().len(),
+        before,
+        "a refused symbol still reached the venue: {:?}",
+        venue
+            .requests()
+            .last()
+            .map(|request| request.target.clone())
+    );
+
+    // The dot is only a marker when it is the entire segment. These carry one
+    // and are ordinary values, so they go out.
+    let _ = client.get_equity("BRK.B").await;
+    assert_eq!(last_target(&venue), "/instruments/equities/BRK.B");
+    // And a symbol whose literal characters are `%2E` is text, not a marker.
+    let _ = client.get_equity("%2E").await;
+    assert_eq!(last_target(&venue), "/instruments/equities/%252E");
+    let _ = client.get_future_option("./ESZ4 EW4U4 240927P5520").await;
+    assert_eq!(
+        last_target(&venue),
+        "/instruments/future-options/.%2FESZ4%20EW4U4%20240927P5520"
+    );
+}
+
 /// The path the client sends is the path the server sees. Everything else here
 /// asserts on what was recorded; this one registers the encoded route and
 /// requires it to match, which is the part that would break if `reqwest` were

@@ -93,7 +93,47 @@ fn endpoint_url(base_url: &str, path: &str) -> TastyResult<String> {
         )));
     }
 
+    if let Some(segment) = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .split('/')
+        .find(|segment| is_dot_segment(segment))
+    {
+        return Err(crate::TastyTradeError::Precondition(format!(
+            "path segment {segment:?} is a relative-reference marker rather than a value; \
+             URL resolution removes it before the request is sent, so the request would \
+             reach a different endpoint than the one asked for (redacted path: {})",
+            redact_account_path(path)
+        )));
+    }
+
     Ok(format!("{base_url}{path}"))
+}
+
+/// Whether a segment is one URL resolution consumes instead of sending.
+///
+/// `.` and `..` are not ordinary segments. RFC 3986 §5.2.4 and the WHATWG URL
+/// Standard both remove them while resolving a reference, and the WHATWG rules
+/// treat the percent-encoded spellings — `%2e`, `%2E`, `.%2e`, `%2e.` — exactly
+/// the same way. So there is no encoding of a segment that is *entirely* a dot
+/// or two which survives to the wire: `/instruments/equities/..` is sent as
+/// `/instruments/`, and `/instruments/equities/.` as `/instruments/equities/`.
+/// Both are real endpoints that answer successfully, which is why this fails
+/// silently rather than loudly.
+///
+/// [`super::url::encode_path_segment`] cannot fix it, since the escape it would
+/// produce is one of the spellings the standard folds back. So the segment is
+/// refused here, where every path already passes through on its way to a URL.
+///
+/// A dot *inside* a longer segment is untouched: `BRK.B` and the leading `./`
+/// of a future option symbol are values, not markers.
+fn is_dot_segment(segment: &str) -> bool {
+    if segment.len() > 6 {
+        return false;
+    }
+    let decoded = segment.replace("%2e", ".").replace("%2E", ".");
+    decoded == "." || decoded == ".."
 }
 
 /// What a request needs in order to report itself without leaking anything.
@@ -753,6 +793,56 @@ impl TastyTrade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every spelling the WHATWG URL Standard folds into a dot segment, and
+    /// the near misses that must still go out. The table is the point: the
+    /// standard's list is longer than "`.` and `..`", and the entries that
+    /// mix escaped and literal dots are the ones a hand-rolled check misses.
+    #[test]
+    fn a_dot_only_segment_is_refused_and_a_dot_inside_one_is_not() {
+        for marker in [".", "..", "%2e", "%2E", "%2e%2e", "%2E%2E", ".%2e", "%2E."] {
+            let path = format!("/instruments/equities/{marker}");
+            assert!(
+                matches!(
+                    endpoint_url("https://api.example.com", &path),
+                    Err(crate::TastyTradeError::Precondition(_))
+                ),
+                "{marker:?} was accepted, and URL resolution would have removed it"
+            );
+        }
+
+        for value in ["BRK.B", ".%2FESZ4", "...", "%252E", "a.", ".a", "%2ex"] {
+            let path = format!("/instruments/equities/{value}");
+            assert_eq!(
+                endpoint_url("https://api.example.com", &path).expect("an ordinary value"),
+                format!("https://api.example.com{path}")
+            );
+        }
+    }
+
+    /// The guard reads the path, so it must stop reading where the path does.
+    /// A dot segment inside a query value is data the venue parses, not a
+    /// marker URL resolution acts on.
+    #[test]
+    fn a_dot_segment_in_the_query_string_is_not_a_path_segment() {
+        let path = "/accounts/5WX12345/transactions?sort=..&start-date=2026-01-01";
+        let url = endpoint_url("https://api.example.com", path).expect("a query value");
+        assert!(url.ends_with(path), "{url}");
+    }
+
+    /// The refusal explains itself without naming the account it was reaching
+    /// for. `Precondition` messages go to the same places every other error
+    /// does, so the redaction rule is not relaxed just because nothing was
+    /// sent.
+    #[test]
+    fn the_refusal_carries_no_account_number() {
+        let error = endpoint_url("https://api.example.com", "/accounts/5WX12345/orders/..")
+            .expect_err("a dot segment must be refused");
+        let rendered = error.to_string();
+
+        assert!(!rendered.contains("5WX12345"), "{rendered}");
+        assert!(rendered.contains("{account}"), "{rendered}");
+    }
 
     #[test]
     fn redacts_the_account_number_from_an_account_scoped_path() {
