@@ -29,14 +29,14 @@ difference is exactly what
 | Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
 | Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
-| Net Liquidating Value History | 1 | 0 | 1 | 0% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
+| Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
 | Orders | 19 | 4 | 15 | 21% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
 | Risk Parameters | 4 | 4 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **47** | **50** | **48%** | |
+| **TOTAL** | **97** | **48** | **49** | **49%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -288,9 +288,29 @@ IV rank, IV percentile, beta, liquidity rating, borrow rate, earnings dates.
 
 ## Net Liquidating Value History
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /accounts/{accountNumber}/net-liq/history` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /accounts/{accountNumber}/net-liq/history` | `net_liq_history()` | ✅ |
+
+Two things about this endpoint are unlike the rest of the API. It is served by a
+different system — OpenAPI 3 from a JVM service, where every other area is
+Swagger 2 — and that system spells its JSON in **camelCase** rather than the
+kebab-case everything else uses. `NetLiqOhlc` accepts both, because the two have
+disagreed before and a chart that silently comes back empty is worse than one
+that fails.
+
+`time` stays `String`. Its schema gives it no format, and the same service
+documents JVM `ZonedDateTime` for its inputs —
+`2011-12-03T10:15:30+01:00[Europe/Paris]`, which is not RFC 3339 and which
+`chrono` does not produce. `start-time` and `end-time` are `String` for the same
+reason.
+
+`time-back` and an explicit window are one enum, so a request carrying both
+cannot be built. `interval` stays `String`: the schema declares it with no
+enumerated values, unlike `time-back` beside it.
+
+**Live only** per the venue's sandbox page. The example requires an explicit
+read-only production opt-in and never places or modifies anything.
 
 ## Orders
 
