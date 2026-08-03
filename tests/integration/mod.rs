@@ -14,6 +14,7 @@ mod support;
 mod account_stream;
 mod balances;
 mod complex_orders;
+mod crypto_suspension;
 mod customer;
 mod instrument_listings;
 mod margin;

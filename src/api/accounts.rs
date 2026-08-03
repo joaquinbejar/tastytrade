@@ -4,6 +4,7 @@ use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
 use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter, SnapshotRange};
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
+use crate::types::capability::{ensure_legs_are_tradable, ensure_orders_are_tradable};
 use crate::types::complex_order::{
     ComplexOrder, ComplexOrderId, ComplexOrderRequest, PairsThresholdEdit,
 };
@@ -973,6 +974,11 @@ impl Account<'_> {
             ));
         }
 
+        // `place_order` checks too. Repeated on purpose: a receipt is a value a
+        // caller can hold across a process's lifetime, and this is the last
+        // point before the request goes out.
+        ensure_legs_are_tradable(reviewed.order.legs())?;
+
         self.place_order(&reviewed.order).await
     }
 
@@ -981,6 +987,12 @@ impl Account<'_> {
     /// Useful for pricing and what-if questions. For actually placing
     /// something, [`Account::review_order`] carries the answer forward.
     pub async fn dry_run(&self, order: &Order) -> TastyResult<DryRunResult> {
+        // The same guard as placement, deliberately. A dry run that succeeds
+        // and a placement that refuses would be a worse answer than one
+        // consistent refusal: the caller would learn the venue accepts the
+        // order and then find out it does not accept the route.
+        ensure_legs_are_tradable(order.legs())?;
+
         let resp: DryRunResult = self
             .tasty
             .post(&self.path("/orders/dry-run"), order)
@@ -995,6 +1007,8 @@ impl Account<'_> {
     /// impossible to skip past without saying so. This one remains for callers
     /// that manage the review themselves.
     pub async fn place_order(&self, order: &Order) -> TastyResult<OrderPlacedResult> {
+        ensure_legs_are_tradable(order.legs())?;
+
         let resp: OrderPlacedResult = self.tasty.post(&self.path("/orders"), order).await?;
         Ok(resp)
     }
@@ -1187,6 +1201,7 @@ impl Account<'_> {
         request: &ComplexOrderRequest,
     ) -> TastyResult<ComplexOrderReceipt> {
         request.validate()?;
+        ensure_orders_are_tradable(&request.orders)?;
 
         let result: DryRunResult = self
             .tasty
@@ -1214,6 +1229,10 @@ impl Account<'_> {
         reviewed: ReviewedComplexOrder,
     ) -> TastyResult<ComplexOrder> {
         self.check_origin(&reviewed.account_number, &reviewed.origin, "complex order")?;
+        // Checked at review time too. Repeated on purpose: a receipt is a value
+        // a caller can hold across a process's lifetime, and this is the last
+        // point before the request goes out.
+        ensure_orders_are_tradable(&reviewed.request.orders)?;
 
         self.tasty
             .post(&self.path("/complex-orders"), &reviewed.request)

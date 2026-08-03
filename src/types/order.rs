@@ -1011,6 +1011,38 @@ mod tests {
     }
 }
 
+impl Order {
+    /// The legs this order is made of.
+    ///
+    /// Read-only: an order is validated when it is built, and handing out a
+    /// mutable reference would let a caller edit past the builder's checks.
+    pub fn legs(&self) -> &[OrderLeg] {
+        &self.legs
+    }
+}
+
+impl OrderLeg {
+    /// What kind of instrument this leg trades.
+    pub fn instrument_type(&self) -> &InstrumentType {
+        &self.instrument_type
+    }
+
+    /// The instrument.
+    pub fn symbol(&self) -> &Symbol {
+        &self.symbol
+    }
+
+    /// How many units.
+    pub fn quantity(&self) -> Decimal {
+        self.quantity
+    }
+
+    /// What the leg does to a position.
+    pub fn action(&self) -> Action {
+        self.action
+    }
+}
+
 impl OrderLegBuilder {
     /// Rejects a leg the venue would reject, before it can reach the venue.
     ///
