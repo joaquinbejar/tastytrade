@@ -211,6 +211,36 @@ impl MarketDataRequest {
     /// limit belongs here rather than at the venue because a caller building a
     /// watchlist should find out before the round trip.
     pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        // Each entry has to be a symbol before it is counted as one. The wire
+        // format joins a group with commas, so a blank entry sends an empty
+        // symbol the venue has to interpret, and an entry that *contains* a
+        // comma expands into several — which walks straight past the cap this
+        // method exists to enforce, since the cap counts entries.
+        for (group, symbols) in [
+            ("index", &self.indices),
+            ("equity", &self.equities),
+            ("equity-option", &self.equity_options),
+            ("future", &self.futures),
+            ("future-option", &self.future_options),
+            ("cryptocurrency", &self.cryptocurrencies),
+        ] {
+            for symbol in symbols {
+                if symbol.trim().is_empty() {
+                    return Err(crate::TastyTradeError::Precondition(format!(
+                        "the {group} list has a blank symbol, which asks the venue for \
+                         an instrument with no name"
+                    )));
+                }
+                if symbol.contains(',') {
+                    return Err(crate::TastyTradeError::Precondition(format!(
+                        "the {group} symbol {symbol:?} contains a comma, which is the \
+                         separator this parameter is joined with; pass the symbols \
+                         separately so they are counted separately"
+                    )));
+                }
+            }
+        }
+
         let count = self.symbol_count();
         if count > MAX_MARKET_DATA_SYMBOLS {
             return Err(crate::TastyTradeError::Precondition(format!(
@@ -389,5 +419,46 @@ mod tests {
     #[test]
     fn an_empty_request_is_refused() {
         assert!(MarketDataRequest::new().validate().is_err());
+    }
+
+    /// An entry is not a symbol just because it is there.
+    ///
+    /// The wire format joins each group with commas, so a blank entry asks for
+    /// an instrument with no name and an entry that carries a comma expands
+    /// into several — which walks past the 100-symbol cap, because the cap
+    /// counts entries. Both used to satisfy the non-empty check.
+    #[test]
+    fn a_blank_or_comma_bearing_entry_is_not_a_symbol() {
+        let blank = MarketDataRequest::new().with_equities(&["   "]);
+        let error = blank
+            .validate()
+            .expect_err("whitespace is not an instrument");
+        assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
+        assert!(!error.is_retryable(), "nothing was sent");
+
+        assert!(
+            MarketDataRequest::new()
+                .with_equities(&["AAPL,MSFT"])
+                .validate()
+                .is_err(),
+            "one entry must not expand into two symbols"
+        );
+
+        // Every group is checked, not only the first.
+        for request in [
+            MarketDataRequest::new().with_indices(&[""]),
+            MarketDataRequest::new().with_equity_options(&["\t"]),
+            MarketDataRequest::new().with_futures(&["/ES,/NQ"]),
+            MarketDataRequest::new().with_future_options(&[" "]),
+            MarketDataRequest::new().with_cryptocurrencies(&["BTC/USD,ETH/USD"]),
+        ] {
+            assert!(request.validate().is_err(), "a group went unchecked");
+        }
+
+        // And a real request is untouched.
+        MarketDataRequest::new()
+            .with_equities(&["AAPL", "MSFT"])
+            .validate()
+            .expect("ordinary symbols must be accepted");
     }
 }
