@@ -20,7 +20,7 @@ difference is exactly what
 
 | Area | Endpoints | Implemented | Missing | % | Issue |
 |------|-----------|-------------|---------|---|-------|
-| Account Status | 1 | 0 | 1 | 0% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
+| Account Status | 1 | 1 | 0 | 100% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
 | Accounts and Customers | 4 | 4 | 0 | 100% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
 | Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **40** | **57** | **41%** | |
+| **TOTAL** | **97** | **41** | **56** | **42%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -51,11 +51,17 @@ Streaming is not counted either; see the section at the end.
 
 | Endpoint | Method | Status |
 |----------|--------|--------|
-| `GET /accounts/{account_number}/trading-status` | — | ❌ |
+| `GET /accounts/{account_number}/trading-status` | `trading_status()` | ✅ |
 
 Reports whether the account may trade, its margin type, PDT flag, options
-level and any restrictions. One endpoint, and a caller has no other way to know
-an order will be rejected for account reasons before sending it.
+level, the live day-trade count and every feature flag. One request, and it
+answers before the venue answers with a rejection.
+
+All 44 fields are `Option<T>` per the `AccountDetails` precedent: a flag the
+broker did not send is unknown, never `false`. `is_blocked()` is a convenience,
+and `is_known_blocked()` sits beside it so a caller can tell "the account is
+fine" from "the venue did not say" — collapsing that would undo the point of
+the `Option`.
 
 ## Accounts and Customers
 

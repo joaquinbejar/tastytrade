@@ -55,6 +55,9 @@ pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
 // Re-export balance types
 pub use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 
+// Re-export the account trading status
+pub use crate::types::trading_status::TradingStatus;
+
 // Re-export the account ledger
 pub use crate::types::transaction::{
     TotalFees, Transaction, TransactionAction, TransactionFilter, TransactionSort,

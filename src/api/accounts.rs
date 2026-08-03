@@ -1,10 +1,11 @@
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
-use crate::api::query::QueryBuilder;
+use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
-use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter};
-use crate::types::balance::{Balance, BalanceSnapshot};
+use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter, SnapshotRange};
+use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
+use crate::types::trading_status::TradingStatus;
 use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use chrono::{DateTime, FixedOffset, NaiveDate};
@@ -375,6 +376,46 @@ impl Account<'_> {
             .await
     }
 
+    /// Historical balance snapshots, by positional argument.
+    ///
+    /// The 0.3 signature, forwarding to [`Account::balance_snapshots`]. It
+    /// could reach only one of the two date shapes the venue documents and had
+    /// no way to send a currency, which is why the filter replaced it — but
+    /// removing it outright would break every existing caller for no reason
+    /// the caller can act on at the call site.
+    ///
+    /// # Errors
+    ///
+    /// As [`Account::balance_snapshots`].
+    #[deprecated(
+        since = "0.4.0",
+        note = "use `balance_snapshots(&BalanceSnapshotFilter)`, which reaches the whole \
+                documented query rather than four of its parameters"
+    )]
+    pub async fn balance_snapshot(
+        &self,
+        start_date: chrono::NaiveDate,
+        end_date: chrono::NaiveDate,
+        tod: SnapshotTimeOfDay,
+        page_offset: usize,
+    ) -> TastyResult<Paginated<BalanceSnapshot>> {
+        let page_offset = u32::try_from(page_offset).map_err(|_| {
+            crate::TastyTradeError::Precondition(format!(
+                "page offset {page_offset} does not fit the u32 the venue accepts"
+            ))
+        })?;
+
+        self.balance_snapshots(
+            &BalanceSnapshotFilter::at(tod)
+                .with_range(SnapshotRange::Range {
+                    start: Some(start_date),
+                    end: Some(end_date),
+                })
+                .with_page(PageRequest::new().with_page_offset(page_offset)),
+        )
+        .await
+    }
+
     /// Open positions.
     ///
     /// # Errors
@@ -462,6 +503,23 @@ impl Account<'_> {
                 &query.pairs(),
             )
             .await
+    }
+
+    /// Whether the account may trade, and what it may trade.
+    ///
+    /// The cheap check before an order: a closed or frozen account cannot trade
+    /// at all, a closing-only account can only reduce, and the feature flags
+    /// decide whether futures, cryptocurrency or uncovered short calls are
+    /// available. It also carries the live day-trade count.
+    ///
+    /// Every flag is `Option<bool>`: one the venue omitted is unknown, never
+    /// `false`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn trading_status(&self) -> TastyResult<TradingStatus> {
+        self.tasty.get(&self.path("/trading-status")).await
     }
 
     /// Orders that are still working.

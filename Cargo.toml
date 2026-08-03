@@ -17,6 +17,7 @@ include = [
     # them.
     "Doc/frames/**/*.json",
     "Doc/transactions_listing.json",
+    "Doc/trading_status.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",
