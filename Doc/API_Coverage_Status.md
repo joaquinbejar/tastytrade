@@ -28,7 +28,7 @@ difference is exactly what
 | Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 1 | 0 | 100% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 3 | 0 | 100% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
-| Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
+| Market Sessions | 11 | 11 | 0 | 100% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
 | Orders | 19 | 19 | 0 | 100% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **67** | **30** | **69%** | |
+| **TOTAL** | **97** | **78** | **19** | **80%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -327,19 +327,45 @@ explicit read-only production opt-in.
 
 ## Market Sessions
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /market-time/sessions` | ❌ |
-| `GET /market-time/sessions/current` | ❌ |
-| `GET /market-time/equities/sessions/current` | ❌ |
-| `GET /market-time/equities/sessions/next` | ❌ |
-| `GET /market-time/equities/sessions/previous` | ❌ |
-| `GET /market-time/equities/holidays` | ❌ |
-| `GET /market-time/futures/sessions/current` | ❌ |
-| `GET /market-time/futures/sessions/current/{instrument_collection}` | ❌ |
-| `GET /market-time/futures/sessions/next/{instrument_collection}` | ❌ |
-| `GET /market-time/futures/sessions/previous/{instrument_collection}` | ❌ |
-| `GET /market-time/futures/holidays/{instrument_collection}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /market-time/sessions` | `market_sessions()` | ✅ |
+| `GET /market-time/sessions/current` | `current_market_session()` | ✅ |
+| `GET /market-time/equities/sessions/current` | `current_equities_session()` | ✅ |
+| `GET /market-time/equities/sessions/next` | `next_equities_session()` | ✅ |
+| `GET /market-time/equities/sessions/previous` | `previous_equities_session()` | ✅ |
+| `GET /market-time/equities/holidays` | `equities_holidays()` | ✅ |
+| `GET /market-time/futures/sessions/current` | `current_futures_sessions()` | ✅ |
+| `GET /market-time/futures/sessions/current/{instrument_collection}` | `current_futures_session()` | ✅ |
+| `GET /market-time/futures/sessions/next/{instrument_collection}` | `next_futures_session()` | ✅ |
+| `GET /market-time/futures/sessions/previous/{instrument_collection}` | `previous_futures_session()` | ✅ |
+| `GET /market-time/futures/holidays/{instrument_collection}` | `futures_holidays()` | ✅ |
+
+Session boundaries keep the **offset the venue sent** — going to UTC is one-way,
+and a market open shown in the wrong zone is wrong. Holidays are `NaiveDate`,
+because a holiday is a day.
+
+`InstrumentCollection` is a `wire_enum!` over the three values the schema
+enumerates (`CFE`, `CME`, `Equity`), modelled as a type rather than a bare
+string because eleven endpoints take one and a typo in any of them is a 404. The
+futures family carries it in the **path**, so it goes through the shared
+encoder.
+
+`to-date` is a constructor argument on `SessionRange` because the venue marks it
+required, and a range longer than nine months — or an inverted one — is refused
+locally with the limit named in the message.
+`instrument-collections[]` is required too, so `current_market_session` takes a
+first collection separately from the rest: an empty selection is
+unrepresentable.
+
+`is_open_at` is derived from the fetched session and takes the moment as an
+argument, so it stays a pure function and never consults a local clock about an
+exchange's timezone. It answers `None` when the venue did not send both
+boundaries: "we were not told" is not "closed".
+
+`market-holidays` and `market-half-days` are typed `object` with no properties
+in the schema, which is a generation artifact — the same document types a
+decimal quantity that way. They are read as arrays of calendar days.
 
 ## Net Liquidating Value History
 

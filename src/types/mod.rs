@@ -15,6 +15,7 @@ pub(crate) mod instrument_filter;
 pub(crate) mod margin;
 pub(crate) mod market_data;
 pub(crate) mod market_metrics;
+pub(crate) mod market_time;
 pub(crate) mod net_liq;
 pub(crate) mod order;
 pub(crate) mod order_filter;

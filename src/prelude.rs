@@ -82,6 +82,12 @@ pub use crate::types::market_metrics::{
     DividendReport, EarningsRange, EarningsReport, ExpirationImpliedVolatility, MarketMetric,
 };
 
+// Re-export market sessions and holidays
+pub use crate::types::market_time::{
+    CurrentMarketSession, FuturesExchange, InstrumentCollection, MAX_SESSION_RANGE_MONTHS,
+    MarketCalendar, MarketSession, SessionCollection, SessionRange,
+};
+
 // Re-export the REST market-data snapshot
 pub use crate::types::market_data::{
     MAX_MARKET_DATA_SYMBOLS, MarketDataRequest, MarketDataSnapshot,
