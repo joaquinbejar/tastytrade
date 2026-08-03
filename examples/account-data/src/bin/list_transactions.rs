@@ -78,11 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// One ledger row, without the account number.
 ///
-/// `description` is venue prose written for a person — it can name an amount or
-/// an instrument — so it belongs on somebody's screen and not in a log
-/// aggregator. Printed here because that is what this example is for.
+/// Written to stdout rather than through `tracing`. Symbols, quantities and net
+/// values are an account's financial activity: INFO is the default level and
+/// reaches whatever aggregator the consuming application configured, and this
+/// example has no business putting a person's trades there. Stdout is the
+/// explicit destination somebody chose by running the example.
 fn print_row(transaction: &Transaction) {
-    info!(
+    println!(
         "  #{} {} / {} — {} {} net {} {}",
         transaction.id,
         render(transaction.transaction_type.as_ref()),

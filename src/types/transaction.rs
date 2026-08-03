@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::api::query::{PageRequest, QueryBuilder};
 use crate::types::instrument::InstrumentType;
 use crate::types::order::PriceEffect;
-use crate::types::wire::wire_enum;
+use crate::types::wire::{redacted_account_render, wire_enum};
 
 wire_enum! {
     /// What kind of event a transaction records.
@@ -90,7 +90,11 @@ wire_enum! {
 }
 
 /// One row of an account's ledger.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+///
+/// `Debug` and `Display` render the row with the account number replaced, so a
+/// `{transaction:?}` in a log line cannot carry the identifier. Serializing it
+/// is untouched: writing a ledger row out is an explicit act.
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct Transaction {
     /// The venue's identifier for this transaction.
@@ -121,7 +125,14 @@ pub struct Transaction {
     #[serde(default)]
     pub underlying_symbol: Option<String>,
     /// What kind of instrument it was.
-    #[serde(default)]
+    ///
+    /// Decoded tolerantly. `InstrumentType` is a closed set shared with request
+    /// paths, so it cannot grow an `Unknown` arm without changing what callers
+    /// may send — and a value this crate does not model would otherwise fail
+    /// the whole row, which `Items<T>` then drops. The ledger keeps the
+    /// transaction and reads this field as absent; the rejected text goes to
+    /// DEBUG.
+    #[serde(default, deserialize_with = "crate::types::wire::tolerant_option")]
     pub instrument_type: Option<InstrumentType>,
     /// How many units.
     #[serde(default, with = "crate::types::wire::decimal_option")]
@@ -267,6 +278,8 @@ pub struct TotalFees {
     #[serde(default)]
     pub total_fees_effect: Option<PriceEffect>,
 }
+
+redacted_account_render!(Transaction);
 
 /// Which transaction kinds to select.
 ///
@@ -623,5 +636,64 @@ mod tests {
 
         assert_eq!(fees.total_fees.expect("a total").to_string(), "100.0");
         assert_eq!(fees.total_fees_effect, Some(PriceEffect::Debit));
+    }
+
+    /// The account number never reaches a rendering.
+    ///
+    /// `DebugPretty` and `DisplaySimple` render through `Serialize`, so the
+    /// derive printed the identifier the moment anybody wrote `{row:?}` — and
+    /// a `tracing` field does exactly that. The row is still worth reading, so
+    /// the redaction is of the identifier rather than of the record.
+    #[test]
+    fn a_transaction_renders_without_its_account_number() {
+        const ACCOUNT: &str = "SENTINEL-5WX12345";
+        let row: Transaction = serde_json::from_str(&format!(
+            r#"{{"id": 12345, "account-number": "{ACCOUNT}", "symbol": "AAPL",
+                 "transaction-type": "Trade", "value": "1234.56"}}"#
+        ))
+        .expect("the row must decode");
+
+        let rendered = format!("{row:?} {row} {}", format_args!("{row:#?}"));
+        assert!(
+            !rendered.contains(ACCOUNT),
+            "the account number reached a rendering: {rendered}"
+        );
+        assert!(rendered.contains("{account}"), "{rendered}");
+        // And the row is still readable, which is why it is not redacted
+        // wholesale the way a customer is.
+        assert!(rendered.contains("AAPL"), "{rendered}");
+        assert!(rendered.contains("12345"), "{rendered}");
+
+        // Serializing is an explicit act with an explicit destination, so it
+        // keeps the value. Losing it here would silently corrupt a caller
+        // writing the ledger to their own store.
+        let written = serde_json::to_string(&row).expect("the row must serialize");
+        assert!(written.contains(ACCOUNT), "serialization lost the number");
+    }
+
+    /// An instrument type this crate does not model keeps its row.
+    ///
+    /// `InstrumentType` is a closed set shared with request paths. Before this
+    /// it failed the whole `Transaction`, and `Items<T>` drops what fails — so
+    /// one unrecognised value made a ledger entry disappear with its amount,
+    /// its date and its description, and nothing said so.
+    #[test]
+    fn an_unmodelled_instrument_type_does_not_lose_the_transaction() {
+        let row: Transaction = serde_json::from_str(
+            r#"{"id": 99, "instrument-type": "Prediction Market",
+                "symbol": "XYZ", "value": "10.00"}"#,
+        )
+        .expect("the row must survive a value this crate does not model");
+
+        assert_eq!(row.id, 99);
+        assert_eq!(row.symbol.as_deref(), Some("XYZ"));
+        assert!(row.instrument_type.is_none());
+
+        // A modelled value still decodes, so this is tolerance and not a
+        // deserializer that gave up on the field.
+        let known: Transaction =
+            serde_json::from_str(r#"{"id": 1, "instrument-type": "Equity Option"}"#)
+                .expect("a modelled value must decode");
+        assert_eq!(known.instrument_type, Some(InstrumentType::EquityOption));
     }
 }

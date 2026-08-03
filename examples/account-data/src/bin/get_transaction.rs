@@ -41,29 +41,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let transaction = account.transaction(newest.id).await?;
 
-    info!("Transaction #{}", transaction.id);
-    info!(
+    // Stdout, not `tracing`. The rest of this is one account's trade: symbol,
+    // quantity, price, commission, fees and net value. INFO is the default
+    // level and reaches whatever aggregator the consuming application set up,
+    // so the values go to the destination somebody chose by running this.
+    println!("Transaction #{}", transaction.id);
+    println!(
         "  {} / {}",
         show(transaction.transaction_type.as_ref()),
         show(transaction.transaction_sub_type.as_ref())
     );
-    info!("  symbol: {}", transaction.symbol.as_deref().unwrap_or("-"));
-    info!("  executed at: {}", show(transaction.executed_at.as_ref()));
+    println!("  symbol: {}", transaction.symbol.as_deref().unwrap_or("-"));
+    println!("  executed at: {}", show(transaction.executed_at.as_ref()));
     // Every one of these is `None` when the venue did not send it, which is not
     // the same as zero — a commission that defaults to zero is a P&L that is
     // quietly wrong.
-    info!("  gross value: {}", show(transaction.value.as_ref()));
-    info!("  commission: {}", show(transaction.commission.as_ref()));
-    info!(
+    println!("  gross value: {}", show(transaction.value.as_ref()));
+    println!("  commission: {}", show(transaction.commission.as_ref()));
+    println!(
         "  regulatory fees: {}",
         show(transaction.regulatory_fees.as_ref())
     );
-    info!(
+    println!(
         "  clearing fees: {}",
         show(transaction.clearing_fees.as_ref())
     );
-    info!("  net value: {}", show(transaction.net_value.as_ref()));
-    info!(
+    println!("  net value: {}", show(transaction.net_value.as_ref()));
+    println!(
         "  fees are an estimate: {}",
         match transaction.is_estimated_fee {
             Some(true) => "yes",

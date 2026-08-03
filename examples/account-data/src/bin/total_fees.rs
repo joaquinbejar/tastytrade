@@ -34,12 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // No date: the venue answers for its own today.
     let today = account.total_fees(None).await?;
-    info!("Today: {}", render(&today));
+    // Stdout: a fee total is account financial data, and INFO reaches the
+    // consuming application's aggregator by default.
+    println!("Today: {}", render(&today));
 
     // An explicit day.
     let yesterday = (Utc::now() - Duration::days(1)).date_naive();
     let named = account.total_fees(Some(yesterday)).await?;
-    info!("{yesterday}: {}", render(&named));
+    println!("{yesterday}: {}", render(&named));
 
     Ok(())
 }

@@ -127,17 +127,17 @@ Complete against `instruments-api-swagger_20250715`.
 | `POST /instruments/ai-search-token` | `ai_search_token()` | ✅ |
 | `GET /instruments/cryptocurrencies` | `list_cryptocurrencies()` | ✅ |
 | `GET /instruments/cryptocurrencies/{symbol}` | `get_cryptocurrency()` | ✅ |
-| `GET /instruments/equities` | `list_equities()` | ✅ |
-| `GET /instruments/equities/active` | `list_active_equities()` | ✅ |
+| `GET /instruments/equities` | `list_equities(&EquityFilter)` → `Paginated<T>` | ✅ |
+| `GET /instruments/equities/active` | `list_active_equities(&ActiveEquityFilter)` → `Paginated<T>` | ✅ |
 | `GET /instruments/equities/{symbol}` | `get_equity()` | ✅ |
 | `GET /instruments/equity-options/{symbol}` | `get_equity_option()` | ✅ |
-| `GET /instruments/future-option-products` | `list_future_option_products()` | ✅ |
+| `GET /instruments/future-option-products` | `list_future_option_products(&PageRequest)` → `Paginated<T>` | ✅ |
 | `GET /instruments/future-option-products/{exchange}/{root_symbol}` | `get_future_option_product_by_exchange()` | ✅ |
 | `GET /instruments/future-option-products/{root_symbol}` | `get_future_option_product()` | ✅ |
 | `GET /instruments/future-options/{symbol}` | `get_future_option()` | ✅ |
-| `GET /instruments/future-products` | `list_future_products()` | ✅ |
+| `GET /instruments/future-products` | `list_future_products(&PageRequest)` → `Paginated<T>` | ✅ |
 | `GET /instruments/future-products/{exchange}/{code}` | `get_future_product()` | ✅ |
-| `GET /instruments/futures` | `list_futures()` | ✅ |
+| `GET /instruments/futures` | `list_futures(&FutureFilter)` → `Paginated<T>` | ✅ |
 | `GET /instruments/futures/{symbol}` | `get_future()` | ✅ |
 | `GET /instruments/quantity-decimal-precisions` | `list_quantity_decimal_precisions()` | ✅ |
 | `GET /instruments/search` | `search_instruments()` | ✅ |
