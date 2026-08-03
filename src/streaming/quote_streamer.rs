@@ -140,75 +140,89 @@ impl QuoteSubscription {
     /// Receive one event from feed. Yields if there are no events.
     /// Compatible with previous interface
     pub async fn get_event(&mut self) -> Result<dxfeed::Event, flume::RecvError> {
-        // Try to receive event from DXLink
-        match self.dxlink_receiver.recv().await {
-            Some(market_event) => {
-                // Convert from DXLink MarketEvent to dxfeed Event
-                match market_event {
-                    MarketEvent::Quote(quote) => {
-                        let symbol = quote.event_symbol;
-                        let data = dxfeed::EventData::Quote(dxfeed::DxfQuoteT {
-                            time: 0,
-                            sequence: 0,
-                            time_nanos: 0,
-                            bid_time: 0,
-                            bid_exchange_code: 0,
-                            bid_price: quote.bid_price,
-                            ask_price: quote.ask_price,
-                            bid_size: quote.bid_size as i64,
-                            ask_time: 0,
-                            ask_size: quote.ask_size as i64,
-                            ask_exchange_code: 0,
-                            scope: 0,
-                        });
-                        Ok(dxfeed::Event { sym: symbol, data })
-                    }
-                    MarketEvent::Trade(trade) => {
-                        // Convert Trade to dxfeed format
-                        let symbol = trade.event_symbol;
-                        let data = dxfeed::EventData::Trade(dxfeed::DxfTradeT {
-                            time: 0,
-                            sequence: 0,
-                            time_nanos: 0,
-                            exchange_code: 0,
-                            price: trade.price,
-                            size: trade.size as i64,
+        // A loop rather than one match: dxlink decodes event types this crate
+        // has no `EventData` for, and one of those arriving must not look to
+        // the caller like the stream ended.
+        loop {
+            let Some(market_event) = self.dxlink_receiver.recv().await else {
+                // Every sender is gone, which is what happens when the
+                // streamer is dropped. The flume receiver behind this is
+                // already disconnected, so this reports the end rather than
+                // waiting for something that cannot arrive.
+                return self.event_receiver.recv_async().await;
+            };
 
-                            tick: 0,
-                            change: 0.0,
-                            day_id: 0,
-                            day_volume: 0.0,
-                            day_turnover: 0.0,
-                            raw_flags: 0,
-                            direction: 0,
-                            is_eth: 0,
-                            scope: 0,
-                        });
-                        Ok(dxfeed::Event { sym: symbol, data })
-                    }
-                    MarketEvent::Greeks(greeks) => {
-                        // Convert Greeks to dxfeed format.
-                        // DXLink's GreeksEvent carries no price/time, so those stay 0.
-                        let symbol = greeks.event_symbol;
-                        let data = dxfeed::EventData::Greeks(dxfeed::DxfGreeksT {
-                            event_flags: 0,
-                            index: 0,
-                            time: 0,
-                            price: 0.0,
-                            volatility: greeks.volatility,
-                            delta: greeks.delta,
-                            gamma: greeks.gamma,
-                            theta: greeks.theta,
-                            vega: greeks.vega,
-                            rho: greeks.rho,
-                        });
-                        Ok(dxfeed::Event { sym: symbol, data })
-                    }
+            let converted = match market_event {
+                MarketEvent::Quote(quote) => {
+                    let symbol = quote.event_symbol;
+                    let data = dxfeed::EventData::Quote(dxfeed::DxfQuoteT {
+                        time: 0,
+                        sequence: 0,
+                        time_nanos: 0,
+                        bid_time: 0,
+                        bid_exchange_code: 0,
+                        bid_price: quote.bid_price,
+                        ask_price: quote.ask_price,
+                        bid_size: quote.bid_size as i64,
+                        ask_time: 0,
+                        ask_size: quote.ask_size as i64,
+                        ask_exchange_code: 0,
+                        scope: 0,
+                    });
+                    Some(dxfeed::Event { sym: symbol, data })
                 }
-            }
-            None => {
-                // Fallback to previous implementation
-                self.event_receiver.recv_async().await
+                MarketEvent::Trade(trade) => {
+                    // Convert Trade to dxfeed format
+                    let symbol = trade.event_symbol;
+                    let data = dxfeed::EventData::Trade(dxfeed::DxfTradeT {
+                        time: 0,
+                        sequence: 0,
+                        time_nanos: 0,
+                        exchange_code: 0,
+                        price: trade.price,
+                        size: trade.size as i64,
+
+                        tick: 0,
+                        change: 0.0,
+                        day_id: 0,
+                        day_volume: 0.0,
+                        day_turnover: 0.0,
+                        raw_flags: 0,
+                        direction: 0,
+                        is_eth: 0,
+                        scope: 0,
+                    });
+                    Some(dxfeed::Event { sym: symbol, data })
+                }
+                MarketEvent::Greeks(greeks) => {
+                    // Convert Greeks to dxfeed format.
+                    // DXLink's GreeksEvent carries no price/time, so those stay 0.
+                    let symbol = greeks.event_symbol;
+                    let data = dxfeed::EventData::Greeks(dxfeed::DxfGreeksT {
+                        event_flags: 0,
+                        index: 0,
+                        time: 0,
+                        price: 0.0,
+                        volatility: greeks.volatility,
+                        delta: greeks.delta,
+                        gamma: greeks.gamma,
+                        theta: greeks.theta,
+                        vega: greeks.vega,
+                        rho: greeks.rho,
+                    });
+                    Some(dxfeed::Event { sym: symbol, data })
+                }
+                other => {
+                    debug!(
+                        "Skipping an event type this crate does not model: {}",
+                        event_kind(&other)
+                    );
+                    None
+                }
+            };
+
+            if let Some(event) = converted {
+                return Ok(event);
             }
         }
     }
@@ -613,12 +627,13 @@ struct LiveConnection {
     channel_id: u32,
     /// The receiver `DXLinkClient::connect` hands back.
     ///
-    /// It is the *only* path market events take out of dxlink: the client's
-    /// event sender is created inside `connect`, so a later `event_stream()`
-    /// call is refused with "Event stream already created". Dropping this
-    /// receiver therefore does not merely lose a convenience — it disconnects
-    /// the feed from its consumer permanently, which is what used to happen
-    /// here.
+    /// Two things at once. It is the *only* path market events take out of
+    /// dxlink — the client's event sender is created inside `connect`, so a
+    /// later `event_stream()` call is refused with "Event stream already
+    /// created", and dropping this receiver disconnects the feed from its
+    /// consumer permanently, which is what used to happen here. And it closes
+    /// when the session ends, which is how a drop becomes visible without this
+    /// client writing anything.
     events: mpsc::Receiver<MarketEvent>,
 }
 
@@ -632,6 +647,14 @@ async fn connect_dxlink(tasty: &TastyTrade) -> TastyResult<LiveConnection> {
         tokens.token.len()
     );
 
+    // dxlink can reconnect on its own (`with_reconnect`), and it is
+    // deliberately not installed: this crate already reconnects under
+    // `BackoffPolicy`, replaying the symbols each subscription confirmed, and
+    // two policies over one socket would count a single drop twice, under two
+    // budgets, with two sets of attempt numbers reaching the caller through
+    // `state()`. What is used from dxlink instead is the fact it reports the
+    // session ending — the event stream closes — which is the part this crate
+    // cannot observe for itself.
     let mut client = DXLinkClient::new(&tokens.streamer_url, &tokens.token);
 
     info!("Connecting to DXLink server: {}", tokens.streamer_url);
@@ -679,18 +702,20 @@ enum Ended {
 /// acknowledge it — so resetting the attempt budget on a subscribe would reset
 /// it on a connection that accepts the socket and then sends nothing, which is
 /// the accept-then-reject loop the policy exists to bound.
+/// Returns when the stream closes, which dxlink does when the session ends.
+/// The supervisor watches this task for exactly that reason.
 async fn forward_events(
     mut events: mpsc::Receiver<MarketEvent>,
     routing: Arc<RwLock<EventRouting>>,
     saw_event: Arc<AtomicBool>,
 ) {
     while let Some(event) = events.recv().await {
+        // Anything arriving is evidence the feed works, whether or not this
+        // crate models it. That is what the milestone is for.
         saw_event.store(true, Ordering::Relaxed);
 
-        let symbol = match &event {
-            MarketEvent::Quote(quote) => &quote.event_symbol,
-            MarketEvent::Trade(trade) => &trade.event_symbol,
-            MarketEvent::Greeks(greeks) => &greeks.event_symbol,
+        let Some(symbol) = event_symbol(&event) else {
+            continue;
         };
 
         let routing = routing.read().await;
@@ -755,6 +780,48 @@ fn pending_replay(registry: &Registry) -> Vec<(u32, Vec<FeedSubscription>)> {
         .collect()
 }
 
+/// The symbol an event is about, when this crate can model the event.
+///
+/// The feed is set up for Quote, Trade and Greeks, so nothing else should
+/// arrive. dxlink decodes six more types, and one of those turning up would
+/// have no `EventData` to be converted into, so it is dropped here rather than
+/// routed to a subscription that cannot read it.
+fn event_symbol(event: &MarketEvent) -> Option<&str> {
+    match event {
+        MarketEvent::Quote(quote) => Some(&quote.event_symbol),
+        MarketEvent::Trade(trade) => Some(&trade.event_symbol),
+        MarketEvent::Greeks(greeks) => Some(&greeks.event_symbol),
+        other => {
+            // The event type, never its contents: this is market data nobody
+            // asked for, and its shape is the whole of what is useful.
+            debug!(
+                "Dropping an event type this crate does not model: {}",
+                event_kind(other)
+            );
+            None
+        }
+    }
+}
+
+/// The name of an event variant, for logs. Contents never travel with it.
+///
+/// Exhaustive without a wildcard on purpose: a variant added by a future
+/// dxlink breaks the build here, which is the moment to decide whether this
+/// crate models it, rather than silently logging it as something else.
+fn event_kind(event: &MarketEvent) -> &'static str {
+    match event {
+        MarketEvent::Quote(_) => "Quote",
+        MarketEvent::Trade(_) => "Trade",
+        MarketEvent::Greeks(_) => "Greeks",
+        MarketEvent::Summary(_) => "Summary",
+        MarketEvent::Candle(_) => "Candle",
+        MarketEvent::TimeAndSale(_) => "TimeAndSale",
+        MarketEvent::Profile(_) => "Profile",
+        MarketEvent::Underlying(_) => "Underlying",
+        MarketEvent::TheoPrice(_) => "TheoPrice",
+    }
+}
+
 /// Records that `sub_id` wants events for these symbols.
 ///
 /// Called before the subscribe is written, so no event can arrive for a symbol
@@ -803,6 +870,7 @@ async fn run_connection(
     channel_id: u32,
     commands: &mut mpsc::Receiver<DXLinkCommand>,
     shutdown: &mut oneshot::Receiver<()>,
+    forwarder: &mut tokio::task::JoinHandle<()>,
     routing: &Arc<RwLock<EventRouting>>,
 ) -> Ended {
     loop {
@@ -811,6 +879,31 @@ async fn run_connection(
             _ = &mut *shutdown => {
                 debug!("Quote streamer owner dropped, disconnecting");
                 return Ended::Owner;
+            }
+            // The event stream closing is dxlink saying the session is over.
+            // It is the only signal that arrives without this client writing
+            // anything, so it is what makes a drop visible to a consumer that
+            // only reads — the ordinary shape of a market-data client, and the
+            // case a write-failure check can never see.
+            joined = &mut *forwarder => {
+                match joined {
+                    Ok(()) => debug!("The DXLink event stream closed; the session is over"),
+                    // A forwarder that died is not a venue problem, and
+                    // reconnecting will not fix it: the next one runs the same
+                    // code over the same routing. Saying so is the difference
+                    // between a diagnosable bug and a stream that quietly
+                    // reconnects forever.
+                    //
+                    // Classification only. `JoinError`'s Display renders the
+                    // panic payload, and a panic message can quote whatever
+                    // the task was holding — here, market data.
+                    Err(e) => warn!(
+                        "The event forwarding task ended abnormally (panicked: {}, cancelled: {})",
+                        e.is_panic(),
+                        e.is_cancelled()
+                    ),
+                }
+                return Ended::ConnectionLost;
             }
             cmd = commands.recv() => match cmd {
                 Some(cmd) => cmd,
@@ -903,6 +996,11 @@ async fn run_connection(
 /// A refused subscription is the venue disagreeing with one request; a dead
 /// socket makes every later request pointless. Only the second is worth
 /// reconnecting for.
+///
+/// The second of two drop signals, and the faster one when this client is
+/// writing: a failed write says so immediately, where the closing event stream
+/// says so when dxlink's reader notices. A consumer that only reads has just
+/// the stream, which is why both exist.
 fn is_connection_lost(error: &dxlink::DXLinkError) -> bool {
     matches!(
         error,
@@ -997,7 +1095,8 @@ async fn supervise(
         // the one that survived the reconnect, so an event that arrives the
         // instant the replay lands already has somewhere to go.
         let saw_event = Arc::new(AtomicBool::new(false));
-        let forwarder = tokio::spawn(forward_events(events, routing.clone(), saw_event.clone()));
+        let mut forwarder =
+            tokio::spawn(forward_events(events, routing.clone(), saw_event.clone()));
 
         let restored = replay(&mut client, channel_id, &registry).await;
         if restored {
@@ -1013,6 +1112,7 @@ async fn supervise(
                 channel_id,
                 &mut commands,
                 &mut shutdown,
+                &mut forwarder,
                 &routing,
             )
             .await
@@ -1022,10 +1122,15 @@ async fn supervise(
         };
 
         forwarder.abort();
-        // dxlink's message pump never exits on its own — on a read error it
-        // logs, sleeps 100ms and loops — so a client that is not disconnected
-        // leaves a task spinning for the life of the process, once per
-        // reconnect.
+
+        // Why the session ended, when dxlink observed it rather than this
+        // client. Logged, not carried into `ConnectionState`: the text comes
+        // from whatever the socket reported, and the state value is public and
+        // meant to be safe to show anywhere.
+        if let Some(reason) = client.disconnect_reason() {
+            debug!("DXLink reported the session ended: {reason}");
+        }
+
         if let Err(e) = client.disconnect().await {
             debug!("Error disconnecting the previous DXLink client: {e}");
         }
@@ -1482,6 +1587,165 @@ mod reconnect_tests {
             routing.read().await.symbol_subs.is_empty(),
             "an empty set must not be left behind as a route"
         );
+    }
+
+    /// The whole point of #67. A consumer that only reads — the ordinary shape
+    /// of a market-data client — never issues a command, so a write-failure
+    /// check can never see its connection die. dxlink 0.3 closes the event
+    /// stream when the session ends, and this is the supervisor noticing.
+    #[tokio::test]
+    async fn a_closed_event_stream_ends_the_connection_without_any_write() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
+        let saw_event = Arc::new(AtomicBool::new(false));
+        let mut forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            saw_event.clone(),
+        ));
+
+        // Never connected: the point is that nothing is written to it.
+        let mut client = DXLinkClient::new("wss://127.0.0.1:1", "unused");
+        let (_commands_tx, mut commands_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        // The session ends: dxlink drops its side of the event stream.
+        drop(events_tx);
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_connection(
+                &mut client,
+                1,
+                &mut commands_rx,
+                &mut shutdown_rx,
+                &mut forwarder,
+                &routing,
+            ),
+        )
+        .await
+        .expect("the closing stream must end the connection, not be waited on forever");
+
+        assert!(
+            matches!(ended, Ended::ConnectionLost),
+            "a closed event stream is a lost connection"
+        );
+    }
+
+    /// A forwarder that dies is not a venue problem, and the next connection
+    /// runs the same code over the same routing. It still ends the connection,
+    /// but it must not do so silently — that is the difference between a
+    /// diagnosable bug and a stream that reconnects forever for no visible
+    /// reason.
+    #[tokio::test]
+    async fn a_forwarder_that_panics_is_reported_rather_than_read_as_a_venue_drop() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let mut forwarder = tokio::spawn(async { panic!("the forwarder died") });
+
+        let mut client = DXLinkClient::new("wss://127.0.0.1:1", "unused");
+        let (_commands_tx, mut commands_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_connection(
+                &mut client,
+                1,
+                &mut commands_rx,
+                &mut shutdown_rx,
+                &mut forwarder,
+                &routing,
+            ),
+        )
+        .await
+        .expect("a dead forwarder must end the connection, not be waited on");
+
+        assert!(matches!(ended, Ended::ConnectionLost));
+    }
+
+    /// The owner still wins over a live connection: dropping the streamer must
+    /// end the supervisor rather than wait for the venue to do something.
+    #[tokio::test]
+    async fn the_owner_still_takes_precedence_over_a_live_stream() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (_events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
+        let mut forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        let mut client = DXLinkClient::new("wss://127.0.0.1:1", "unused");
+        let (_commands_tx, mut commands_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        drop(shutdown_tx);
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_connection(
+                &mut client,
+                1,
+                &mut commands_rx,
+                &mut shutdown_rx,
+                &mut forwarder,
+                &routing,
+            ),
+        )
+        .await
+        .expect("a dropped owner ends the connection promptly");
+
+        assert!(matches!(ended, Ended::Owner));
+    }
+
+    /// dxlink models nine event types; this crate models three. One of the
+    /// other six arriving must not be routed to a subscription that has no
+    /// `EventData` for it — and must not look like the end of the stream.
+    #[tokio::test]
+    async fn an_event_type_this_crate_does_not_model_is_skipped_not_delivered() {
+        let summary = MarketEvent::Summary(dxlink::events::SummaryEvent {
+            event_type: "Summary".to_string(),
+            event_symbol: "AAPL".to_string(),
+            event_time: 0,
+            day_id: 0,
+            day_open_price: 0.0,
+            day_high_price: 0.0,
+            day_low_price: 0.0,
+            day_close_price: 0.0,
+            day_close_price_type: "Final".to_string(),
+            prev_day_id: 0,
+            prev_day_close_price: 0.0,
+            prev_day_close_price_type: "Final".to_string(),
+            prev_day_volume: 0.0,
+            open_interest: 0.0,
+        });
+
+        assert_eq!(event_symbol(&summary), None, "it has nowhere to be routed");
+        assert_eq!(event_kind(&summary), "Summary");
+        assert_eq!(event_symbol(&quote("AAPL")), Some("AAPL"));
+
+        // And a subscription reading through one gets the next event it can
+        // read, rather than an error that says the stream ended.
+        let (tx, rx) = mpsc::channel::<MarketEvent>(4);
+        let (_unused_tx, event_receiver) = flume::unbounded();
+        let mut subscription = QuoteSubscription {
+            id: SubscriptionId(0),
+            streamer: StreamerHandle { commands: None },
+            event_types: dxfeed::DXF_ET_QUOTE,
+            event_receiver,
+            dxlink_receiver: rx,
+            symbols: Arc::new(Mutex::new(BTreeSet::new())),
+        };
+
+        tx.send(summary).await.expect("the feed accepts");
+        tx.send(quote("AAPL")).await.expect("the feed accepts");
+
+        let event = tokio::time::timeout(Duration::from_secs(2), subscription.get_event())
+            .await
+            .expect("an unmodelled event must not stall the reader")
+            .expect("the quote behind it is readable");
+        assert_eq!(event.sym, "AAPL");
+        assert!(matches!(event.data, dxfeed::EventData::Quote(_)));
     }
 
     /// The budget is bounded, and running out is reported rather than
