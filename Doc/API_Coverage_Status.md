@@ -24,7 +24,7 @@ difference is exactly what
 | Accounts and Customers | 4 | 2 | 2 | 50% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
 | Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 3 | 1 | 75% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
-| Instruments | 24 | 22 | 2 | 92% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
+| Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 0 | 2 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
@@ -33,10 +33,10 @@ difference is exactly what
 | Orders | 19 | 4 | 15 | 21% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
 | Quote Alerts | 3 | 0 | 3 | 0% | [#81](https://github.com/joaquinbejar/tastytrade/issues/81) |
 | Risk Parameters | 4 | 0 | 4 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
-| Symbol Search | 1 | 0 | 1 | 0% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
+| Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 0 | 3 | 0% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **31** | **66** | **32%** | |
+| **TOTAL** | **97** | **34** | **63** | **35%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -99,13 +99,13 @@ filter server-side.
 
 ## Instruments
 
-All implemented except the two search endpoints, which are new to the spec.
+Complete against `instruments-api-swagger_20250715`.
 
 | Endpoint | Method | Status |
 |----------|--------|--------|
 | `GET /futures-option-chains/{symbol}` | `list_futures_option_chains()` | ✅ |
 | `GET /futures-option-chains/{symbol}/nested` | `list_nested_futures_option_chains()` | ✅ |
-| `POST /instruments/ai-search-token` | — | ❌ |
+| `POST /instruments/ai-search-token` | `ai_search_token()` | ✅ |
 | `GET /instruments/cryptocurrencies` | `list_cryptocurrencies()` | ✅ |
 | `GET /instruments/cryptocurrencies/{symbol}` | `get_cryptocurrency()` | ✅ |
 | `GET /instruments/equities` | `list_equities()` | ✅ |
@@ -121,7 +121,7 @@ All implemented except the two search endpoints, which are new to the spec.
 | `GET /instruments/futures` | `list_futures()` | ✅ |
 | `GET /instruments/futures/{symbol}` | `get_future()` | ✅ |
 | `GET /instruments/quantity-decimal-precisions` | `list_quantity_decimal_precisions()` | ✅ |
-| `GET /instruments/search` | — | ❌ |
+| `GET /instruments/search` | `search_instruments()` | ✅ |
 | `GET /instruments/warrants` | `list_warrants()` | ✅ |
 | `GET /instruments/warrants/{symbol}` | `get_warrant()` | ✅ |
 | `GET /option-chains/{symbol}` | `list_option_chains()` / `option_chain_for()` | ✅ |
@@ -311,9 +311,15 @@ streaming half exists with no way to create or list the alerts it delivers.
 
 ## Symbol Search
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /symbols/search/{symbol}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /symbols/search/{symbol}` | `search_symbols()` | ✅ |
+
+Its own area with its own document (`symbol-search-server-swagger.json`), which
+is why it is not one of the 24 Instruments paths. The query is a **path
+segment**, so it goes through the shared encoder from
+[#89](https://github.com/joaquinbejar/tastytrade/issues/89) — `BRK/B` and `/ES`
+both carry separators.
 
 ## Transactions
 

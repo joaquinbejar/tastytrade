@@ -62,6 +62,12 @@ pub use crate::api::base::{Items, Paginated, Pagination};
 pub use crate::api::query::PageRequest;
 pub use crate::types::instrument_filter::{ActiveEquityFilter, EquityFilter, FutureFilter};
 
+// Re-export the search surface
+pub use crate::types::search::{
+    AiSearchToken, InstrumentSearchFilter, InstrumentSearchResult, MAX_SEARCH_RESULTS,
+    SymbolSearchResult,
+};
+
 // Re-export forward-compatible wire enums
 pub use crate::types::wire::{ExerciseStyle, ExpirationType, Lendability, SettlementType};
 

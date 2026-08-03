@@ -117,6 +117,42 @@
 //! and the other wire enums keep an unrecognised value verbatim rather than
 //! failing, so a new classification never makes an instrument disappear.
 //!
+//! ### Finding an instrument
+//!
+//! Two searches, with different encodings. `search_symbols` is a prefix search
+//! whose term is a **path segment**; `search_instruments` spans every
+//! instrument type and takes classification filters that are **comma-joined
+//! into one parameter each**, which is the opposite of the listings above.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn find(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! // A class separator in the term is encoded, so this is a search for
+//! // `BRK/B` rather than a search of `/symbols/search/BRK` for `B`.
+//! for hit in tasty.search_symbols("BRK/B").await? {
+//!     println!("{} — {:?}", hit.symbol, hit.description);
+//! }
+//!
+//! let results = tasty
+//!     .search_instruments(
+//!         &InstrumentSearchFilter::for_query("gold")
+//!             .with_types(&["Equity", "Future"])
+//!             .with_limit(10),
+//!     )
+//!     .await?;
+//! # let _ = results;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `limit` is capped at [`prelude::MAX_SEARCH_RESULTS`] and an over-large one
+//! fails locally as a non-retryable precondition, before anything is sent.
+//!
+//! `ai_search_token()` mints a short-lived third-party credential for AI
+//! search. It is treated like every other secret here — never in `Debug`,
+//! `Display`, a log or an error — and it is handed back rather than used,
+//! because the service it authenticates is not part of this API.
+//!
 //! ## Real-time Data
 //!
 //! Market data comes over DXLink. All eleven event types the feed models are

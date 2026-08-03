@@ -15,3 +15,4 @@ mod account_stream;
 mod instrument_listings;
 mod paths;
 mod rest;
+mod search;
