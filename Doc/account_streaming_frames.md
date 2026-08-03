@@ -235,9 +235,16 @@ it subscribed:
 }
 ```
 
-`request-id` comes back **only if the request carried one**, and this crate
-sends none. A required `request-id` in `StatusMessage` is why every
-acknowledgement used to fail the untagged decode and disappear.
+`request-id` comes back **only if the request carried one**, and this crate now
+sends one on every action — which is what lets `send` resolve on the venue's
+acknowledgement rather than on the socket write. A required `request-id` in
+`StatusMessage` is what used to make every acknowledgement fail the untagged
+decode and disappear.
+
+The refusal below does not show a `request-id`, and the guide does not say
+whether one comes back on an error. `ErrorMessage::request_id` is therefore
+`Option`, and a refusal without one is matched to the oldest action in flight
+with the same `action` name.
 
 A refusal carries `status: "error"` and a message:
 
