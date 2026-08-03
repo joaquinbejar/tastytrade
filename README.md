@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = TastyTradeConfig::from_env();
     let tasty = TastyTrade::connect(&config).await?;
     let mut quote_streamer = tasty.create_quote_streamer().await?;
-    let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]);
+    let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]).await?;
 
     // Add symbols to subscribe to
     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]).await?;
@@ -123,7 +123,7 @@ use tastytrade::{Symbol, TastyTrade};
 use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
 
 let mut streamer = tasty.create_quote_streamer().await?;
-let mut bars = streamer.create_sub([EventKind::Candle]);
+let mut bars = streamer.create_sub([EventKind::Candle]).await?;
 
 // `from_time` is required, not optional: a candle subscription without one
 // replays an unbounded history. A day of one-minute bars is about 1440

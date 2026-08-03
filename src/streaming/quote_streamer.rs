@@ -1114,9 +1114,7 @@ async fn forward_events(
         // consumer still advanced the resume point, so the reconnect skipped
         // it permanently — the crate deciding, silently, that a gap in a price
         // series was acceptable.
-        if delivered
-            && let MarketEvent::Candle(candle) = &event
-        {
+        if delivered && let MarketEvent::Candle(candle) = &event {
             let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
             let latest = seen.entry(symbol.clone()).or_insert(candle.time);
             *latest = (*latest).max(candle.time);
