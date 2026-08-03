@@ -2,7 +2,9 @@
 use crate::TastyTrade;
 use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 use crate::types::dxfeed;
-use crate::{AsSymbol, Symbol, TastyResult, TastyTradeError};
+use crate::types::dxfeed::{CandlePeriod, EventKind};
+use crate::{AsSymbol, TastyResult, TastyTradeError};
+use chrono::{DateTime, Utc};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
@@ -36,10 +38,15 @@ pub struct QuoteSubscription {
     /// This subscription's identity within its streamer.
     pub id: SubscriptionId,
     streamer: StreamerHandle,
-    event_types: i32, // Keep for compatibility with existing code
+    /// The event types this subscription asked for.
+    ///
+    /// Was an `i32` bitmask of three `DXF_ET_*` constants. A typed set, so the
+    /// eleven the feed models are all reachable and a caller cannot ask for a
+    /// bit that means nothing.
+    kinds: BTreeSet<EventKind>,
     event_receiver: flume::Receiver<dxfeed::Event>, // Keep for compatibility
-    dxlink_receiver: mpsc::Receiver<MarketEvent>, // New DXLink event receiver
-    /// The symbols this subscription is actually subscribed to.
+    dxlink_receiver: mpsc::Receiver<MarketEvent>,   // New DXLink event receiver
+    /// What this subscription is actually subscribed to.
     ///
     /// Shared with the copy the streamer keeps in its `subscription_map`, and
     /// that sharing is the fix rather than an optimisation: `create_sub`
@@ -49,8 +56,8 @@ pub struct QuoteSubscription {
     /// therefore derived from an empty list and never sent, leaving the
     /// subscription alive on the venue.
     ///
-    /// A set, so adding the same symbol twice subscribes once.
-    symbols: Arc<Mutex<BTreeSet<Symbol>>>,
+    /// A set, so asking twice subscribes once.
+    targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
 }
 
 impl QuoteSubscription {
@@ -60,32 +67,129 @@ impl QuoteSubscription {
     /// the command was queued. Symbols already subscribed are skipped, so
     /// calling twice with the same symbol subscribes once.
     ///
+    /// Subscribes each symbol under every event type this subscription asked
+    /// for **except candles**: a candle needs a period and a history start,
+    /// and a bare symbol has neither. Use [`QuoteSubscription::add_candles`].
+    ///
     /// # Errors
     ///
-    /// Fails when the streamer has no open channel, when it is closed, or when
-    /// the venue refuses. On any of those the symbols are not recorded, so a
-    /// later close does not try to unsubscribe something that was never
-    /// subscribed.
+    /// [`TastyTradeError::Precondition`] when the subscription asked for
+    /// nothing but candles, because there is then nothing this call can
+    /// subscribe. Otherwise fails when the streamer has no open channel, when
+    /// it is closed, or when the venue refuses. On any of those the symbols
+    /// are not recorded, so a later close does not try to unsubscribe
+    /// something that was never subscribed.
     pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
-        let requested: Vec<Symbol> = symbols.iter().map(|sym| sym.as_symbol()).collect();
+        let kinds: Vec<EventKind> = self
+            .kinds
+            .iter()
+            .copied()
+            .filter(|kind| !kind.needs_a_period())
+            .collect();
 
-        // Only symbols that are not already subscribed. Asking the venue twice
-        // for the same symbol is at best wasted work and at worst a duplicate
-        // stream.
+        if kinds.is_empty() {
+            return Err(TastyTradeError::Precondition(
+                "this subscription asked for candles only, and a candle needs a period and a \
+                 start time; use add_candles"
+                    .to_string(),
+            ));
+        }
+
+        let requested: Vec<FeedTarget> = symbols
+            .iter()
+            .flat_map(|symbol| {
+                let symbol = symbol.as_symbol();
+                kinds.iter().map(move |kind| FeedTarget {
+                    kind: *kind,
+                    symbol: symbol.0.clone(),
+                    from_time: None,
+                })
+            })
+            .collect();
+
+        self.subscribe_targets(requested).await
+    }
+
+    /// Subscribes this subscription to candles for `symbols`.
+    ///
+    /// A candle subscription is addressed by a symbol that carries its own
+    /// period — `AAPL{=5m}` — so two periods of one underlying are two
+    /// different streamer symbols and never deliver into each other. The
+    /// events come back under that same symbol, which is what
+    /// [`dxfeed::Event::sym`] holds.
+    ///
+    /// `from_time` is required, not optional. A candle subscription without
+    /// one replays an unbounded history: the documented sizing is about 1440
+    /// events for a day of one-minute bars, and there is no upper bound at
+    /// all on "everything you have".
+    ///
+    /// # Errors
+    ///
+    /// [`TastyTradeError::Precondition`] when the subscription did not ask for
+    /// [`EventKind::Candle`] — a channel is only configured for the types its
+    /// subscriptions requested, so this would subscribe to something that
+    /// cannot arrive. Otherwise as [`QuoteSubscription::add_symbols`].
+    pub async fn add_candles<S: AsSymbol>(
+        &self,
+        symbols: &[S],
+        period: CandlePeriod,
+        from_time: DateTime<Utc>,
+    ) -> TastyResult<()> {
+        if !self.kinds.contains(&EventKind::Candle) {
+            return Err(TastyTradeError::Precondition(
+                "this subscription did not ask for candles, so the channel is not configured to \
+                 deliver them; create one with EventKind::Candle"
+                    .to_string(),
+            ));
+        }
+
+        // Milliseconds. dxlink documents `FeedSubscription::from_time` as a
+        // Unix timestamp in milliseconds and it is the code that serialises
+        // it, so that is what this follows. Taking a `DateTime` rather than an
+        // integer keeps the choice in one place instead of at every call site.
+        let from_time = from_time.timestamp_millis();
+
+        let requested: Vec<FeedTarget> = symbols
+            .iter()
+            .map(|symbol| FeedTarget {
+                kind: EventKind::Candle,
+                symbol: period.streamer_symbol(&symbol.as_symbol().0),
+                from_time: Some(from_time),
+            })
+            .collect();
+
+        self.subscribe_targets(requested).await
+    }
+
+    /// Every streamer symbol this subscription is subscribed to, with its
+    /// event type.
+    ///
+    /// Candle symbols carry their period, which is how a caller tells
+    /// `AAPL{=5m}` from `AAPL{=1h}`.
+    pub fn subscribed(&self) -> Vec<(String, EventKind)> {
+        targets_of(&self.targets)
+            .iter()
+            .map(|target| (target.symbol.clone(), target.kind))
+            .collect()
+    }
+
+    /// Reserves `requested`, asks the venue, and gives the reservation back if
+    /// it is refused.
+    async fn subscribe_targets(&self, requested: Vec<FeedTarget>) -> TastyResult<()> {
         // Checked and reserved in one lock section. Filtering against the set
         // and inserting afterwards let two concurrent callers both see a
-        // symbol as absent and both subscribe to it. Reserving here means the
+        // target as absent and both subscribe to it. Reserving here means the
         // second caller sees the first one's claim; a failure below removes
         // the reservation again.
-        let symbols: Vec<Symbol> = {
-            let mut known = symbols_of(&self.symbols);
+        let targets: Vec<FeedTarget> = {
+            let mut known = targets_of(&self.targets);
             requested
                 .into_iter()
-                .filter(|sym| known.insert(sym.clone()))
+                .filter(|target| known.insert(target.clone()))
                 .collect()
         };
 
-        let subscriptions = feed_subscriptions(&symbols, self.event_types);
+        let subscriptions = feed_subscriptions(&targets);
 
         if subscriptions.is_empty() {
             return Ok(());
@@ -97,6 +201,10 @@ impl QuoteSubscription {
         // panicked outright when called without a Tokio runtime.
         let sub_id = self.id.0 as u32;
         let Some(tx) = &self.streamer.commands else {
+            let mut known = targets_of(&self.targets);
+            for target in &targets {
+                known.remove(target);
+            }
             return Err(TastyTradeError::Streaming(
                 "the quote streamer has no command channel; reconnect before subscribing"
                     .to_string(),
@@ -105,7 +213,12 @@ impl QuoteSubscription {
 
         let (ack, answered) = oneshot::channel();
         let queued = tx
-            .send(DXLinkCommand::Subscribe(subscriptions, sub_id, Some(ack)))
+            .send(DXLinkCommand::Subscribe(
+                subscriptions,
+                targets.iter().map(|target| target.kind).collect(),
+                sub_id,
+                Some(ack),
+            ))
             .await
             .map_err(|_| {
                 TastyTradeError::Streaming(
@@ -116,7 +229,7 @@ impl QuoteSubscription {
         // Reaching the command queue is not the venue accepting the
         // subscription: the loop can still be refused by DXLink. Wait for the
         // real answer, and give back the reservation if it is a refusal, so a
-        // symbol that is not subscribed is never later unsubscribed as though
+        // target that is not subscribed is never later unsubscribed as though
         // it were.
         let outcome = match queued {
             Ok(()) => answered.await.unwrap_or_else(|_| {
@@ -128,9 +241,9 @@ impl QuoteSubscription {
         };
 
         if outcome.is_err() {
-            let mut known = symbols_of(&self.symbols);
-            for symbol in &symbols {
-                known.remove(symbol);
+            let mut known = targets_of(&self.targets);
+            for target in &targets {
+                known.remove(target);
             }
         }
 
@@ -152,74 +265,7 @@ impl QuoteSubscription {
                 return self.event_receiver.recv_async().await;
             };
 
-            let converted = match market_event {
-                MarketEvent::Quote(quote) => {
-                    let symbol = quote.event_symbol;
-                    let data = dxfeed::EventData::Quote(dxfeed::DxfQuoteT {
-                        time: 0,
-                        sequence: 0,
-                        time_nanos: 0,
-                        bid_time: 0,
-                        bid_exchange_code: 0,
-                        bid_price: quote.bid_price,
-                        ask_price: quote.ask_price,
-                        bid_size: quote.bid_size as i64,
-                        ask_time: 0,
-                        ask_size: quote.ask_size as i64,
-                        ask_exchange_code: 0,
-                        scope: 0,
-                    });
-                    Some(dxfeed::Event { sym: symbol, data })
-                }
-                MarketEvent::Trade(trade) => {
-                    // Convert Trade to dxfeed format
-                    let symbol = trade.event_symbol;
-                    let data = dxfeed::EventData::Trade(dxfeed::DxfTradeT {
-                        time: 0,
-                        sequence: 0,
-                        time_nanos: 0,
-                        exchange_code: 0,
-                        price: trade.price,
-                        size: trade.size as i64,
-
-                        tick: 0,
-                        change: 0.0,
-                        day_id: 0,
-                        day_volume: 0.0,
-                        day_turnover: 0.0,
-                        raw_flags: 0,
-                        direction: 0,
-                        is_eth: 0,
-                        scope: 0,
-                    });
-                    Some(dxfeed::Event { sym: symbol, data })
-                }
-                MarketEvent::Greeks(greeks) => {
-                    // Convert Greeks to dxfeed format.
-                    // DXLink's GreeksEvent carries no price/time, so those stay 0.
-                    let symbol = greeks.event_symbol;
-                    let data = dxfeed::EventData::Greeks(dxfeed::DxfGreeksT {
-                        event_flags: 0,
-                        index: 0,
-                        time: 0,
-                        price: 0.0,
-                        volatility: greeks.volatility,
-                        delta: greeks.delta,
-                        gamma: greeks.gamma,
-                        theta: greeks.theta,
-                        vega: greeks.vega,
-                        rho: greeks.rho,
-                    });
-                    Some(dxfeed::Event { sym: symbol, data })
-                }
-                other => {
-                    debug!(
-                        "Skipping an event type this crate does not model: {}",
-                        event_kind(&other)
-                    );
-                    None
-                }
-            };
+            let converted = convert_event(market_event);
 
             if let Some(event) = converted {
                 return Ok(event);
@@ -228,35 +274,237 @@ impl QuoteSubscription {
     }
 }
 
-impl Clone for QuoteSubscription {
-    fn clone(&self) -> Self {
-        // Create a new channel for DXLink events
-        let (tx, rx) = mpsc::channel(100);
-
-        // Register this new channel with the streamer
-        if let Some(cmd_tx) = &self.streamer.commands {
-            let cmd_tx_clone = cmd_tx.clone();
-            let sub_id = self.id.0;
-
-            tokio::spawn(async move {
-                if let Err(e) = cmd_tx_clone
-                    .send(DXLinkCommand::AddEventSender(sub_id as u32, tx))
-                    .await
-                {
-                    error!("Failed to register cloned event sender: {}", e);
-                }
+/// Converts one dxlink event into this crate's own event type.
+///
+/// `None` only for an event whose symbol this crate cannot read, which cannot
+/// happen for a variant that is modelled — every one of the eleven carries an
+/// `eventSymbol`. It exists so the caller of this function does not have to
+/// care, and so a future variant does not silently become a `Quote`.
+///
+/// `f64` throughout, and only here: `types::dxfeed` holds the native feed
+/// types, where the representation is the feed's to choose. Nothing on the
+/// REST path is allowed to widen that.
+fn convert_event(event: MarketEvent) -> Option<dxfeed::Event> {
+    let data = match event {
+        MarketEvent::Quote(quote) => {
+            return Some(dxfeed::Event {
+                sym: quote.event_symbol,
+                data: dxfeed::EventData::Quote(dxfeed::DxfQuoteT {
+                    time: 0,
+                    sequence: 0,
+                    time_nanos: 0,
+                    bid_time: 0,
+                    bid_exchange_code: 0,
+                    bid_price: quote.bid_price,
+                    ask_price: quote.ask_price,
+                    bid_size: quote.bid_size as i64,
+                    ask_time: 0,
+                    ask_size: quote.ask_size as i64,
+                    ask_exchange_code: 0,
+                    scope: 0,
+                }),
             });
         }
-
-        Self {
-            id: self.id,
-            streamer: self.streamer.clone(),
-            event_types: self.event_types,
-            event_receiver: self.event_receiver.clone(), // This requires flume::Receiver to implement Clone
-            dxlink_receiver: rx,
-            symbols: self.symbols.clone(),
+        MarketEvent::Trade(trade) => {
+            return Some(dxfeed::Event {
+                sym: trade.event_symbol,
+                data: dxfeed::EventData::Trade(dxfeed::DxfTradeT {
+                    time: 0,
+                    sequence: 0,
+                    time_nanos: 0,
+                    exchange_code: 0,
+                    price: trade.price,
+                    size: trade.size as i64,
+                    tick: 0,
+                    change: 0.0,
+                    day_id: 0,
+                    day_volume: trade.day_volume,
+                    day_turnover: 0.0,
+                    raw_flags: 0,
+                    direction: 0,
+                    is_eth: 0,
+                    scope: 0,
+                }),
+            });
         }
-    }
+        MarketEvent::Greeks(greeks) => {
+            return Some(dxfeed::Event {
+                sym: greeks.event_symbol,
+                // DXLink's GreeksEvent carries no price or time, so those stay 0.
+                data: dxfeed::EventData::Greeks(dxfeed::DxfGreeksT {
+                    event_flags: 0,
+                    index: 0,
+                    time: 0,
+                    price: 0.0,
+                    volatility: greeks.volatility,
+                    delta: greeks.delta,
+                    gamma: greeks.gamma,
+                    theta: greeks.theta,
+                    vega: greeks.vega,
+                    rho: greeks.rho,
+                }),
+            });
+        }
+        MarketEvent::TradeETH(trade) => (
+            trade.event_symbol.clone(),
+            dxfeed::EventData::TradeEth(Box::new(dxfeed::DxfTradeEthT {
+                event_time: trade.event_time,
+                time: trade.time,
+                time_nano_part: trade.time_nano_part,
+                sequence: trade.sequence,
+                exchange_code: trade.exchange_code,
+                price: trade.price,
+                change: trade.change,
+                size: trade.size,
+                day_id: trade.day_id,
+                day_volume: trade.day_volume,
+                day_turnover: trade.day_turnover,
+                tick_direction: trade.tick_direction,
+                extended_trading_hours: trade.extended_trading_hours,
+            })),
+        ),
+        MarketEvent::Candle(candle) => (
+            candle.event_symbol.clone(),
+            dxfeed::EventData::Candle(Box::new(dxfeed::DxfCandleT {
+                event_time: candle.event_time,
+                event_flags: candle.event_flags,
+                index: candle.index,
+                time: candle.time,
+                sequence: candle.sequence,
+                count: candle.count,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+                vwap: candle.vwap,
+                bid_volume: candle.bid_volume,
+                ask_volume: candle.ask_volume,
+                imp_volatility: candle.imp_volatility,
+                open_interest: candle.open_interest,
+            })),
+        ),
+        MarketEvent::Summary(summary) => (
+            summary.event_symbol.clone(),
+            dxfeed::EventData::Summary(Box::new(dxfeed::DxfSummaryT {
+                event_time: summary.event_time,
+                day_id: summary.day_id,
+                day_open_price: summary.day_open_price,
+                day_high_price: summary.day_high_price,
+                day_low_price: summary.day_low_price,
+                day_close_price: summary.day_close_price,
+                day_close_price_type: summary.day_close_price_type,
+                prev_day_id: summary.prev_day_id,
+                prev_day_close_price: summary.prev_day_close_price,
+                prev_day_close_price_type: summary.prev_day_close_price_type,
+                prev_day_volume: summary.prev_day_volume,
+                open_interest: summary.open_interest,
+            })),
+        ),
+        MarketEvent::TimeAndSale(sale) => (
+            sale.event_symbol.clone(),
+            dxfeed::EventData::TimeAndSale(Box::new(dxfeed::DxfTimeAndSaleT {
+                event_time: sale.event_time,
+                event_flags: sale.event_flags,
+                index: sale.index,
+                time: sale.time,
+                time_nano_part: sale.time_nano_part,
+                sequence: sale.sequence,
+                exchange_code: sale.exchange_code,
+                price: sale.price,
+                size: sale.size,
+                bid_price: sale.bid_price,
+                ask_price: sale.ask_price,
+                exchange_sale_conditions: sale.exchange_sale_conditions,
+                trade_through_exempt: sale.trade_through_exempt,
+                aggressor_side: sale.aggressor_side,
+                spread_leg: sale.spread_leg,
+                extended_trading_hours: sale.extended_trading_hours,
+                valid_tick: sale.valid_tick,
+                sale_type: sale.sale_type,
+                buyer: sale.buyer,
+                seller: sale.seller,
+            })),
+        ),
+        MarketEvent::Profile(profile) => (
+            profile.event_symbol.clone(),
+            dxfeed::EventData::Profile(Box::new(dxfeed::DxfProfileT {
+                event_time: profile.event_time,
+                description: profile.description,
+                short_sale_restriction: profile.short_sale_restriction,
+                trading_status: profile.trading_status,
+                status_reason: profile.status_reason,
+                halt_start_time: profile.halt_start_time,
+                halt_end_time: profile.halt_end_time,
+                high_limit_price: profile.high_limit_price,
+                low_limit_price: profile.low_limit_price,
+                high_52_week_price: profile.high_52_week_price,
+                low_52_week_price: profile.low_52_week_price,
+                beta: profile.beta,
+                earnings_per_share: profile.earnings_per_share,
+                dividend_frequency: profile.dividend_frequency,
+                ex_dividend_amount: profile.ex_dividend_amount,
+                ex_dividend_day_id: profile.ex_dividend_day_id,
+                shares: profile.shares,
+                free_float: profile.free_float,
+            })),
+        ),
+        MarketEvent::Underlying(underlying) => (
+            underlying.event_symbol.clone(),
+            dxfeed::EventData::Underlying(Box::new(dxfeed::DxfUnderlyingT {
+                event_time: underlying.event_time,
+                event_flags: underlying.event_flags,
+                index: underlying.index,
+                time: underlying.time,
+                sequence: underlying.sequence,
+                volatility: underlying.volatility,
+                front_volatility: underlying.front_volatility,
+                back_volatility: underlying.back_volatility,
+                call_volume: underlying.call_volume,
+                put_volume: underlying.put_volume,
+                put_call_ratio: underlying.put_call_ratio,
+            })),
+        ),
+        MarketEvent::TheoPrice(theo) => (
+            theo.event_symbol.clone(),
+            dxfeed::EventData::TheoPrice(Box::new(dxfeed::DxfTheoPriceT {
+                event_time: theo.event_time,
+                event_flags: theo.event_flags,
+                index: theo.index,
+                time: theo.time,
+                sequence: theo.sequence,
+                price: theo.price,
+                underlying_price: theo.underlying_price,
+                delta: theo.delta,
+                gamma: theo.gamma,
+                dividend: theo.dividend,
+                interest: theo.interest,
+            })),
+        ),
+        MarketEvent::Series(series) => (
+            series.event_symbol.clone(),
+            dxfeed::EventData::Series(Box::new(dxfeed::DxfSeriesT {
+                event_time: series.event_time,
+                event_flags: series.event_flags,
+                index: series.index,
+                time: series.time,
+                sequence: series.sequence,
+                expiration: series.expiration,
+                volatility: series.volatility,
+                call_volume: series.call_volume,
+                put_volume: series.put_volume,
+                put_call_ratio: series.put_call_ratio,
+                forward_price: series.forward_price,
+                dividend: series.dividend,
+                interest: series.interest,
+            })),
+        ),
+    };
+
+    Some(dxfeed::Event {
+        sym: data.0,
+        data: data.1,
+    })
 }
 
 // Commands for DXLink client to execute.
@@ -272,49 +520,77 @@ fn answer(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()
     }
 }
 
-/// The DXLink subscription requests for `symbols` under `event_types`.
+/// How many events a subscription may fall behind by before losing some.
 ///
-/// One request per symbol per event type the flags ask for. Shared by
-/// subscribing, unsubscribing and the reconnect replay, so a symbol is
-/// restored under exactly the event types it was subscribed with.
-fn feed_subscriptions(symbols: &[Symbol], event_types: i32) -> Vec<FeedSubscription> {
-    const FLAGS: [(i32, &str); 3] = [
-        (dxfeed::DXF_ET_QUOTE, "Quote"),
-        (dxfeed::DXF_ET_TRADE, "Trade"),
-        (dxfeed::DXF_ET_GREEKS, "Greeks"),
-    ];
+/// A candle history is the reason this is not the old hundred: a day of
+/// one-minute bars is about 1440 events and they arrive at once, so a hundred
+/// meant a caller reading a series lost most of it before it ever looked.
+/// Large enough to absorb a documented history, still bounded — an unbounded
+/// channel turns a slow consumer into unbounded memory.
+const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-    symbols
+/// One thing a subscription is subscribed to.
+///
+/// A symbol alone is not enough to describe a subscription any more. Candles
+/// are addressed by a symbol that carries their period — `AAPL{=5m}` — so two
+/// periods of one underlying are two different streamer symbols, and each
+/// needs its own history start. Routing, unsubscribing and the reconnect
+/// replay all work from these.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FeedTarget {
+    /// The event type this target is for.
+    ///
+    /// Part of the identity: a subscription that asked for Quote on AAPL must
+    /// not receive the Trade prints another subscription asked for.
+    kind: EventKind,
+    /// The streamer symbol exactly as the venue is told it, period suffix
+    /// included. It is also the `eventSymbol` the events come back under.
+    symbol: String,
+    /// Where a candle history starts, in epoch milliseconds.
+    ///
+    /// `None` for everything else. A candle subscription without one replays
+    /// an unbounded history, which is why `add_candles` requires it.
+    from_time: Option<i64>,
+}
+
+/// The DXLink subscription requests for `targets`.
+///
+/// Shared by subscribing, unsubscribing and the reconnect replay, so a target
+/// is restored under exactly the event type, symbol and history start it was
+/// subscribed with.
+fn feed_subscriptions(targets: &[FeedTarget]) -> Vec<FeedSubscription> {
+    targets
         .iter()
-        .flat_map(|symbol| {
-            FLAGS
-                .iter()
-                .filter(move |(flag, _)| event_types & flag != 0)
-                .map(move |(_, name)| FeedSubscription {
-                    event_type: (*name).to_string(),
-                    symbol: symbol.0.clone(),
-                    from_time: None,
-                    source: None,
-                })
+        .map(|target| FeedSubscription {
+            event_type: target.kind.wire_name().to_string(),
+            symbol: target.symbol.clone(),
+            from_time: target.from_time,
+            source: None,
         })
         .collect()
 }
 
 /// Recovers a poisoned lock rather than panicking.
 ///
-/// The value behind it is a set of symbol strings. A thread panicking while
-/// holding the lock cannot leave that set in a state the next reader cannot
-/// understand, so poisoning here carries no information worth aborting a
-/// caller's process over.
-fn symbols_of(set: &Mutex<BTreeSet<Symbol>>) -> std::sync::MutexGuard<'_, BTreeSet<Symbol>> {
+/// The value behind it is a set of subscription targets. A thread panicking
+/// while holding the lock cannot leave that set in a state the next reader
+/// cannot understand, so poisoning here carries no information worth aborting
+/// a caller's process over.
+fn targets_of(
+    set: &Mutex<BTreeSet<FeedTarget>>,
+) -> std::sync::MutexGuard<'_, BTreeSet<FeedTarget>> {
     set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 enum DXLinkCommand {
     // No channel id: the caller's copy is a snapshot from connect time, and a
     // reconnect opens a new channel. The supervisor addresses the live one.
+    // The kinds travel with the request: the channel has to be configured for
+    // an event type before the venue will accept a subscription to it, and
+    // only this loop knows what the live channel is already configured for.
     Subscribe(
         Vec<FeedSubscription>,
+        BTreeSet<EventKind>,
         u32,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
@@ -332,8 +608,22 @@ enum DXLinkCommand {
 #[derive(Default)]
 struct EventRouting {
     senders: HashMap<u32, Vec<mpsc::Sender<MarketEvent>>>,
-    symbol_subs: HashMap<String, HashSet<u32>>,
+    /// Which subscriptions want which `(streamer symbol, event type)`.
+    ///
+    /// Keyed by both halves, not by the symbol alone. The symbol carries a
+    /// candle's period — `AAPL{=5m}` — so two periods of one underlying are
+    /// already distinct; the event type is what stops a subscription that
+    /// asked for Quote on AAPL from receiving the Trade prints another
+    /// subscription asked for.
+    routes: HashMap<(String, EventKind), HashSet<u32>>,
 }
+
+/// The last candle time delivered per streamer symbol.
+///
+/// What a reconnect resumes from, so a consumer is not re-sent a day of bars
+/// it already has. Keyed by the symbol including its period, which is what
+/// keeps `AAPL{=5m}` and `AAPL{=1h}` on separate counters.
+type CandleProgress = Arc<Mutex<HashMap<String, i64>>>;
 
 /// Owns the DXLink connection and the subscriptions on it.
 ///
@@ -363,8 +653,8 @@ pub struct QuoteStreamer {
 /// subscribe was refused, and never one that was already unsubscribed.
 #[derive(Clone)]
 struct SubscriptionRecord {
-    event_types: i32,
-    symbols: Arc<Mutex<BTreeSet<Symbol>>>,
+    kinds: BTreeSet<EventKind>,
+    targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
 }
 
 /// Subscription id to what it is subscribed to.
@@ -421,6 +711,10 @@ impl QuoteStreamer {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
         let state = Arc::new(RwLock::new(ConnectionState::Connected));
+        // Outside the connection loop for the same reason `routing` is: a
+        // reconnect must resume a candle series where the consumer was left,
+        // and a per-connection map would forget that every time.
+        let progress: CandleProgress = Arc::new(Mutex::new(HashMap::new()));
 
         tokio::spawn(supervise(
             tasty.clone(),
@@ -431,6 +725,7 @@ impl QuoteStreamer {
             routing,
             registry.clone(),
             state.clone(),
+            progress,
         ));
 
         Ok(Self {
@@ -459,63 +754,104 @@ impl QuoteStreamer {
         }
     }
 
-    /// Create a subscription to market data. See `dxfeed::DXF_ET_*` for possible event types.
-    pub fn create_sub(&mut self, flags: i32) -> Box<QuoteSubscription> {
+    /// Creates a subscription for the given event types.
+    ///
+    /// Was `create_sub(flags: i32)`, a raw dxfeed bitmask a caller had to know
+    /// the constants for, covering three of the eleven types the feed models.
+    /// **Breaking**, and deliberately so: the replacement is a typed set, and
+    /// there is no bit pattern that silently means "nothing".
+    ///
+    /// Including [`EventKind::Candle`] is what allows
+    /// [`QuoteSubscription::add_candles`]; candles are not subscribed by
+    /// [`QuoteSubscription::add_symbols`], because a bare symbol has neither a
+    /// period nor a history start.
+    ///
+    /// **`async`, and that is the fix rather than an inconvenience.** The
+    /// returned subscription's event route is registered with the command loop
+    /// *before* this returns. It used to be registered from a detached
+    /// `tokio::spawn`, so a caller that subscribed immediately could have the
+    /// subscribe reach the loop first — and a candle subscription's history
+    /// arrives at once, so the first bars were routed to a subscription the
+    /// loop did not know about yet and dropped.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the streamer is closed, which is the only way registration
+    /// can not happen. Returning a subscription that can never receive
+    /// anything would be the same silent failure in a different place.
+    pub async fn create_sub(
+        &mut self,
+        kinds: impl IntoIterator<Item = EventKind>,
+    ) -> TastyResult<Box<QuoteSubscription>> {
+        let kinds: BTreeSet<EventKind> = kinds.into_iter().collect();
         let id = SubscriptionId(self.next_sub_id);
         self.next_sub_id += 1;
+        let sub_id = id.0 as u32;
 
-        // Set up channels for events
-        let (dxlink_tx, dxlink_rx) = mpsc::channel(100);
+        // Two channels, because the streamer keeps a copy of the subscription
+        // and the caller gets one. Both are registered here, awaited, before
+        // anything can subscribe.
+        let (kept_tx, kept_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (caller_tx, caller_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         let (_event_sender, event_receiver) = flume::unbounded();
 
-        // Register the event sender. There is no stream to ask for any more:
-        // the supervisor forwards from the receiver `connect` returns, from
-        // the moment each connection is established.
-        if let Some(client_tx) = &self.dxlink_command_tx {
-            let client_tx_clone = client_tx.clone();
-            let sub_id = id.0 as u32;
+        let Some(commands) = &self.dxlink_command_tx else {
+            return Err(TastyTradeError::Streaming(
+                "the quote streamer has no command channel; reconnect before subscribing"
+                    .to_string(),
+            ));
+        };
 
-            tokio::spawn(async move {
-                if let Err(e) = client_tx_clone
-                    .send(DXLinkCommand::AddEventSender(sub_id, dxlink_tx))
-                    .await
-                {
-                    error!("Failed to register event sender: {}", e);
-                }
-            });
+        for sender in [kept_tx, caller_tx] {
+            commands
+                .send(DXLinkCommand::AddEventSender(sub_id, sender))
+                .await
+                .map_err(|_| {
+                    TastyTradeError::Streaming(
+                        "the quote streamer is closed; it cannot route events to a new \
+                         subscription"
+                            .to_string(),
+                    )
+                })?;
         }
 
         // Create subscription
-        let symbols = Arc::new(Mutex::new(BTreeSet::new()));
+        let targets = Arc::new(Mutex::new(BTreeSet::new()));
 
         // The supervisor replays from this. Registering the shared set rather
         // than a copy is what makes the replay send exactly what the venue
-        // confirmed, including symbols added long after this call.
+        // confirmed, including targets added long after this call.
         self.registry
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
-                id.0 as u32,
+                sub_id,
                 SubscriptionRecord {
-                    event_types: flags,
-                    symbols: symbols.clone(),
+                    kinds: kinds.clone(),
+                    targets: targets.clone(),
                 },
             );
 
-        let subscription = QuoteSubscription {
+        self.subscription_map.insert(
+            id,
+            QuoteSubscription {
+                id,
+                streamer: self.handle(),
+                kinds: kinds.clone(),
+                event_receiver: event_receiver.clone(),
+                dxlink_receiver: kept_rx,
+                targets: targets.clone(),
+            },
+        );
+
+        Ok(Box::new(QuoteSubscription {
             id,
             streamer: self.handle(),
-            event_types: flags,
+            kinds,
             event_receiver,
-            dxlink_receiver: dxlink_rx,
-            symbols,
-        };
-
-        // Store subscription in map and return a boxed clone
-        let sub_clone = subscription.clone();
-        self.subscription_map.insert(id, subscription);
-
-        Box::new(sub_clone)
+            dxlink_receiver: caller_rx,
+            targets,
+        }))
     }
 
     /// Retrieve a subscription by id.
@@ -535,9 +871,10 @@ impl QuoteStreamer {
         // it holds what add_symbols actually subscribed rather than the empty
         // vector this used to read.
         if let Some(subscription) = self.subscription_map.get(&id) {
-            let symbols: Vec<Symbol> = symbols_of(&subscription.symbols).iter().cloned().collect();
+            let targets: Vec<FeedTarget> =
+                targets_of(&subscription.targets).iter().cloned().collect();
 
-            let unsubscribe_requests = feed_subscriptions(&symbols, subscription.event_types);
+            let unsubscribe_requests = feed_subscriptions(&targets);
 
             // Awaited, and the local state is only discarded once the venue
             // has confirmed. Clearing it on a queued-but-unconfirmed command
@@ -581,7 +918,7 @@ impl QuoteStreamer {
             // otherwise. Reached only on success: an early return above leaves
             // the symbols recorded, which is what a retry needs.
             if let Some(subscription) = self.subscription_map.get(&id) {
-                symbols_of(&subscription.symbols).clear();
+                targets_of(&subscription.targets).clear();
             }
         }
 
@@ -594,30 +931,6 @@ impl QuoteStreamer {
             .remove(&(id.0 as u32));
 
         Ok(())
-    }
-
-    /// Does nothing.
-    ///
-    /// Superseded by [`QuoteSubscription::add_symbols`], which subscribes
-    /// against a specific subscription and reports whether the venue accepted
-    /// it. Kept so existing callers still compile; it logs a warning and
-    /// returns.
-    pub fn subscribe(&self, _symbol: &[&str]) {
-        // This method is deprecated - use QuoteSubscription::add_symbols() instead
-        warn!(
-            "QuoteStreamer::subscribe() is deprecated. Use QuoteSubscription::add_symbols() instead."
-        );
-    }
-
-    /// Always returns `Err(RecvError::Disconnected)`.
-    ///
-    /// Events belong to a subscription, so use
-    /// [`QuoteSubscription::get_event`]. Kept so existing callers still
-    /// compile.
-    pub async fn get_event(&self) -> std::result::Result<dxfeed::Event, flume::RecvError> {
-        // This method is deprecated - use QuoteSubscription::get_event() instead
-        // Return an error indicating this method should not be used
-        Err(flume::RecvError::Disconnected)
     }
 }
 
@@ -671,19 +984,62 @@ async fn connect_dxlink(tasty: &TastyTrade) -> TastyResult<LiveConnection> {
         .map_err(TastyTradeError::from)?;
     info!("DXLink channel created: {}", channel_id);
 
-    client
-        .setup_feed(
-            channel_id,
-            &[EventType::Quote, EventType::Trade, EventType::Greeks],
-        )
-        .await
-        .map_err(TastyTradeError::from)?;
-
+    // Deliberately no `setup_feed` here. The channel is configured when the
+    // first subscription says what it wants, and reconfigured whenever a later
+    // one wants more. Setting it up at connect time meant hardcoding a list —
+    // it was Quote, Trade and Greeks — so a subscription asking for candles
+    // was accepted locally and then never delivered anything, which is
+    // indistinguishable from a quiet market.
     Ok(LiveConnection {
         client,
         channel_id,
         events,
     })
+}
+
+/// Configures the channel for `wanted`, if it is not already.
+///
+/// dxlink refuses a subscription to an event type the channel has no validated
+/// configuration for, and `setup_feed` replaces the configuration rather than
+/// adding to it — so this always sends the union, never just the new types.
+///
+/// # Errors
+///
+/// [`TastyTradeError::Connection`] when the socket is gone, so the caller can
+/// tell that apart from a configuration the venue simply refused.
+async fn ensure_configured(
+    client: &mut DXLinkClient,
+    channel_id: u32,
+    configured: &mut BTreeSet<EventKind>,
+    wanted: &BTreeSet<EventKind>,
+) -> TastyResult<()> {
+    if wanted.is_subset(configured) {
+        return Ok(());
+    }
+
+    let union: BTreeSet<EventKind> = configured.union(wanted).copied().collect();
+    let types: Vec<EventType> = union.iter().copied().map(feed_event_type).collect();
+
+    debug!(
+        "Configuring feed channel {channel_id} for {} event type(s)",
+        types.len()
+    );
+
+    match client.setup_feed(channel_id, &types).await {
+        Ok(()) => {
+            *configured = union;
+            Ok(())
+        }
+        Err(e) => {
+            let lost = is_connection_lost(&e);
+            let message = format!("the venue refused the feed configuration: {e}");
+            Err(if lost {
+                TastyTradeError::Connection(message)
+            } else {
+                TastyTradeError::Streaming(message)
+            })
+        }
+    }
 }
 
 /// Why a connection stopped being used.
@@ -707,6 +1063,7 @@ enum Ended {
 async fn forward_events(
     mut events: mpsc::Receiver<MarketEvent>,
     routing: Arc<RwLock<EventRouting>>,
+    progress: CandleProgress,
     saw_event: Arc<AtomicBool>,
 ) {
     while let Some(event) = events.recv().await {
@@ -717,20 +1074,50 @@ async fn forward_events(
         let Some(symbol) = event_symbol(&event) else {
             continue;
         };
+        let symbol = symbol.to_string();
+        let kind = event_kind(&event);
 
         let routing = routing.read().await;
-        let Some(sub_ids) = routing.symbol_subs.get(symbol) else {
-            debug!("No subscription registered for symbol {}", symbol);
+        let Some(sub_ids) = routing.routes.get(&(symbol.clone(), kind)) else {
+            debug!("No subscription registered for {kind} on {symbol}");
             continue;
         };
+
+        let mut delivered = false;
+        let mut dropped = 0usize;
         for sub_id in sub_ids {
             if let Some(sender_list) = routing.senders.get(sub_id) {
                 for sender in sender_list {
                     // A consumer that is not keeping up loses events rather
                     // than stalling everyone else's.
-                    let _ = sender.try_send(event.clone());
+                    match sender.try_send(event.clone()) {
+                        Ok(()) => delivered = true,
+                        Err(_) => dropped += 1,
+                    }
                 }
             }
+        }
+
+        if dropped > 0 {
+            // Loud, because for a candle series a dropped event is a hole, and
+            // a hole is worse than a duplicate: nothing downstream can see it.
+            // The symbol and the type only — market data never travels with
+            // the warning.
+            warn!(
+                "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
+                 subscription channel(s)"
+            );
+        }
+
+        // A bar is recorded as seen only once it has actually been handed to
+        // somebody. Recording before delivery meant a bar dropped for a slow
+        // consumer still advanced the resume point, so the reconnect skipped
+        // it permanently — the crate deciding, silently, that a gap in a price
+        // series was acceptable.
+        if delivered && let MarketEvent::Candle(candle) = &event {
+            let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+            let latest = seen.entry(symbol.clone()).or_insert(candle.time);
+            *latest = (*latest).max(candle.time);
         }
     }
 }
@@ -740,11 +1127,31 @@ async fn forward_events(
 /// Returns whether all of them landed. A partial replay is reported as a
 /// failure, because a subscription silently missing half its symbols is worse
 /// than one more reconnect.
-async fn replay(client: &mut DXLinkClient, channel_id: u32, registry: &Registry) -> bool {
-    let pending = pending_replay(registry);
+async fn replay(
+    client: &mut DXLinkClient,
+    channel_id: u32,
+    registry: &Registry,
+    progress: &CandleProgress,
+    configured: &mut BTreeSet<EventKind>,
+) -> bool {
+    let pending = pending_replay(registry, progress);
 
     if pending.is_empty() {
         return true;
+    }
+
+    // The new channel has to be configured before the venue will accept any
+    // of this, and for exactly the event types the surviving subscriptions
+    // hold — not for a fixed three, and not for all eleven.
+    let wanted: BTreeSet<EventKind> = registry
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .values()
+        .flat_map(|record| record.kinds.iter().copied())
+        .collect();
+    if let Err(e) = ensure_configured(client, channel_id, configured, &wanted).await {
+        warn!("Could not configure the feed channel after reconnecting: {e}");
+        return false;
     }
 
     debug!(
@@ -768,84 +1175,130 @@ async fn replay(client: &mut DXLinkClient, channel_id: u32, registry: &Registry)
 ///
 /// The lock is released before the caller awaits anything — a
 /// `std::sync::Mutex` guard must not be held across an await.
-fn pending_replay(registry: &Registry) -> Vec<(u32, Vec<FeedSubscription>)> {
+fn pending_replay(
+    registry: &Registry,
+    progress: &CandleProgress,
+) -> Vec<(u32, Vec<FeedSubscription>)> {
+    let seen = progress.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let registry = registry.lock().unwrap_or_else(|p| p.into_inner());
     registry
         .iter()
         .map(|(sub_id, record)| {
-            let symbols: Vec<Symbol> = symbols_of(&record.symbols).iter().cloned().collect();
-            (*sub_id, feed_subscriptions(&symbols, record.event_types))
+            let targets: Vec<FeedTarget> = targets_of(&record.targets)
+                .iter()
+                .cloned()
+                .map(|target| resume_from(target, &seen))
+                .collect();
+            (*sub_id, feed_subscriptions(&targets))
         })
         .filter(|(_, requests)| !requests.is_empty())
         .collect()
 }
 
-/// The symbol an event is about, when this crate can model the event.
+/// Where a candle subscription should pick up after a reconnect.
 ///
-/// The feed is set up for Quote, Trade and Greeks, so nothing else should
-/// arrive. dxlink decodes six more types, and one of those turning up would
-/// have no `EventData` to be converted into, so it is dropped here rather than
-/// routed to a subscription that cannot read it.
+/// Replaying the original `from_time` would re-send every bar the consumer has
+/// already been given — for one-minute candles over a day that is about 1440
+/// events per symbol, duplicated on every reconnect, and a reconnect loop
+/// multiplies it. So the replay starts from one millisecond past the last bar
+/// actually delivered, and falls back to the original start when none has been.
+///
+/// Deliberately not "now": a drop that lasted a minute would leave a hole, and
+/// a hole in a price series is worse than a duplicate bar because nothing
+/// downstream can see it.
+fn resume_from(mut target: FeedTarget, seen: &HashMap<String, i64>) -> FeedTarget {
+    if target.kind != EventKind::Candle {
+        return target;
+    }
+    if let Some(last) = seen.get(&target.symbol) {
+        target.from_time = Some(match target.from_time {
+            Some(original) => original.max(last.saturating_add(1)),
+            None => last.saturating_add(1),
+        });
+    }
+    target
+}
+
+/// The symbol an event is about.
+///
+/// Every one of the eleven types the feed models carries an `eventSymbol`, so
+/// this always answers. It stays an `Option` because the alternative is an
+/// unwrap on a value the compiler cannot prove.
+///
+/// For a candle the symbol carries its period — `AAPL{=5m}` — which is what
+/// keeps two periods of one underlying from delivering into each other.
 fn event_symbol(event: &MarketEvent) -> Option<&str> {
+    Some(match event {
+        MarketEvent::Quote(quote) => &quote.event_symbol,
+        MarketEvent::Trade(trade) => &trade.event_symbol,
+        MarketEvent::TradeETH(trade) => &trade.event_symbol,
+        MarketEvent::Greeks(greeks) => &greeks.event_symbol,
+        MarketEvent::Candle(candle) => &candle.event_symbol,
+        MarketEvent::Summary(summary) => &summary.event_symbol,
+        MarketEvent::TimeAndSale(sale) => &sale.event_symbol,
+        MarketEvent::Profile(profile) => &profile.event_symbol,
+        MarketEvent::Underlying(underlying) => &underlying.event_symbol,
+        MarketEvent::TheoPrice(theo) => &theo.event_symbol,
+        MarketEvent::Series(series) => &series.event_symbol,
+    })
+}
+
+/// Which of the eleven types an event is.
+///
+/// Exhaustive without a wildcard on purpose. Upstream `MarketEvent` is **not**
+/// `#[non_exhaustive]`, so a twelfth variant breaks the build here — which is
+/// the moment to decide whether this crate models it, rather than discovering
+/// months later that its events were being dropped. That tripwire is what
+/// produced this change: `0.3.1` added `TradeETH` and `Series` and the build
+/// stopped compiling.
+///
+/// If upstream ever does add `#[non_exhaustive]`, replace this with a test
+/// over the full type list rather than losing it to a `_ =>` arm.
+fn event_kind(event: &MarketEvent) -> EventKind {
     match event {
-        MarketEvent::Quote(quote) => Some(&quote.event_symbol),
-        MarketEvent::Trade(trade) => Some(&trade.event_symbol),
-        MarketEvent::Greeks(greeks) => Some(&greeks.event_symbol),
-        other => {
-            // The event type, never its contents: this is market data nobody
-            // asked for, and its shape is the whole of what is useful.
-            debug!(
-                "Dropping an event type this crate does not model: {}",
-                event_kind(other)
-            );
-            None
-        }
+        MarketEvent::Quote(_) => EventKind::Quote,
+        MarketEvent::Trade(_) => EventKind::Trade,
+        MarketEvent::TradeETH(_) => EventKind::TradeEth,
+        MarketEvent::Greeks(_) => EventKind::Greeks,
+        MarketEvent::Candle(_) => EventKind::Candle,
+        MarketEvent::Summary(_) => EventKind::Summary,
+        MarketEvent::TimeAndSale(_) => EventKind::TimeAndSale,
+        MarketEvent::Profile(_) => EventKind::Profile,
+        MarketEvent::Underlying(_) => EventKind::Underlying,
+        MarketEvent::TheoPrice(_) => EventKind::TheoPrice,
+        MarketEvent::Series(_) => EventKind::Series,
     }
 }
 
-/// The name of an event variant, for logs. Contents never travel with it.
-///
-/// Exhaustive without a wildcard on purpose: a variant added by a future
-/// dxlink breaks the build here, which is the moment to decide whether this
-/// crate models it, rather than silently logging it as something else.
-///
-/// It fired. dxlink 0.3.1 added `TradeETH` and `Series`, and because
-/// `Cargo.lock` is not committed — the usual convention for a library — every
-/// build resolves `dxlink = "0.3"` afresh and picks it up. The two arms below
-/// are named so the build works; they are dropped like the six other
-/// unmodelled types, and routing them is #86.
-fn event_kind(event: &MarketEvent) -> &'static str {
-    match event {
-        MarketEvent::Quote(_) => "Quote",
-        MarketEvent::Trade(_) => "Trade",
-        MarketEvent::TradeETH(_) => "TradeETH",
-        MarketEvent::Greeks(_) => "Greeks",
-        MarketEvent::Summary(_) => "Summary",
-        MarketEvent::Candle(_) => "Candle",
-        MarketEvent::TimeAndSale(_) => "TimeAndSale",
-        MarketEvent::Profile(_) => "Profile",
-        MarketEvent::Underlying(_) => "Underlying",
-        MarketEvent::TheoPrice(_) => "TheoPrice",
-        MarketEvent::Series(_) => "Series",
+/// The dxlink event type a kind subscribes as.
+fn feed_event_type(kind: EventKind) -> EventType {
+    match kind {
+        EventKind::Quote => EventType::Quote,
+        EventKind::Trade => EventType::Trade,
+        EventKind::TradeEth => EventType::TradeETH,
+        EventKind::Greeks => EventType::Greeks,
+        EventKind::Candle => EventType::Candle,
+        EventKind::Summary => EventType::Summary,
+        EventKind::TimeAndSale => EventType::TimeAndSale,
+        EventKind::Profile => EventType::Profile,
+        EventKind::Underlying => EventType::Underlying,
+        EventKind::TheoPrice => EventType::TheoPrice,
+        EventKind::Series => EventType::Series,
     }
 }
 
-/// Records that `sub_id` wants events for these symbols.
+/// Records that `sub_id` wants these `(symbol, event type)` pairs.
 ///
-/// Called before the subscribe is written, so no event can arrive for a symbol
-/// that has no route yet.
+/// Called before the subscribe is written, so no event can arrive for a route
+/// that does not exist yet.
 async fn record_routes(
     routing: &Arc<RwLock<EventRouting>>,
     sub_id: u32,
     subscriptions: &[FeedSubscription],
 ) {
     let mut routing = routing.write().await;
-    for sub in subscriptions {
-        routing
-            .symbol_subs
-            .entry(sub.symbol.clone())
-            .or_default()
-            .insert(sub_id);
+    for route in routes_of(subscriptions) {
+        routing.routes.entry(route).or_default().insert(sub_id);
     }
 }
 
@@ -862,17 +1315,35 @@ async fn forget_routes(
     subscriptions: &[FeedSubscription],
 ) {
     let mut routing = routing.write().await;
-    for sub in subscriptions {
-        if let Some(subs) = routing.symbol_subs.get_mut(&sub.symbol) {
+    for route in routes_of(subscriptions) {
+        if let Some(subs) = routing.routes.get_mut(&route) {
             subs.remove(&sub_id);
             if subs.is_empty() {
-                routing.symbol_subs.remove(&sub.symbol);
+                routing.routes.remove(&route);
             }
         }
     }
 }
 
+/// The routes a set of subscription requests covers.
+///
+/// A request whose event type this crate does not model has no route: nothing
+/// could deliver it, and inventing a key would leave an entry nothing ever
+/// removes.
+fn routes_of(subscriptions: &[FeedSubscription]) -> Vec<(String, EventKind)> {
+    subscriptions
+        .iter()
+        .filter_map(|sub| {
+            EventKind::ALL
+                .iter()
+                .find(|kind| kind.wire_name() == sub.event_type)
+                .map(|kind| (sub.symbol.clone(), *kind))
+        })
+        .collect()
+}
+
 /// Runs one connection until it is lost or the owner goes away.
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     client: &mut DXLinkClient,
     channel_id: u32,
@@ -880,6 +1351,7 @@ async fn run_connection(
     shutdown: &mut oneshot::Receiver<()>,
     forwarder: &mut tokio::task::JoinHandle<()>,
     routing: &Arc<RwLock<EventRouting>>,
+    configured: &mut BTreeSet<EventKind>,
 ) -> Ended {
     loop {
         let cmd = tokio::select! {
@@ -923,7 +1395,21 @@ async fn run_connection(
             // The channel id in the command is the one the handle was built
             // with. After a reconnect that number is stale, and only this loop
             // knows the live one.
-            DXLinkCommand::Subscribe(subscriptions, sub_id, ack) => {
+            DXLinkCommand::Subscribe(subscriptions, kinds, sub_id, ack) => {
+                // The venue refuses a subscription to an event type the
+                // channel was not configured for, and only this loop knows
+                // what the live channel is configured for. Nothing is
+                // hardcoded: the channel ends up carrying exactly the types
+                // the subscriptions asked for, and nothing else.
+                if let Err(e) = ensure_configured(client, channel_id, configured, &kinds).await {
+                    let lost = matches!(&e, TastyTradeError::Connection(_));
+                    answer(ack, Err(e));
+                    if lost {
+                        return Ended::ConnectionLost;
+                    }
+                    continue;
+                }
+
                 record_routes(routing, sub_id, &subscriptions).await;
 
                 match client.subscribe(channel_id, subscriptions.clone()).await {
@@ -988,7 +1474,7 @@ async fn run_connection(
             DXLinkCommand::RemoveEventSender(subscription_id) => {
                 let mut routing = routing.write().await;
                 routing.senders.remove(&subscription_id);
-                routing.symbol_subs.retain(|_, subs| {
+                routing.routes.retain(|_, subs| {
                     subs.remove(&subscription_id);
                     !subs.is_empty()
                 });
@@ -1071,6 +1557,7 @@ async fn supervise(
     routing: Arc<RwLock<EventRouting>>,
     registry: Registry,
     state: Arc<RwLock<ConnectionState>>,
+    progress: CandleProgress,
 ) {
     let mut attempt = 0u32;
     let mut next = Some(first);
@@ -1103,10 +1590,25 @@ async fn supervise(
         // the one that survived the reconnect, so an event that arrives the
         // instant the replay lands already has somewhere to go.
         let saw_event = Arc::new(AtomicBool::new(false));
-        let mut forwarder =
-            tokio::spawn(forward_events(events, routing.clone(), saw_event.clone()));
+        let mut forwarder = tokio::spawn(forward_events(
+            events,
+            routing.clone(),
+            progress.clone(),
+            saw_event.clone(),
+        ));
 
-        let restored = replay(&mut client, channel_id, &registry).await;
+        // A fresh channel is configured for nothing. What it ends up carrying
+        // is the union of what the subscriptions ask for, and no more.
+        let mut configured: BTreeSet<EventKind> = BTreeSet::new();
+
+        let restored = replay(
+            &mut client,
+            channel_id,
+            &registry,
+            &progress,
+            &mut configured,
+        )
+        .await;
         if restored {
             // Connected is claimed only once what was being watched is watched
             // again. Reporting it before restoration leaves a caller believing
@@ -1122,6 +1624,7 @@ async fn supervise(
                 &mut shutdown,
                 &mut forwarder,
                 &routing,
+                &mut configured,
             )
             .await
         } else {
@@ -1185,6 +1688,7 @@ impl Drop for QuoteStreamer {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use crate::Symbol;
 
     /// The regression #19 exists for: create_sub stores one clone of the
     /// subscription and hands the caller another, so a per-copy Vec meant
@@ -1198,22 +1702,25 @@ mod lifecycle_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL"), Symbol::from("MSFT")])
             .await
             .expect("subscribing succeeds");
 
         // The streamer's own copy sees them, which is what close_sub reads.
         {
-            let stored = symbols_of(
+            let stored = targets_of(
                 &streamer
                     .subscription_map
                     .get(&sub.id)
                     .expect("the streamer kept a copy")
-                    .symbols,
+                    .targets,
             );
             assert_eq!(stored.len(), 2, "the streamer's copy must see the symbols");
-            assert!(stored.contains(&Symbol::from("AAPL")));
+            assert!(stored.iter().any(|target| target.symbol == "AAPL"));
         }
 
         // Both the streamer and the subscription hold a command sender, so
@@ -1238,7 +1745,10 @@ mod lifecycle_tests {
             Err(TastyTradeError::Streaming("venue said no".to_string()))
         });
 
-        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         let error = sub
             .add_symbols(&[Symbol::from("AAPL")])
             .await
@@ -1248,7 +1758,7 @@ mod lifecycle_tests {
         // flattened into a generic failure.
         assert!(format!("{error}").contains("venue said no"), "{error}");
         assert!(
-            symbols_of(&sub.symbols).is_empty(),
+            targets_of(&sub.targets).is_empty(),
             "a refused symbol must not stay reserved"
         );
     }
@@ -1261,7 +1771,10 @@ mod lifecycle_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
         sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
 
@@ -1283,7 +1796,10 @@ mod lifecycle_tests {
         let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
         let mut streamer = streamer_with(tx, shutdown_tx);
 
-        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         drop(rx); // the command loop is gone
 
         sub.add_symbols(&[Symbol::from("AAPL")])
@@ -1291,7 +1807,7 @@ mod lifecycle_tests {
             .expect_err("a closed streamer cannot subscribe");
 
         assert!(
-            symbols_of(&sub.symbols).is_empty(),
+            targets_of(&sub.targets).is_empty(),
             "nothing was subscribed, so nothing may be recorded"
         );
     }
@@ -1344,7 +1860,7 @@ mod lifecycle_tests {
             let mut seen = Vec::new();
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    DXLinkCommand::Subscribe(requests, _, ack) => {
+                    DXLinkCommand::Subscribe(requests, _, _, ack) => {
                         seen.extend(requests.into_iter().map(|r| r.symbol));
                         answer(ack, outcome());
                     }
@@ -1413,6 +1929,7 @@ mod lifecycle_tests {
 mod reconnect_tests {
     use super::lifecycle_tests::{spawn_command_loop, streamer_with};
     use super::*;
+    use crate::Symbol;
     use dxlink::events::QuoteEvent;
     use std::time::Duration;
 
@@ -1425,6 +1942,206 @@ mod reconnect_tests {
             bid_size: 1.0,
             ask_size: 1.0,
         })
+    }
+
+    /// A target for a symbol under one event type, with no candle history.
+    fn target(kind: EventKind, symbol: &str) -> FeedTarget {
+        FeedTarget {
+            kind,
+            symbol: symbol.to_string(),
+            from_time: None,
+        }
+    }
+
+    /// No candle has been delivered yet.
+    fn no_progress() -> CandleProgress {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// One candle for `symbol` at `time`.
+    fn candle(symbol: &str, time: i64) -> MarketEvent {
+        let MarketEvent::Candle(mut candle) = every_event_type(symbol)
+            .into_iter()
+            .find(|event| matches!(event, MarketEvent::Candle(_)))
+            .expect("a candle")
+        else {
+            unreachable!("filtered on the variant")
+        };
+        candle.time = time;
+        MarketEvent::Candle(candle)
+    }
+
+    /// One event of every type the feed models, all for `symbol`.
+    fn every_event_type(symbol: &str) -> Vec<MarketEvent> {
+        use dxlink::events::*;
+
+        let sym = || symbol.to_string();
+        vec![
+            quote(symbol),
+            MarketEvent::Trade(TradeEvent {
+                event_type: "Trade".to_string(),
+                event_symbol: sym(),
+                price: 1.0,
+                size: 1.0,
+                day_volume: 10.0,
+            }),
+            MarketEvent::TradeETH(TradeETHEvent {
+                event_type: "TradeETH".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                time: 0,
+                time_nano_part: 0,
+                sequence: 0,
+                exchange_code: "Q".to_string(),
+                price: 1.0,
+                change: 0.0,
+                size: 1.0,
+                day_id: 0,
+                day_volume: 0.0,
+                day_turnover: 0.0,
+                tick_direction: "Up".to_string(),
+                extended_trading_hours: true,
+            }),
+            MarketEvent::Greeks(GreeksEvent {
+                event_type: "Greeks".to_string(),
+                event_symbol: sym(),
+                delta: 0.5,
+                gamma: 0.1,
+                theta: -0.05,
+                vega: 0.2,
+                rho: 0.03,
+                volatility: 0.25,
+            }),
+            MarketEvent::Candle(CandleEvent {
+                event_type: "Candle".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                event_flags: 0,
+                index: 0,
+                time: 1_700_000_000_000,
+                sequence: 0,
+                count: 1,
+                open: 1.0,
+                high: 2.0,
+                low: 0.5,
+                close: 1.5,
+                volume: 100.0,
+                vwap: 1.4,
+                bid_volume: 50.0,
+                ask_volume: 50.0,
+                imp_volatility: 0.2,
+                open_interest: 0.0,
+            }),
+            MarketEvent::Summary(SummaryEvent {
+                event_type: "Summary".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                day_id: 0,
+                day_open_price: 0.0,
+                day_high_price: 0.0,
+                day_low_price: 0.0,
+                day_close_price: 0.0,
+                day_close_price_type: "Final".to_string(),
+                prev_day_id: 0,
+                prev_day_close_price: 0.0,
+                prev_day_close_price_type: "Final".to_string(),
+                prev_day_volume: 0.0,
+                open_interest: 0.0,
+            }),
+            MarketEvent::TimeAndSale(TimeAndSaleEvent {
+                event_type: "TimeAndSale".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                event_flags: 0,
+                index: 0,
+                time: 0,
+                time_nano_part: 0,
+                sequence: 0,
+                exchange_code: "Q".to_string(),
+                price: 1.0,
+                size: 1.0,
+                bid_price: 0.9,
+                ask_price: 1.1,
+                exchange_sale_conditions: String::new(),
+                trade_through_exempt: String::new(),
+                aggressor_side: "Buy".to_string(),
+                spread_leg: false,
+                extended_trading_hours: false,
+                valid_tick: true,
+                sale_type: String::new(),
+                buyer: String::new(),
+                seller: String::new(),
+            }),
+            MarketEvent::Profile(ProfileEvent {
+                event_type: "Profile".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                description: "Apple".to_string(),
+                short_sale_restriction: "Inactive".to_string(),
+                trading_status: "Active".to_string(),
+                status_reason: String::new(),
+                halt_start_time: 0,
+                halt_end_time: 0,
+                high_limit_price: 0.0,
+                low_limit_price: 0.0,
+                high_52_week_price: 0.0,
+                low_52_week_price: 0.0,
+                beta: 0.0,
+                earnings_per_share: 0.0,
+                dividend_frequency: 0.0,
+                ex_dividend_amount: 0.0,
+                ex_dividend_day_id: 0,
+                shares: 0.0,
+                free_float: 0.0,
+            }),
+            MarketEvent::Underlying(UnderlyingEvent {
+                event_type: "Underlying".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                event_flags: 0,
+                index: 0,
+                time: 0,
+                sequence: 0,
+                volatility: 0.2,
+                front_volatility: 0.21,
+                back_volatility: 0.19,
+                call_volume: 10.0,
+                put_volume: 8.0,
+                put_call_ratio: 0.8,
+            }),
+            MarketEvent::TheoPrice(TheoPriceEvent {
+                event_type: "TheoPrice".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                event_flags: 0,
+                index: 0,
+                time: 0,
+                sequence: 0,
+                price: 1.0,
+                underlying_price: 100.0,
+                delta: 0.5,
+                gamma: 0.1,
+                dividend: 0.0,
+                interest: 0.0,
+            }),
+            MarketEvent::Series(SeriesEvent {
+                event_type: "Series".to_string(),
+                event_symbol: sym(),
+                event_time: 0,
+                event_flags: 0,
+                index: 0,
+                time: 0,
+                sequence: 0,
+                expiration: 20_260_918,
+                volatility: 0.2,
+                call_volume: 10.0,
+                put_volume: 8.0,
+                put_call_ratio: 0.8,
+                forward_price: 100.0,
+                dividend: 0.0,
+                interest: 0.0,
+            }),
+        ]
     }
 
     fn policy() -> BackoffPolicy {
@@ -1441,10 +2158,12 @@ mod reconnect_tests {
     /// stream the caller never asked for and cannot see.
     #[test]
     fn a_replay_asks_for_the_event_types_the_subscription_had() {
-        let requests = feed_subscriptions(
-            &[Symbol::from("AAPL"), Symbol::from("MSFT")],
-            dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS,
-        );
+        let requests = feed_subscriptions(&[
+            target(EventKind::Quote, "AAPL"),
+            target(EventKind::Greeks, "AAPL"),
+            target(EventKind::Quote, "MSFT"),
+            target(EventKind::Greeks, "MSFT"),
+        ]);
 
         assert_eq!(requests.len(), 4, "two symbols by two event types");
         let types: BTreeSet<&str> = requests.iter().map(|r| r.event_type.as_str()).collect();
@@ -1463,13 +2182,13 @@ mod reconnect_tests {
         registry.lock().unwrap().insert(
             7,
             SubscriptionRecord {
-                event_types: dxfeed::DXF_ET_QUOTE,
-                symbols: Arc::new(Mutex::new(BTreeSet::new())),
+                kinds: BTreeSet::from([EventKind::Quote]),
+                targets: Arc::new(Mutex::new(BTreeSet::new())),
             },
         );
 
         assert!(
-            pending_replay(&registry).is_empty(),
+            pending_replay(&registry, &no_progress()).is_empty(),
             "a refused subscribe records nothing, so there is nothing to restore"
         );
     }
@@ -1484,19 +2203,22 @@ mod reconnect_tests {
         let mut streamer = streamer_with(tx, shutdown_tx);
         let _loop_handle = spawn_command_loop(rx, || Ok(()));
 
-        let sub = streamer.create_sub(dxfeed::DXF_ET_QUOTE);
+        let sub = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
         sub.add_symbols(&[Symbol::from("AAPL")])
             .await
             .expect("subscribing succeeds");
 
-        let pending = pending_replay(&streamer.registry);
+        let pending = pending_replay(&streamer.registry, &no_progress());
         assert_eq!(pending.len(), 1, "a live subscription is restored");
         assert_eq!(pending[0].1[0].symbol, "AAPL");
 
         streamer.close_sub(sub.id).await.expect("closing succeeds");
 
         assert!(
-            pending_replay(&streamer.registry).is_empty(),
+            pending_replay(&streamer.registry, &no_progress()).is_empty(),
             "a closed subscription must not be resubscribed by a reconnect"
         );
     }
@@ -1513,8 +2235,8 @@ mod reconnect_tests {
             let mut routing = routing.write().await;
             routing.senders.insert(1, vec![sub_tx]);
             routing
-                .symbol_subs
-                .insert("AAPL".to_string(), HashSet::from([1]));
+                .routes
+                .insert(("AAPL".to_string(), EventKind::Quote), HashSet::from([1]));
         }
 
         let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
@@ -1522,6 +2244,7 @@ mod reconnect_tests {
         let forwarder = tokio::spawn(forward_events(
             events_rx,
             routing.clone(),
+            no_progress(),
             saw_event.clone(),
         ));
 
@@ -1562,7 +2285,7 @@ mod reconnect_tests {
     #[tokio::test]
     async fn a_refused_subscribe_takes_its_route_back() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let wanted = feed_subscriptions(&[Symbol::from("AAPL")], dxfeed::DXF_ET_QUOTE);
+        let wanted = feed_subscriptions(&[target(EventKind::Quote, "AAPL")]);
 
         // Two subscriptions ask for the same symbol; one of them is refused.
         record_routes(&routing, 3, &wanted).await;
@@ -1571,8 +2294,8 @@ mod reconnect_tests {
 
         let routes = routing.read().await;
         let subs = routes
-            .symbol_subs
-            .get("AAPL")
+            .routes
+            .get(&("AAPL".to_string(), EventKind::Quote))
             .expect("the accepted subscription still holds the symbol");
         assert!(
             !subs.contains(&3),
@@ -1586,13 +2309,13 @@ mod reconnect_tests {
     #[tokio::test]
     async fn the_last_route_removed_takes_the_symbol_with_it() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let wanted = feed_subscriptions(&[Symbol::from("AAPL")], dxfeed::DXF_ET_QUOTE);
+        let wanted = feed_subscriptions(&[target(EventKind::Quote, "AAPL")]);
 
         record_routes(&routing, 3, &wanted).await;
         forget_routes(&routing, 3, &wanted).await;
 
         assert!(
-            routing.read().await.symbol_subs.is_empty(),
+            routing.read().await.routes.is_empty(),
             "an empty set must not be left behind as a route"
         );
     }
@@ -1609,6 +2332,7 @@ mod reconnect_tests {
         let mut forwarder = tokio::spawn(forward_events(
             events_rx,
             routing.clone(),
+            no_progress(),
             saw_event.clone(),
         ));
 
@@ -1629,6 +2353,7 @@ mod reconnect_tests {
                 &mut shutdown_rx,
                 &mut forwarder,
                 &routing,
+                &mut BTreeSet::new(),
             ),
         )
         .await
@@ -1663,6 +2388,7 @@ mod reconnect_tests {
                 &mut shutdown_rx,
                 &mut forwarder,
                 &routing,
+                &mut BTreeSet::new(),
             ),
         )
         .await
@@ -1680,6 +2406,7 @@ mod reconnect_tests {
         let mut forwarder = tokio::spawn(forward_events(
             events_rx,
             routing.clone(),
+            no_progress(),
             Arc::new(AtomicBool::new(false)),
         ));
 
@@ -1698,6 +2425,7 @@ mod reconnect_tests {
                 &mut shutdown_rx,
                 &mut forwarder,
                 &routing,
+                &mut BTreeSet::new(),
             ),
         )
         .await
@@ -1706,54 +2434,405 @@ mod reconnect_tests {
         assert!(matches!(ended, Ended::Owner));
     }
 
-    /// dxlink models nine event types; this crate models three. One of the
-    /// other six arriving must not be routed to a subscription that has no
-    /// `EventData` for it — and must not look like the end of the stream.
+    /// Every one of the eleven types the feed models has to reach the caller.
+    /// Eight of them used to be logged and dropped, which for `Candle` meant
+    /// there was no route to historical bars anywhere in this crate, and for
+    /// `TradeETH` no route to an extended-hours price.
     #[tokio::test]
-    async fn an_event_type_this_crate_does_not_model_is_skipped_not_delivered() {
-        let summary = MarketEvent::Summary(dxlink::events::SummaryEvent {
-            event_type: "Summary".to_string(),
-            event_symbol: "AAPL".to_string(),
-            event_time: 0,
-            day_id: 0,
-            day_open_price: 0.0,
-            day_high_price: 0.0,
-            day_low_price: 0.0,
-            day_close_price: 0.0,
-            day_close_price_type: "Final".to_string(),
-            prev_day_id: 0,
-            prev_day_close_price: 0.0,
-            prev_day_close_price_type: "Final".to_string(),
-            prev_day_volume: 0.0,
-            open_interest: 0.0,
-        });
+    async fn all_eleven_event_types_convert_and_are_delivered() {
+        let events = every_event_type("AAPL");
+        assert_eq!(events.len(), EventKind::ALL.len());
 
-        assert_eq!(event_symbol(&summary), None, "it has nowhere to be routed");
-        assert_eq!(event_kind(&summary), "Summary");
-        assert_eq!(event_symbol(&quote("AAPL")), Some("AAPL"));
-
-        // And a subscription reading through one gets the next event it can
-        // read, rather than an error that says the stream ended.
-        let (tx, rx) = mpsc::channel::<MarketEvent>(4);
+        let (tx, rx) = mpsc::channel::<MarketEvent>(32);
         let (_unused_tx, event_receiver) = flume::unbounded();
         let mut subscription = QuoteSubscription {
             id: SubscriptionId(0),
             streamer: StreamerHandle { commands: None },
-            event_types: dxfeed::DXF_ET_QUOTE,
+            kinds: EventKind::ALL.into_iter().collect(),
             event_receiver,
             dxlink_receiver: rx,
-            symbols: Arc::new(Mutex::new(BTreeSet::new())),
+            targets: Arc::new(Mutex::new(BTreeSet::new())),
         };
 
-        tx.send(summary).await.expect("the feed accepts");
-        tx.send(quote("AAPL")).await.expect("the feed accepts");
+        for event in &events {
+            // Every variant knows its own symbol and its own kind.
+            assert_eq!(event_symbol(event), Some("AAPL"), "{:?}", event_kind(event));
+            tx.send(event.clone()).await.expect("the feed accepts");
+        }
 
-        let event = tokio::time::timeout(Duration::from_secs(2), subscription.get_event())
+        let mut seen = BTreeSet::new();
+        for _ in 0..events.len() {
+            let event = tokio::time::timeout(Duration::from_secs(2), subscription.get_event())
+                .await
+                .expect("no modelled event may stall the reader")
+                .expect("every modelled event is readable");
+            assert_eq!(event.sym, "AAPL");
+            seen.insert(event.data.kind());
+        }
+
+        assert_eq!(
+            seen,
+            EventKind::ALL.into_iter().collect::<BTreeSet<_>>(),
+            "every event type must arrive as its own variant"
+        );
+    }
+
+    /// The tripwire that produced this change. `MarketEvent` is not
+    /// `#[non_exhaustive]`, so a twelfth variant breaks the build rather than
+    /// being silently dropped — and this pins the count so the list cannot
+    /// quietly shrink either.
+    #[test]
+    fn the_kinds_this_crate_routes_cover_every_variant_the_feed_models() {
+        let kinds: BTreeSet<EventKind> = every_event_type("AAPL").iter().map(event_kind).collect();
+
+        assert_eq!(kinds, EventKind::ALL.into_iter().collect::<BTreeSet<_>>());
+    }
+
+    /// The routing fix candles need. Two periods of one underlying are two
+    /// streamer symbols, so a subscription watching five-minute bars must not
+    /// be handed the hourly ones.
+    #[tokio::test]
+    async fn two_candle_periods_of_one_underlying_do_not_cross_deliver() {
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let hour = CandlePeriod::hours(1).expect("a period");
+
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (five_tx, mut five_rx) = mpsc::channel::<MarketEvent>(4);
+        let (hour_tx, mut hour_rx) = mpsc::channel::<MarketEvent>(4);
+        {
+            let mut routing = routing.write().await;
+            routing.senders.insert(1, vec![five_tx]);
+            routing.senders.insert(2, vec![hour_tx]);
+        }
+
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: five.streamer_symbol("AAPL"),
+                from_time: Some(0),
+            }]),
+        )
+        .await;
+        record_routes(
+            &routing,
+            2,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: hour.streamer_symbol("AAPL"),
+                from_time: Some(0),
+            }]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        let bar = every_event_type(&five.streamer_symbol("AAPL"))
+            .into_iter()
+            .find(|event| matches!(event, MarketEvent::Candle(_)))
+            .expect("a candle");
+        events_tx.send(bar).await.expect("the feed accepts");
+
+        let delivered = five_rx.recv().await.expect("the five-minute subscription");
+        assert!(matches!(delivered, MarketEvent::Candle(_)));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), hour_rx.recv())
+                .await
+                .is_err(),
+            "the hourly subscription must not see a five-minute bar"
+        );
+
+        // And the bar was recorded, which is what a reconnect resumes from.
+        let seen = progress.lock().expect("not poisoned in tests").clone();
+        assert_eq!(
+            seen.get(&five.streamer_symbol("AAPL")),
+            Some(&1_700_000_000_000)
+        );
+
+        forwarder.abort();
+    }
+
+    /// Routing is keyed by symbol **and** event type, so a subscription that
+    /// asked for quotes on AAPL does not receive the trade prints another
+    /// subscription asked for.
+    #[tokio::test]
+    async fn a_subscription_only_receives_the_event_types_it_asked_for() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (quotes_tx, mut quotes_rx) = mpsc::channel::<MarketEvent>(4);
+        routing.write().await.senders.insert(1, vec![quotes_tx]);
+
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[target(EventKind::Quote, "AAPL")]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(4);
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            no_progress(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        let trade = every_event_type("AAPL")
+            .into_iter()
+            .find(|event| matches!(event, MarketEvent::Trade(_)))
+            .expect("a trade");
+        events_tx.send(trade).await.expect("the feed accepts");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), quotes_rx.recv())
+                .await
+                .is_err(),
+            "a Quote subscription must not receive Trade prints"
+        );
+
+        events_tx
+            .send(quote("AAPL"))
             .await
-            .expect("an unmodelled event must not stall the reader")
-            .expect("the quote behind it is readable");
-        assert_eq!(event.sym, "AAPL");
-        assert!(matches!(event.data, dxfeed::EventData::Quote(_)));
+            .expect("the feed accepts");
+        assert!(quotes_rx.recv().await.is_some(), "the quote still arrives");
+
+        forwarder.abort();
+    }
+
+    /// A reconnect must not re-send a day of bars the consumer already has,
+    /// and must not skip the ones it missed either.
+    #[test]
+    fn a_candle_replay_resumes_after_the_last_bar_delivered() {
+        let original = FeedTarget {
+            kind: EventKind::Candle,
+            symbol: "AAPL{=5m}".to_string(),
+            from_time: Some(1_000),
+        };
+        let seen = HashMap::from([("AAPL{=5m}".to_string(), 5_000)]);
+
+        let resumed = resume_from(original.clone(), &seen);
+        assert_eq!(
+            resumed.from_time,
+            Some(5_001),
+            "the replay picks up one millisecond past the last bar delivered"
+        );
+
+        // Nothing delivered yet: the caller's own start still stands.
+        assert_eq!(
+            resume_from(original.clone(), &HashMap::new()).from_time,
+            Some(1_000)
+        );
+
+        // A different period is a different counter.
+        let other = FeedTarget {
+            symbol: "AAPL{=1h}".to_string(),
+            ..original.clone()
+        };
+        assert_eq!(resume_from(other, &seen).from_time, Some(1_000));
+
+        // Only candles carry one at all.
+        assert_eq!(
+            resume_from(target(EventKind::Quote, "AAPL"), &seen).from_time,
+            None
+        );
+    }
+
+    /// `from_time` reaches the wire. It was already on `FeedSubscription` and
+    /// always `None`, which is why there was no way to ask for history.
+    #[test]
+    fn a_candle_request_carries_its_history_start() {
+        let requests = feed_subscriptions(&[FeedTarget {
+            kind: EventKind::Candle,
+            symbol: "AAPL{=5m}".to_string(),
+            from_time: Some(1_700_000_000_000),
+        }]);
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].event_type, "Candle");
+        assert_eq!(requests[0].symbol, "AAPL{=5m}");
+        assert_eq!(requests[0].from_time, Some(1_700_000_000_000));
+    }
+
+    /// A candle needs a period and a start time, so the two subscription
+    /// calls are not interchangeable and each says so rather than quietly
+    /// subscribing to something that cannot arrive.
+    #[tokio::test]
+    async fn candles_and_bare_symbols_are_not_interchangeable() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let _loop_handle = spawn_command_loop(rx, || Ok(()));
+
+        let quotes = streamer
+            .create_sub([EventKind::Quote])
+            .await
+            .expect("the streamer is open");
+        let error = quotes
+            .add_candles(
+                &[Symbol::from("AAPL")],
+                CandlePeriod::minutes(5).expect("a period"),
+                DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp"),
+            )
+            .await
+            .expect_err("the channel is not configured for candles");
+        assert!(
+            matches!(error, TastyTradeError::Precondition(_)),
+            "{error:?}"
+        );
+
+        let candles = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
+        let error = candles
+            .add_symbols(&[Symbol::from("AAPL")])
+            .await
+            .expect_err("a bare symbol has no period and no start time");
+        assert!(
+            matches!(error, TastyTradeError::Precondition(_)),
+            "{error:?}"
+        );
+    }
+
+    /// The candle path end to end: the symbol the venue is told carries the
+    /// period, and that is what the subscription records.
+    #[tokio::test]
+    async fn a_candle_subscription_is_recorded_under_its_period_symbol() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        let loop_handle = spawn_command_loop(rx, || Ok(()));
+
+        let sub = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
+        sub.add_candles(
+            &[Symbol::from("AAPL")],
+            CandlePeriod::minutes(5).expect("a period"),
+            DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp"),
+        )
+        .await
+        .expect("subscribing succeeds");
+
+        assert_eq!(
+            sub.subscribed(),
+            vec![("AAPL{=5m}".to_string(), EventKind::Candle)]
+        );
+
+        drop(sub);
+        drop(streamer);
+        let sent = loop_handle.await.expect("the stand-in loop finishes");
+        assert_eq!(sent, vec!["AAPL{=5m}".to_string()]);
+    }
+
+    /// The ordering bug candles made acute. `create_sub` used to register the
+    /// returned subscription's event route from a detached `tokio::spawn`, so
+    /// a caller that subscribed immediately could have the subscribe reach the
+    /// command loop first — and a candle history arrives at once, so the first
+    /// bars were routed to a subscription the loop did not know about and
+    /// dropped.
+    ///
+    /// Registration is now awaited, so it is on the queue before `create_sub`
+    /// returns and therefore before anything the caller does next.
+    #[tokio::test]
+    async fn the_event_route_is_registered_before_a_subscription_can_be_used() {
+        let (tx, mut rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+
+        let sub = streamer
+            .create_sub([EventKind::Candle])
+            .await
+            .expect("the streamer is open");
+
+        // Both senders are already queued — nothing was left to a task that
+        // may or may not have run.
+        let mut registrations = 0;
+        while let Ok(DXLinkCommand::AddEventSender(id, _)) = rx.try_recv() {
+            assert_eq!(id, sub.id.0 as u32);
+            registrations += 1;
+        }
+        assert_eq!(
+            registrations, 2,
+            "the streamer's copy and the caller's must both be routable before \
+             create_sub returns"
+        );
+    }
+
+    /// A closed streamer cannot route events, so handing back a subscription
+    /// that can never receive anything would be the same silent failure in a
+    /// different place.
+    #[tokio::test]
+    async fn creating_a_subscription_on_a_closed_streamer_fails() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+        drop(rx);
+
+        let Err(error) = streamer.create_sub([EventKind::Quote]).await else {
+            panic!("a closed streamer cannot register a route");
+        };
+        assert!(matches!(error, TastyTradeError::Streaming(_)), "{error:?}");
+    }
+
+    /// A bar that was dropped for a slow consumer must not advance the resume
+    /// point: the reconnect would skip it permanently, and a hole in a price
+    /// series is worse than a duplicate because nothing downstream can see it.
+    #[tokio::test]
+    async fn a_dropped_bar_does_not_advance_the_resume_point() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        // Capacity one, and nothing ever reads it: the second bar is dropped.
+        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        routing.write().await.senders.insert(1, vec![full_tx]);
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: "AAPL{=5m}".to_string(),
+                from_time: Some(0),
+            }]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(8);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        for time in [1_000i64, 2_000, 3_000] {
+            events_tx
+                .send(candle("AAPL{=5m}", time))
+                .await
+                .expect("the feed accepts");
+        }
+
+        // Give the forwarder time to process all three.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let seen = progress
+            .lock()
+            .expect("not poisoned in tests")
+            .get("AAPL{=5m}")
+            .copied();
+        assert_eq!(
+            seen,
+            Some(1_000),
+            "only the bar that was actually delivered may be resumed past"
+        );
+
+        forwarder.abort();
     }
 
     /// The budget is bounded, and running out is reported rather than

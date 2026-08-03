@@ -69,20 +69,24 @@
 //!
 //! ## Real-time Data
 //!
-//! The library supports real-time data streaming for both market data and account updates using DXLink:
+//! Market data comes over DXLink. All eleven event types the feed models are
+//! routed: quotes, regular and extended-hours trade prints, Greeks, candles,
+//! summaries, time and sale, profiles, underlyings, theoretical prices and
+//! series. A subscription names the ones it wants and the channel is
+//! configured for exactly those.
 //!
 //! ```rust,no_run
 //! // Create a quote streamer
 //! use tastytrade::{Symbol, TastyTrade};
 //! use tastytrade::utils::config::TastyTradeConfig;
-//! use tastytrade::dxfeed;
+//! use tastytrade::dxfeed::{self, EventKind};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = TastyTradeConfig::from_env();
 //!     let tasty = TastyTrade::connect(&config).await?;
 //!     let mut quote_streamer = tasty.create_quote_streamer().await?;
-//!     let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
+//!     let mut quote_sub = quote_streamer.create_sub([EventKind::Quote, EventKind::Greeks]).await?;
 //!
 //!     // Add symbols to subscribe to
 //!     quote_sub.add_symbols(&[Symbol("AAPL".to_string())]).await?;
@@ -99,6 +103,47 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! ### Candles
+//!
+//! Candles are the only route to a price series in this crate — there is no
+//! REST endpoint for one — and the only subscription that needs more than a
+//! symbol. A candle is addressed by a symbol that carries its period,
+//! `AAPL{=5m}`, so two periods of one underlying are two different streamer
+//! symbols and never deliver into each other.
+//!
+//! ```rust,no_run
+//! use chrono::{Duration, Utc};
+//! use tastytrade::{Symbol, TastyTrade};
+//! use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
+//!
+//! # async fn bars(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let mut streamer = tasty.create_quote_streamer().await?;
+//! let mut bars = streamer.create_sub([EventKind::Candle]).await?;
+//!
+//! // `from_time` is required, not optional: a candle subscription without one
+//! // replays an unbounded history. A day of one-minute bars is about 1440
+//! // events per symbol.
+//! bars.add_candles(
+//!     &[Symbol("AAPL".to_string())],
+//!     CandlePeriod::minutes(5)?,
+//!     Utc::now() - Duration::days(2),
+//! )
+//! .await?;
+//!
+//! if let Ok(event) = bars.get_event().await
+//!     && let EventData::Candle(candle) = event.data
+//! {
+//!     // `event.sym` is `AAPL{=5m}`, period included.
+//!     println!("{}: o {} c {}", event.sym, candle.open, candle.close);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A reconnect resumes each candle series one millisecond past the last bar
+//! actually delivered, rather than replaying the original start — otherwise
+//! every reconnect would re-send a history the consumer already has.
 //!
 //! ## Account streaming
 //!

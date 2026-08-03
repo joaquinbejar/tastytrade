@@ -6,5 +6,6 @@ edition = "2024"
 
 [dependencies]
 tastytrade = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }

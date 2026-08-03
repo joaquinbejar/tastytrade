@@ -250,7 +250,9 @@ async fn main() -> Result<()> {
 
     print!("Setting up quote streaming...");
     let mut quote_streamer = tasty.create_quote_streamer().await?;
-    let mut quote_sub = quote_streamer.create_sub(dxfeed::DXF_ET_QUOTE | dxfeed::DXF_ET_GREEKS);
+    let mut quote_sub = quote_streamer
+        .create_sub([dxfeed::EventKind::Quote, dxfeed::EventKind::Greeks])
+        .await?;
     quote_sub
         .add_symbols(&stream_syms)
         .await
