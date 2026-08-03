@@ -18,6 +18,7 @@ mod crypto_suspension;
 mod customer;
 mod instrument_listings;
 mod margin;
+mod market_data;
 mod orders;
 mod paths;
 mod rest;

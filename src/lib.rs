@@ -496,6 +496,40 @@
 //! `Display`, a log or an error — and it is handed back rather than used,
 //! because the service it authenticates is not part of this API.
 //!
+//! ## Market data over REST
+//!
+//! One snapshot of up to a hundred symbols, without opening a websocket. For a
+//! portfolio mark, a screener pass or a pre-trade sanity check, that is the
+//! right shape; the DXLink feed is for watching a price change.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn snapshot(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let prices = tasty
+//!     .market_data_by_type(
+//!         &MarketDataRequest::new()
+//!             .with_equities(&["AAPL", "TSLA"])
+//!             .with_cryptocurrencies(&["BTC/USD"]),
+//!     )
+//!     .await?;
+//!
+//! for price in &prices {
+//!     println!("{}: {:?} / {:?}", price.symbol, price.bid, price.ask);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! **Every price is `Decimal`.** The `f64` exemption is specifically for the
+//! DXFeed streaming types in [`types::dxfeed`], where the feed imposes the
+//! representation; these are different types with a different field set, and
+//! conflating them would leak `f64` onto a REST path.
+//!
+//! The venue takes **one parameter per instrument type**, comma-joined — not
+//! the repeated keys the instrument listings use — and caps the request at
+//! [`prelude::MAX_MARKET_DATA_SYMBOLS`] across all types together. Over the cap
+//! is a non-retryable precondition, refused before anything is sent.
+//!
 //! ## Real-time Data
 //!
 //! Market data comes over DXLink. All eleven event types the feed models are
