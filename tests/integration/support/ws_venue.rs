@@ -109,12 +109,24 @@ impl WsVenue {
 
                     // Echo the id back, which is what the venue documents and
                     // what turns a socket write into a confirmed action.
-                    let reply = match frame.get("request-id") {
-                        Some(id) => format!(
-                            r#"{{"status":"ok","action":"{action}","web-socket-session-id":"test","request-id":{id}}}"#
-                        ),
-                        None => format!(r#"{{"status":"ok","action":"{action}"}}"#),
-                    };
+                    //
+                    // Built with `json!` rather than `format!`: `action` comes
+                    // from the client under test, and a hand-built string would
+                    // emit invalid JSON for any value needing escaping. The
+                    // client would then ignore the reply, and the test would
+                    // fail as a timeout with nothing pointing at the cause.
+                    let mut reply = serde_json::json!({
+                        "status": "ok",
+                        "action": action,
+                        "web-socket-session-id": "test",
+                    });
+                    if let Some(id) = frame.get("request-id")
+                        && let Some(object) = reply.as_object_mut()
+                    {
+                        object.insert("request-id".to_string(), id.clone());
+                    }
+                    let reply = reply.to_string();
+
                     if stream.send(Message::Text(reply.into())).await.is_err() {
                         break;
                     }

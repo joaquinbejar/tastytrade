@@ -403,11 +403,6 @@ impl AccountStreamer {
 
         let supervisor_state = state.clone();
         let supervisor_subscribed = subscribed.clone();
-        // Kept for its lifetime, not for its messages: while the supervisor
-        // holds a sender the action receiver cannot close on its own, so a
-        // caller dropping their last handle does not end the session out from
-        // under a reconnect.
-        let _supervisor_actions = action_sender.clone();
         // The supervisor holds its own action sender, so the receiver never
         // closes on its own and a quiet socket would keep the loop alive after
         // its owner is gone. Only the streamer holds this.
