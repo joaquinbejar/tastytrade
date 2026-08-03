@@ -27,7 +27,7 @@ difference is exactly what
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 1 | 0 | 100% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
-| Market Metrics | 3 | 0 | 3 | 0% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
+| Market Metrics | 3 | 3 | 0 | 100% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
 | Market Sessions | 11 | 0 | 11 | 0% | [#79](https://github.com/joaquinbejar/tastytrade/issues/79) |
 | Net Liquidating Value History | 1 | 1 | 0 | 100% | [#83](https://github.com/joaquinbejar/tastytrade/issues/83) |
 | Orders | 19 | 19 | 0 | 100% | [#70](https://github.com/joaquinbejar/tastytrade/issues/70), [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **64** | **33** | **66%** | |
+| **TOTAL** | **97** | **67** | **30** | **69%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -297,13 +297,33 @@ timestamp in 1969.
 
 ## Market Metrics
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /market-metrics` | ❌ |
-| `GET /market-metrics/historic-corporate-events/dividends/{symbol}` | ❌ |
-| `GET /market-metrics/historic-corporate-events/earnings-reports/{symbol}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /market-metrics` | `market_metrics()` | ✅ |
+| `GET /market-metrics/historic-corporate-events/dividends/{symbol}` | `historic_dividends()` | ✅ |
+| `GET /market-metrics/historic-corporate-events/earnings-reports/{symbol}` | `historic_earnings()` | ✅ |
 
-IV rank, IV percentile, beta, liquidity rating, borrow rate, earnings dates.
+IV index, IV rank, IV percentile, liquidity and its rank and rating, plus the
+per-expiration volatility block and the dividend and earnings histories.
+
+`symbols` is **comma-joined into one parameter**, not the repeated keys the
+instrument listings use. The venue documents it that way, and getting it wrong
+returns metrics for one symbol — which reads as a thin answer rather than a
+client bug.
+
+`EarningsRange` carries the `start-date` the venue marks required, so it cannot
+be omitted.
+
+An option expiration decodes as a **calendar day** even though the schema types
+it `date-time`: an expiration is a day of market and there is no timezone to
+invent. Both shapes decode, and anything else is still an error.
+
+Every numeric field is `Decimal`. IV also exists as `f64` in
+`types::dxfeed`, but that exemption belongs to the streaming types where the
+feed imposes it.
+
+**Live only** per the venue's sandbox page, so all three examples require an
+explicit read-only production opt-in.
 
 ## Market Sessions
 

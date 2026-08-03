@@ -166,6 +166,52 @@ pub(crate) mod decimal_map {
     }
 }
 
+/// A calendar day the venue's schema types as a timestamp.
+///
+/// An option expiration is a day of market, not an instant — that is the rule
+/// the rest of this crate follows and the reason `Expiration` uses
+/// [`chrono::NaiveDate`]. The market-metrics schema types its expiration as
+/// `date-time` anyway, so this accepts either shape and keeps the day.
+///
+/// Deliberately narrow: a plain `YYYY-MM-DD` or an RFC 3339 timestamp, nothing
+/// else. Taking the date out of a timestamp discards a time-of-day the venue
+/// never meant as one; inventing a timezone to keep it would be worse, and
+/// picking one shape would make every row fail the first time the other
+/// arrived.
+pub(crate) mod expiration_date_option {
+    use super::*;
+    use chrono::{DateTime, NaiveDate};
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let Some(text) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let text = text.trim();
+
+        if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+            return Ok(Some(date));
+        }
+
+        DateTime::parse_from_rfc3339(text)
+            .map(|moment| Some(moment.date_naive()))
+            .map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "expected an expiration as YYYY-MM-DD or RFC 3339 ({e})"
+                ))
+            })
+    }
+
+    pub(crate) fn serialize<S>(value: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        super::date_option::serialize(value, serializer)
+    }
+}
+
 /// A field the venue is inconsistent about the *shape* of, not just the
 /// encoding: a JSON string on one path and a JSON number on another, with no
 /// captured frame to settle which.

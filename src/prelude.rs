@@ -77,6 +77,11 @@ pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
 // Re-export balance types
 pub use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 
+// Re-export market metrics, dividends and earnings
+pub use crate::types::market_metrics::{
+    DividendReport, EarningsRange, EarningsReport, ExpirationImpliedVolatility, MarketMetric,
+};
+
 // Re-export the REST market-data snapshot
 pub use crate::types::market_data::{
     MAX_MARKET_DATA_SYMBOLS, MarketDataRequest, MarketDataSnapshot,
