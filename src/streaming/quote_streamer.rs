@@ -885,8 +885,24 @@ async fn run_connection(
             // anything, so it is what makes a drop visible to a consumer that
             // only reads — the ordinary shape of a market-data client, and the
             // case a write-failure check can never see.
-            _ = &mut *forwarder => {
-                debug!("The DXLink event stream closed; the session is over");
+            joined = &mut *forwarder => {
+                match joined {
+                    Ok(()) => debug!("The DXLink event stream closed; the session is over"),
+                    // A forwarder that died is not a venue problem, and
+                    // reconnecting will not fix it: the next one runs the same
+                    // code over the same routing. Saying so is the difference
+                    // between a diagnosable bug and a stream that quietly
+                    // reconnects forever.
+                    //
+                    // Classification only. `JoinError`'s Display renders the
+                    // panic payload, and a panic message can quote whatever
+                    // the task was holding — here, market data.
+                    Err(e) => warn!(
+                        "The event forwarding task ended abnormally (panicked: {}, cancelled: {})",
+                        e.is_panic(),
+                        e.is_cancelled()
+                    ),
+                }
                 return Ended::ConnectionLost;
             }
             cmd = commands.recv() => match cmd {
@@ -1614,6 +1630,37 @@ mod reconnect_tests {
             matches!(ended, Ended::ConnectionLost),
             "a closed event stream is a lost connection"
         );
+    }
+
+    /// A forwarder that dies is not a venue problem, and the next connection
+    /// runs the same code over the same routing. It still ends the connection,
+    /// but it must not do so silently — that is the difference between a
+    /// diagnosable bug and a stream that reconnects forever for no visible
+    /// reason.
+    #[tokio::test]
+    async fn a_forwarder_that_panics_is_reported_rather_than_read_as_a_venue_drop() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let mut forwarder = tokio::spawn(async { panic!("the forwarder died") });
+
+        let mut client = DXLinkClient::new("wss://127.0.0.1:1", "unused");
+        let (_commands_tx, mut commands_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let (_shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+
+        let ended = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_connection(
+                &mut client,
+                1,
+                &mut commands_rx,
+                &mut shutdown_rx,
+                &mut forwarder,
+                &routing,
+            ),
+        )
+        .await
+        .expect("a dead forwarder must end the connection, not be waited on");
+
+        assert!(matches!(ended, Ended::ConnectionLost));
     }
 
     /// The owner still wins over a live connection: dropping the streamer must
