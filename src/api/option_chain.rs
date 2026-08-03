@@ -1,4 +1,4 @@
-use super::{base::Items, quote_streaming::DxFeedSymbol};
+use super::{base::Items, quote_streaming::DxFeedSymbol, url::encode_path_segment};
 use crate::api::base::TastyResult;
 use crate::types::wire::{ExpirationType, SettlementType};
 use crate::{AsSymbol, Symbol, TastyTrade};
@@ -22,7 +22,10 @@ impl TastyTrade {
     ) -> TastyResult<NestedOptionChain> {
         let symbol = symbol.into();
         let resp: Items<NestedOptionChain> = self
-            .get(format!("/option-chains/{}/nested", symbol.0))
+            .get(format!(
+                "/option-chains/{}/nested",
+                encode_path_segment(&symbol.0)
+            ))
             .await?;
         resp.into_items()?.into_iter().next().ok_or_else(|| {
             crate::TastyTradeError::Unknown(format!(
@@ -42,7 +45,10 @@ impl TastyTrade {
         symbol: impl Into<Symbol>,
     ) -> TastyResult<Vec<OptionChain>> {
         let resp: Items<OptionChain> = self
-            .get(format!("/option-chains/{}", symbol.into().0))
+            .get(format!(
+                "/option-chains/{}",
+                encode_path_segment(&symbol.into().0)
+            ))
             .await?;
         resp.into_items()
     }
@@ -55,7 +61,7 @@ impl TastyTrade {
     pub async fn get_option_info(&self, symbol: impl AsSymbol) -> TastyResult<OptionInfo> {
         self.get(format!(
             "/instruments/equity-options/{}",
-            symbol.as_symbol().0
+            encode_path_segment(&symbol.as_symbol().0)
         ))
         .await
     }

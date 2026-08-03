@@ -12,4 +12,5 @@
 mod support;
 
 mod account_stream;
+mod paths;
 mod rest;
