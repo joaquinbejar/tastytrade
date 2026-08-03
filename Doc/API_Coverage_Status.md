@@ -35,8 +35,8 @@ difference is exactly what
 | Risk Parameters | 4 | 4 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
-| Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **81** | **16** | **84%** | |
+| Watchlists | 9 | 9 | 0 | 100% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
+| **TOTAL** | **97** | **90** | **7** | **93%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -540,17 +540,40 @@ reconstruct what an account actually did.
 
 ## Watchlists
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /public-watchlists` | ❌ |
-| `GET /public-watchlists/{watchlist_name}` | ❌ |
-| `GET /watchlists` | ❌ |
-| `POST /watchlists` | ❌ |
-| `GET /watchlists/{watchlist_name}` | ❌ |
-| `PUT /watchlists/{watchlist_name}` | ❌ |
-| `DELETE /watchlists/{watchlist_name}` | ❌ |
-| `GET /pairs-watchlists` | ❌ |
-| `GET /pairs-watchlists/{pairs_watchlist_name}` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /public-watchlists` | `public_watchlists()` / `public_watchlist_counts()` | ✅ |
+| `GET /public-watchlists/{watchlist_name}` | `public_watchlist()` | ✅ |
+| `GET /watchlists` | `watchlists()` | ✅ |
+| `POST /watchlists` | `create_watchlist()` | ✅ |
+| `GET /watchlists/{watchlist_name}` | `watchlist()` | ✅ |
+| `PUT /watchlists/{watchlist_name}` | `replace_watchlist()` | ✅ |
+| `DELETE /watchlists/{watchlist_name}` | `delete_watchlist()` | ✅ |
+| `GET /pairs-watchlists` | `pairs_watchlists()` | ✅ |
+| `GET /pairs-watchlists/{pairs_watchlist_name}` | `pairs_watchlist()` | ✅ |
+
+The only user-owned mutable resource besides orders, and the only area where a
+client can **destroy** user data.
+
+`replace_watchlist` replaces **every property**. It is not an append and not a
+merge: the entries sent are the entries that survive. `delete_watchlist` is
+irreversible and takes the name explicitly, so it cannot be reached from a
+listing or a read by accident.
+
+`NewWatchlist` is separate from `Watchlist` because the create body is not the
+read shape — it has no `cms-id`, and sending one as `null` is a different
+request from not sending it. A blank name is refused locally: the name is also
+the URL segment a later replace or delete addresses, so a list nobody can name
+is a list nobody can remove.
+
+`Watchlist` and `WatchlistEntry` are the same types
+`public-watchlists-subscribe` delivers on the account websocket.
+
+`pairs-equations` stays `Vec<Value>`: the venue's schema types it `object` with
+no properties, so there is nothing to model against.
+
+The three mutating examples run against certification only, on uniquely named
+throwaway lists, and clean up after themselves.
 
 ## Authentication — OAuth2
 

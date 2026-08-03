@@ -698,6 +698,35 @@
 //! [`QuoteStreamer::create_sub_with_capacity`](streaming::quote_streamer::QuoteStreamer::create_sub_with_capacity)
 //! when the default does not fit the history you are asking for.
 //!
+//! ## Watchlists
+//!
+//! The only user-owned, mutable resource in the API besides orders, and the
+//! only area where a client can **destroy** user data.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn lists(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let created = tasty
+//!     .create_watchlist(&NewWatchlist::new("Earnings plays", &["AAPL", "TSLA"]))
+//!     .await?;
+//!
+//! // `replace_watchlist` replaces **every property**. It is not an append and
+//! // not a merge: the entries sent are the entries that survive. To add a
+//! // symbol, read the list, push onto its entries, and send the whole thing
+//! // back.
+//! # let _ = created;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`TastyTrade::delete_watchlist`] is irreversible and takes the name
+//! explicitly, so it cannot be reached from a listing or a read by accident.
+//! Every mutating example runs against certification only, on a uniquely named
+//! throwaway list, and cleans up after itself.
+//!
+//! `public-watchlists-subscribe` on the account websocket publishes the same
+//! [`prelude::Watchlist`] type these endpoints return.
+//!
 //! ## Quote alerts
 //!
 //! A threshold on a symbol. Setting one is REST; being told it fired is the

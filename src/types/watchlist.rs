@@ -58,6 +58,117 @@ pub struct WatchlistEntry {
     pub instrument_type: Option<String>,
 }
 
+/// A pairs watchlist: named equations rather than plain symbols.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct PairsWatchlist {
+    /// The list's name, which is also how it is addressed in a URL.
+    pub name: String,
+    /// The pair equations on it.
+    ///
+    /// `Value` rather than a modelled type: the venue's schema types this
+    /// `object` with **no properties at all**, so there is nothing to model
+    /// against. Anything decodes, which is what keeps a list from being
+    /// dropped over a field nobody has documented.
+    #[serde(default)]
+    pub pairs_equations: Vec<serde_json::Value>,
+    /// Where it sorts among its siblings.
+    #[serde(default)]
+    pub order_index: Option<i32>,
+}
+
+/// A watchlist to create or replace.
+///
+/// Separate from [`Watchlist`] because the create body is not the read shape:
+/// it has no `cms-id`, and sending one as `null` is a different request from
+/// not sending it.
+#[derive(DebugPretty, DisplaySimple, Serialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct NewWatchlist {
+    /// The list's name.
+    pub name: String,
+    /// The instruments on it.
+    pub watchlist_entries: Vec<WatchlistEntry>,
+    /// The group it belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+    /// Where it sorts among its siblings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_index: Option<i32>,
+}
+
+impl NewWatchlist {
+    /// A list called `name` holding `symbols`.
+    pub fn new(name: impl Into<String>, symbols: &[impl AsRef<str>]) -> Self {
+        Self {
+            name: name.into(),
+            watchlist_entries: symbols
+                .iter()
+                .map(|symbol| WatchlistEntry {
+                    symbol: Symbol(symbol.as_ref().to_owned()),
+                    instrument_type: None,
+                })
+                .collect(),
+            group_name: None,
+            order_index: None,
+        }
+    }
+
+    /// Adds an entry that names its instrument type.
+    #[must_use]
+    pub fn with_entry(
+        mut self,
+        symbol: impl Into<Symbol>,
+        instrument_type: Option<String>,
+    ) -> Self {
+        self.watchlist_entries.push(WatchlistEntry {
+            symbol: symbol.into(),
+            instrument_type,
+        });
+        self
+    }
+
+    /// Which group it belongs to.
+    #[must_use]
+    pub fn with_group_name(mut self, group_name: impl Into<String>) -> Self {
+        self.group_name = Some(group_name.into());
+        self
+    }
+
+    /// Where it sorts.
+    #[must_use]
+    pub fn with_order_index(mut self, order_index: i32) -> Self {
+        self.order_index = Some(order_index);
+        self
+    }
+
+    /// Fails when the list cannot be what the venue accepts.
+    ///
+    /// Local checks, so [`crate::TastyTradeError::Precondition`] and not
+    /// retryable. A blank name matters more than it looks: the name is the
+    /// URL segment a later replace or delete addresses, and a list nobody can
+    /// name is a list nobody can remove.
+    pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        if self.name.trim().is_empty() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a watchlist needs a name, and this one is blank; the name is also \
+                 how the list is addressed for replacement and deletion"
+                    .to_string(),
+            ));
+        }
+
+        for (index, entry) in self.watchlist_entries.iter().enumerate() {
+            if entry.symbol.0.trim().is_empty() {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "watchlist entry {index} has a blank symbol"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

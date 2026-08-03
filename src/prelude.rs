@@ -74,7 +74,7 @@ pub use crate::types::position::{BriefPosition, FullPosition, QuantityDirection}
 pub use crate::types::quote_alert::{
     NewQuoteAlert, QuoteAlert, QuoteAlertField, QuoteAlertOperator,
 };
-pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
+pub use crate::types::watchlist::{NewWatchlist, PairsWatchlist, Watchlist, WatchlistEntry};
 
 // Re-export balance types
 pub use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
