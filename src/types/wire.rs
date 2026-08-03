@@ -96,6 +96,28 @@ pub(crate) mod decimal_option {
     }
 }
 
+/// A decimal the venue types as a **string** on the wire.
+///
+/// [`decimal_option`] accepts both shapes coming in and writes a JSON number
+/// going out, which is what the order bodies already used. A few request
+/// schemas type the field as a string instead — `threshold-numeric` on a quote
+/// alert is one, despite the name — and sending a number there is this crate's
+/// shape rather than the venue's. Reading is unchanged and still tolerant of
+/// both, because a response is not the caller's problem to get right.
+pub(crate) mod decimal_string_option {
+    use super::*;
+
+    pub(crate) fn serialize<S>(value: &Option<Decimal>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(&value.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 /// A decimal the venue sometimes reports as the literal string `NaN`.
 ///
 /// A fixing price that does not apply to an instrument comes back as `"NaN"`,

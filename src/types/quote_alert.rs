@@ -138,13 +138,22 @@ pub struct NewQuoteAlert {
     /// How to compare it.
     pub operator: QuoteAlertOperator,
     /// The threshold, as the venue renders it.
-    pub threshold: String,
-    /// The threshold as a number, when one is given.
+    ///
+    /// Private with the rest of the threshold pair: the two forms have to
+    /// agree, and public fields let a caller change one and leave the other,
+    /// which is an alert that fires at a price nobody asked for. Read them
+    /// through [`NewQuoteAlert::threshold`].
+    threshold: String,
+    /// The threshold as a number.
+    ///
+    /// **Serialized as a string**, which is how the create schema types it —
+    /// the name says numeric, the wire type does not. Sending a JSON number
+    /// here was this crate's shape rather than the venue's.
     #[serde(
         skip_serializing_if = "Option::is_none",
-        with = "crate::types::wire::decimal_option"
+        serialize_with = "crate::types::wire::decimal_string_option::serialize"
     )]
-    pub threshold_numeric: Option<Decimal>,
+    threshold_numeric: Option<Decimal>,
     /// The instrument type, when the caller knows it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instrument_type: Option<String>,
@@ -181,6 +190,19 @@ impl NewQuoteAlert {
         }
     }
 
+    /// The threshold this alert fires at.
+    ///
+    /// One value, because the two wire fields are derived from it and cannot
+    /// drift apart.
+    pub fn threshold(&self) -> Option<Decimal> {
+        self.threshold_numeric
+    }
+
+    /// The threshold as the venue will see it.
+    pub fn threshold_text(&self) -> &str {
+        &self.threshold
+    }
+
     /// Names the instrument type.
     #[must_use]
     pub fn with_instrument_type(mut self, instrument_type: impl Into<String>) -> Self {
@@ -207,6 +229,25 @@ impl NewQuoteAlert {
     /// Local checks, so [`crate::TastyTradeError::Precondition`] and not
     /// retryable.
     pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        // The two enums are tolerant because they are read-side types as well,
+        // and `Items<T>` would drop an alert carrying a value this crate does
+        // not model. The create schema closes both sets, so an `Unknown` here
+        // is a value the venue will reject — after it has been sent, with an
+        // alert the caller believes exists.
+        if !self.field.is_known() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "{} is not a field the venue accepts on a new alert; it takes Last, \
+                 Bid, Ask or IV",
+                self.field.as_wire()
+            )));
+        }
+        if !self.operator.is_known() {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "{} is not an operator the venue accepts on a new alert; it takes \
+                 > or <",
+                self.operator.as_wire()
+            )));
+        }
         if self.symbol.0.trim().is_empty() {
             return Err(crate::TastyTradeError::Precondition(
                 "a quote alert needs a symbol, and this one is blank".to_string(),
@@ -330,12 +371,59 @@ mod create_tests {
         let body = serde_json::to_value(alert()).expect("serialises");
 
         assert_eq!(body["threshold"], "200.00");
-        // Arbitrary precision keeps the trailing zeros the caller wrote, so
-        // the numeric form is `200.00` and not a rounded `200.0`.
-        assert_eq!(body["threshold-numeric"].to_string(), "200.00");
+        // A **string**, which is how the create schema types this field
+        // despite its name. Arbitrary precision keeps the trailing zeros the
+        // caller wrote, so it is `200.00` and not a rounded `200.0`.
+        assert_eq!(body["threshold-numeric"], "200.00");
+        assert!(
+            body["threshold-numeric"].is_string(),
+            "the create schema types threshold-numeric as a string: {body}"
+        );
         assert_eq!(body["symbol"], "AAPL");
         assert_eq!(body["field"], "Last");
         assert_eq!(body["operator"], ">");
+
+        // And the two forms cannot drift apart, because there is one value
+        // behind them and no way to set either directly.
+        let alert = alert();
+        assert_eq!(alert.threshold_text(), "200.00");
+        assert_eq!(
+            alert.threshold().map(|t| t.to_string()),
+            Some("200.00".into())
+        );
+    }
+
+    /// The create schema closes both enums, so a value this crate decoded from
+    /// a response but does not model cannot be sent back on a new alert.
+    ///
+    /// The types stay tolerant because they are read-side too: `Items<T>` drops
+    /// what it cannot parse, and an alert vanishing from a listing is worse
+    /// than one carrying an unfamiliar field name. Sending one is a request the
+    /// venue rejects, after this crate has told the caller it was made.
+    #[test]
+    fn an_unmodelled_field_or_operator_cannot_be_created() {
+        let mut unknown_field = alert();
+        unknown_field.field = QuoteAlertField::from("Theta".to_string());
+        let error = unknown_field
+            .validate()
+            .expect_err("Theta is not a field the venue accepts");
+        assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
+        assert!(!error.is_retryable(), "nothing was sent");
+
+        let mut unknown_operator = alert();
+        unknown_operator.operator = QuoteAlertOperator::from(">=".to_string());
+        assert!(unknown_operator.validate().is_err(), ">= is not < or >");
+
+        // A modelled pair still goes.
+        alert().validate().expect("Last and > are both modelled");
+
+        // …and both still decode, which is the half that has to stay tolerant.
+        let listed: QuoteAlert = serde_json::from_str(r#"{"field": "Theta", "operator": ">="}"#)
+            .expect("an alert must not vanish because of an unfamiliar value");
+        assert_eq!(
+            listed.field.map(|f| f.as_wire().to_string()),
+            Some("Theta".into())
+        );
     }
 
     /// The optional fields are omitted rather than sent as null.

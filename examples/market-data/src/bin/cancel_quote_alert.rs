@@ -41,21 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let cancelled = tasty.cancel_quote_alert(&id).await?;
-    info!(
-        "Cancelled {id}: {} {} {}",
-        cancelled
-            .symbol
-            .as_ref()
-            .map(|symbol| symbol.0.as_str())
-            .unwrap_or("-"),
-        cancelled
-            .operator
-            .as_ref()
-            .map(QuoteAlertOperator::as_wire)
-            .unwrap_or("-"),
-        cancelled.threshold.as_deref().unwrap_or("-")
-    );
+    // The venue answers 204 with no body, so there is nothing to report back
+    // beyond the fact that it worked.
+    tasty.cancel_quote_alert(&id).await?;
+    info!("Cancelled {id}");
 
     Ok(())
 }

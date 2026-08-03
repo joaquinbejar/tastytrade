@@ -160,13 +160,60 @@ async fn cancelling_encodes_the_identifier() {
         .await
         .expect("authentication must succeed");
 
-    let cancelled = client
+    client
         .cancel_quote_alert("alert/1")
         .await
         .expect("the encoded path must select the route it names");
 
     assert_eq!(
-        cancelled.symbol.map(|symbol| symbol.0),
-        Some("AAPL".to_string())
+        venue
+            .requests()
+            .into_iter()
+            .rfind(|request| request.target.starts_with("/quote-alerts"))
+            .expect("the request must have been sent")
+            .target,
+        "/quote-alerts/alert%2F1"
     );
+}
+
+/// The venue answers `204 No Content`, and a successful cancellation must not
+/// be reported as a failure.
+///
+/// Asking the generic verb for a `QuoteAlert` back made this call cancel the
+/// alert and then fail decoding the empty body, so the caller was handed an
+/// error for a mutation that had already happened — the worst answer available
+/// about a state change.
+#[tokio::test]
+async fn a_cancellation_succeeds_on_an_empty_response() {
+    let venue = venue_with(vec![("DELETE /quote-alerts/abc", Route::status(204, ""))]).await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    client
+        .cancel_quote_alert("abc")
+        .await
+        .expect("204 with no body is a successful cancellation");
+
+    // A failure status still reports the broker's document rather than being
+    // swallowed along with the empty-body case.
+    let venue = venue_with(vec![(
+        "DELETE /quote-alerts/gone",
+        Route::status(
+            404,
+            r#"{"error":{"code":"not_found","message":"no such alert"}}"#,
+        ),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let error = client
+        .cancel_quote_alert("gone")
+        .await
+        .expect_err("a 404 is still a failure");
+    let rendered = format!("{error}");
+    assert!(rendered.contains("404"), "{rendered}");
+    assert!(rendered.contains("no such alert"), "{rendered}");
 }
