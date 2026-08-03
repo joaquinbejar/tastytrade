@@ -12,6 +12,9 @@ use crate::types::instrument::{
     QuantityDecimalPrecision, Warrant,
 };
 use crate::types::instrument_filter::{ActiveEquityFilter, EquityFilter, FutureFilter};
+use crate::types::search::{
+    AiSearchToken, InstrumentSearchFilter, InstrumentSearchResult, SymbolSearchResult,
+};
 use crate::{AsSymbol, TastyResult, TastyTrade};
 
 impl TastyTrade {
@@ -512,6 +515,72 @@ impl TastyTrade {
             "/instruments/warrants/{}",
             encode_path_segment(&symbol.as_symbol().0)
         ))
+        .await
+    }
+
+    /// Symbols matching a prefix, with enough to show a person.
+    ///
+    /// The query is a **path segment**, so it goes through the shared encoder:
+    /// a crypto pair or a future option carries separators and spaces that
+    /// would otherwise select a different route.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the listing arrives but nothing in it can be decoded, which
+    /// is a defect in this crate's model rather than an empty result. A search
+    /// that genuinely matched nothing is `Ok` with an empty vector.
+    pub async fn search_symbols(
+        &self,
+        query: impl AsRef<str>,
+    ) -> TastyResult<Vec<SymbolSearchResult>> {
+        let resp: Items<SymbolSearchResult> = self
+            .get(format!(
+                "/symbols/search/{}",
+                encode_path_segment(query.as_ref())
+            ))
+            .await?;
+        resp.into_items()
+    }
+
+    /// Instruments matching a query, across every instrument type.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the filter asks for more
+    /// than [`crate::prelude::MAX_SEARCH_RESULTS`] results. Otherwise as
+    /// [`TastyTrade::search_symbols`].
+    pub async fn search_instruments(
+        &self,
+        filter: &InstrumentSearchFilter,
+    ) -> TastyResult<Vec<InstrumentSearchResult>> {
+        filter.validate()?;
+
+        let query = filter.to_query();
+        let resp: Items<InstrumentSearchResult> = self
+            .get_with_query("/instruments/search", &query.pairs())
+            .await?;
+        resp.into_items()
+    }
+
+    /// Mints a short-lived third-party client token for AI search.
+    ///
+    /// The token is **a credential** and is handed back rather than used: the
+    /// service it authenticates is not part of the tastytrade API this crate
+    /// wraps. See [`AiSearchToken`] for why the whole response object is kept
+    /// instead of a named field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error. Neither the token nor the response body
+    /// reaches the error or the logs.
+    pub async fn ai_search_token(&self) -> TastyResult<AiSearchToken> {
+        // An empty JSON object rather than `()`, which serialises to `null`
+        // and is a different body.
+        self.post(
+            "/instruments/ai-search-token",
+            serde_json::Value::Object(serde_json::Map::new()),
+        )
         .await
     }
 

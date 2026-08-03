@@ -1,177 +1,156 @@
-# Instruments API Implementation Status
+# Instruments API — Implementation Status
 
-This document shows the implementation status of each TastyTrade Instruments API endpoint in the repository.
+Every path in the Instruments OpenAPI document, checked against what this crate
+implements.
+
+Source: the swagger embedded in
+<https://developer.tastytrade.com/open-api-spec/instruments/>
+(`__NEXT_DATA__` → `props.pageProps.specData`), version
+**`instruments-api-swagger_20250715`**, read 2026-08-03. That document lists
+**24 paths**.
+
+The area-wide matrix is `Doc/API_Coverage_Status.md`; this file is the
+endpoint-by-endpoint detail.
 
 ## Summary
 
-| Category | Total Endpoints | Implemented | Pending | % Completed |
-|----------|-----------------|-------------|---------|-------------|
-| **Futures Option Chains** | 2 | 2 | 0 | 100% |
-| **Instruments - Cryptocurrencies** | 2 | 2 | 0 | 100% |
-| **Instruments - Equities** | 3 | 3 | 0 | 100% |
-| **Instruments - Equity Options** | 2 | 2 | 0 | 100% |
-| **Instruments - Future Options** | 2 | 2 | 0 | 100% |
-| **Instruments - Future Products** | 6 | 6 | 0 | 100% |
-| **Instruments - Futures** | 2 | 2 | 0 | 100% |
-| **Instruments - Warrants** | 2 | 2 | 0 | 100% |
-| **Instruments - Other** | 1 | 1 | 0 | 100% |
-| **Option Chains** | 3 | 3 | 0 | 100% |
-| **TOTAL** | **25** | **25** | **0** | **100%** |
+| Group | Endpoints | Implemented |
+|-------|-----------|-------------|
+| Futures option chains | 2 | 2 |
+| Cryptocurrencies | 2 | 2 |
+| Equities | 3 | 3 |
+| Equity options | 1 | 1 |
+| Future options | 1 | 1 |
+| Future products and future option products | 5 | 5 |
+| Futures | 2 | 2 |
+| Warrants | 2 | 2 |
+| Search | 2 | 2 |
+| Other | 1 | 1 |
+| Option chains | 3 | 3 |
+| **TOTAL** | **24** | **24** |
 
----
+## Endpoints
 
-## Endpoint Details
+### Futures option chains
 
-### 🔗 Futures Option Chains
+| Endpoint | Method |
+|----------|--------|
+| `GET /futures-option-chains/{symbol}` | `list_futures_option_chains()` |
+| `GET /futures-option-chains/{symbol}/nested` | `list_nested_futures_option_chains()` |
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /futures-option-chains/{symbol}` | ✅ `list_futures_option_chains()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /futures-option-chains/{symbol}/nested` | ✅ `list_nested_futures_option_chains()` | ✅ **IMPLEMENTED** | Functional |
+### Cryptocurrencies
 
-### 🪙 Instruments - Cryptocurrencies
+| Endpoint | Method |
+|----------|--------|
+| `GET /instruments/cryptocurrencies` | `list_cryptocurrencies()` |
+| `GET /instruments/cryptocurrencies/{symbol}` | `get_cryptocurrency()` |
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/cryptocurrencies` | ✅ `list_cryptocurrencies()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/cryptocurrencies/{symbol}` | ✅ `get_cryptocurrency()` | ✅ **IMPLEMENTED** | Functional |
+Cryptocurrency **trading** through the API is disabled by the venue as of
+2026-06-29. Discovery and market data are unaffected; order routing is tracked
+in [#91](https://github.com/joaquinbejar/tastytrade/issues/91).
 
-### 📈 Instruments - Equities
+### Equities
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/equities` | ✅ `list_equities()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/equities/active` | ✅ `list_active_equities()` | ✅ **IMPLEMENTED** | With pagination |
-| `GET /instruments/equities/{symbol}` | ✅ `get_equity()` / `get_equity_info()` | ✅ **IMPLEMENTED** | Two methods available |
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `GET /instruments/equities` | `list_equities(&EquityFilter)` | `Paginated<T>`; `symbol[]`, `is-etf`, `is-index`, `lendability` |
+| `GET /instruments/equities/active` | `list_active_equities(&ActiveEquityFilter)` | `Paginated<T>`; `lendability` |
+| `GET /instruments/equities/{symbol}` | `get_equity()` / `get_equity_info()` | Two return shapes over one route |
 
-### 📊 Instruments - Equity Options
+### Equity options
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/equity-options` | ✅ `list_equity_options()` / `list_all_equity_options()` | ✅ **IMPLEMENTED** | Two methods: with specific symbols and with pagination |
-| `GET /instruments/equity-options/{symbol}` | ✅ `get_equity_option()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `GET /instruments/equity-options/{symbol}` | `get_equity_option(symbol, active)` | `active` is the venue's documented filter |
 
-### 🔮 Instruments - Future Options
+### Future options
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/future-options` | ✅ `list_future_options()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/future-options/{symbol}` | ✅ `get_future_option()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method |
+|----------|--------|
+| `GET /instruments/future-options/{symbol}` | `get_future_option()` |
 
-### 🏭 Instruments - Future Products
+### Future products and future option products
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/future-products` | ✅ `list_future_products()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/future-products/{exchange}/{code}` | ✅ `get_future_product()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/future-option-products` | ✅ `list_future_option_products()` | ✅ **IMPLEMENTED** | Functional (deprecated) |
-| `GET /instruments/future-option-products/{exchange}/{root_symbol}` | ✅ `get_future_option_product_by_exchange()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/future-option-products/{root_symbol}` | ✅ `get_future_option_product()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `GET /instruments/future-products` | `list_future_products(&PageRequest)` | `Paginated<T>` |
+| `GET /instruments/future-products/{exchange}/{code}` | `get_future_product()` | |
+| `GET /instruments/future-option-products` | `list_future_option_products(&PageRequest)` | `Paginated<T>` |
+| `GET /instruments/future-option-products/{exchange}/{root_symbol}` | `get_future_option_product_by_exchange()` | |
+| `GET /instruments/future-option-products/{root_symbol}` | `get_future_option_product()` | |
 
-### 📅 Instruments - Futures
+### Futures
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/futures` | ✅ `list_futures()` | ✅ **IMPLEMENTED** | With optional filters |
-| `GET /instruments/futures/{symbol}` | ✅ `get_future()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `GET /instruments/futures` | `list_futures(&FutureFilter)` | `Paginated<T>`; `symbol[]`, `product-code[]`, `security-id[]`, `exchange`, `only-active-futures` |
+| `GET /instruments/futures/{symbol}` | `get_future()` | |
 
-### 📜 Instruments - Warrants
+### Warrants
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/warrants` | ✅ `list_warrants()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /instruments/warrants/{symbol}` | ✅ `get_warrant()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method |
+|----------|--------|
+| `GET /instruments/warrants` | `list_warrants()` |
+| `GET /instruments/warrants/{symbol}` | `get_warrant()` |
 
-### ⚙️ Instruments - Other
+### Search
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /instruments/quantity-decimal-precisions` | ✅ `list_quantity_decimal_precisions()` | ✅ **IMPLEMENTED** | Functional |
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `GET /instruments/search` | `search_instruments(&InstrumentSearchFilter)` | Filters are **comma-joined**, not repeated keys; `limit` capped at 100 locally |
+| `POST /instruments/ai-search-token` | `ai_search_token()` | Mints a Telescope credential; redacted in `Debug`/`Display` |
 
-### 🔗 Option Chains
+`GET /symbols/search/{symbol}` is `search_symbols()`. It belongs to the separate
+Symbol Search area (`symbol-search-server-swagger.json`) and is not one of the
+24 paths counted here.
 
-| Endpoint | Implemented Method | Status | Notes |
-|----------|-------------------|--------|---------|
-| `GET /option-chains/{symbol}` | ✅ `list_option_chains()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /option-chains/{symbol}/compact` | ✅ `get_compact_option_chain()` | ✅ **IMPLEMENTED** | Functional |
-| `GET /option-chains/{symbol}/nested` | ✅ `list_nested_option_chains()` | ✅ **IMPLEMENTED** | Functional |
+### Other
 
----
+| Endpoint | Method |
+|----------|--------|
+| `GET /instruments/quantity-decimal-precisions` | `list_quantity_decimal_precisions()` |
 
-## ✅ All Endpoints Implemented
+### Option chains
 
-All TastyTrade Instruments API endpoints have been successfully implemented and are fully functional.
+| Endpoint | Method |
+|----------|--------|
+| `GET /option-chains/{symbol}` | `list_option_chains()` / `option_chain_for()` |
+| `GET /option-chains/{symbol}/compact` | `get_compact_option_chain()` |
+| `GET /option-chains/{symbol}/nested` | `list_nested_option_chains()` / `nested_option_chain_for()` |
 
----
+## Implemented but no longer in the document
 
-## 🚀 Additional Implemented Features
+Two plural list forms this crate calls and the current spec does not describe:
 
-Beyond the standard endpoints, additional functionality has been implemented:
+| Endpoint | Method | Return |
+|----------|--------|--------|
+| `GET /instruments/equity-options` | `list_equity_options()` | `Vec<T>` |
+| `GET /instruments/future-options` | `list_future_options()` | `Vec<T>` |
 
-### Convenience Methods
-- **`list_all_equity_options()`** - Paginated version of equity options
-- **`get_equity_info()`** - Specific equity information
+Both appear in the earlier spec capture at `Doc/Instruments.json`, and the
+`20250715` release note names both as newly paginated. They keep returning
+`Vec<T>` rather than `Paginated<T>` precisely because there is no current
+document to check a new return type against, and switching them on a release
+note alone would break every existing call if the note is wrong. The reasoning
+and the probe that settles it are in `Doc/API_Coverage_Status.md` under
+[#90](https://github.com/joaquinbejar/tastytrade/issues/90).
 
-### Robustness Improvements
-- **Custom logging** for deserialization debugging
-- **Optional fields** in structures to handle API inconsistencies
-- **Enhanced error handling** for different instrument types
+## Not in the document at all
 
-### Examples and Testing
-- **`test_list_active_equities.rs`** - Complete example for equity instruments
-- **`test_list_futures.rs`** - Complete example for futures
-- **`download_options_symbols.rs`** - Bulk download of option symbols
-- **`test_futures_option_chains.rs`** - Complete example for futures option chains
-- **`test_option_chains.rs`** - Complete example for option chains (standard, compact, nested)
-- **`test_future_option_products.rs`** - Complete example for future option products
-- **`test_cryptocurrencies.rs`** - Complete example for cryptocurrencies
-- **`test_equities.rs`** - Complete example for equities (all endpoints)
-- **`test_equity_options.rs`** - Complete example for equity options
-- **`test_future_options.rs`** - Complete example for future options
-- **`test_futures.rs`** - Complete example for futures (all endpoints)
-- **`test_warrants.rs`** - Complete example for warrants
-- **`test_quantity_decimal_precisions.rs`** - Complete example for quantity decimal precisions
-- **`comprehensive_instruments_demo.rs`** - Comprehensive demo of ALL endpoints
+`GET /instruments/equity-deliverables` and `GET /instruments/future-spreads`
+are named in the same release note and appear in no OpenAPI document. Not
+implemented, and not counted above as missing —
+see `Doc/API_Coverage_Status.md`.
 
----
+## Type notes
 
-## 📊 Data Types Status
+| Type | Worth knowing |
+|------|---------------|
+| `EquityInstrument` | `lendability` stays `Option<String>`; the filter side uses the `Lendability` wire enum |
+| `Future`, `FutureProduct` | Tick sizes and closing-only dates are `Option<T>` — cert omits fields production sends |
+| `CompactOptionChain` | `settlement_type`, `expiration_type`, symbols and streamer symbols are all optional |
+| `InstrumentSearchResult` | Everything except `symbol` is `Option<T>`; the swagger marks no field required |
+| `AiSearchToken` | Holds the whole response object because the spec publishes **no** response schema; redacted in `Debug`, `Display` and errors |
 
-| Structure | Status | Optional Fields | Notes |
-|-----------|--------|-----------------|-------|
-| `EquityInstrument` | ✅ Complete | `is_fractional_quantity_eligible` | Robust |
-| `Future` | ✅ Complete | `tick_sizes`, `option_tick_sizes`, `closing_only_date` | Robust |
-| `FutureProduct` | ✅ Complete | `clearport_code`, `legacy_code`, `legacy_exchange_code` | Robust |
-| `EquityOption` | ✅ Complete | - | Functional |
-| `FutureOption` | ✅ Complete | - | Functional |
-| `FutureOptionProduct` | ✅ Complete | - | Functional |
-| `CompactOptionChain` | ✅ Complete | `settlement_type`, `expiration_type`, `symbols`, `streamer_symbols` | Functional |
-| `Cryptocurrency` | ✅ Complete | - | Functional |
-| `Warrant` | ✅ Complete | - | Functional |
-| `NestedOptionChain` | ✅ Complete | - | Functional |
-
----
-
-## 🎯 Next Steps
-
-### Quality Improvements
-1. Add comprehensive unit tests for all implemented methods
-2. Add integration tests for endpoint combinations
-3. Performance benchmarking for high-volume operations
-4. Error handling improvements and retry mechanisms
-
-### Advanced Features
-1. Implement caching for frequent queries
-2. Batch processing for bulk queries
-3. Intelligent rate limiting and request optimization
-4. Real-time data streaming integration
-
-### Documentation Enhancements
-1. API usage guides and best practices
-2. Performance optimization recommendations
-3. Error handling and troubleshooting guides
-4. Migration guides for deprecated endpoints
-
----
-
-*Auto-generated document - Last updated: 2025-09-01*
+Every monetary or tick-size field is `Decimal`. Symbols, exchange and clearing
+codes, CUSIPs and descriptions stay `String` on purpose.

@@ -11,6 +11,7 @@ pub(crate) mod instrument_filter;
 pub(crate) mod order;
 pub(crate) mod position;
 pub(crate) mod quote_alert;
+pub(crate) mod search;
 pub(crate) mod watchlist;
 pub mod wire;
 
