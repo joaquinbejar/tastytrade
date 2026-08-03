@@ -5,6 +5,7 @@
 ******************************************************************************/
 
 pub(crate) mod account_filter;
+pub(crate) mod backtest;
 pub(crate) mod balance;
 pub(crate) mod capability;
 pub(crate) mod complex_order;

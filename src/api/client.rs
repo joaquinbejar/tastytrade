@@ -664,8 +664,20 @@ impl TastyTrade {
 
     /// Joins the base URL and a path, after checking the session belongs here.
     fn request_url(&self, path: &str) -> TastyResult<String> {
+        self.url_at(&self.config.base_url, path)
+    }
+
+    /// The same, against a base other than the configured one.
+    ///
+    /// One area — backtesting — is served by a **different host**, declared in
+    /// its own OpenAPI document. The deployment check still runs against the
+    /// configured base URL, because that is what the session authenticated
+    /// with: a certification session talking to the backtester is still a
+    /// certification session, and reporting otherwise would misname the
+    /// environment in every error it produced.
+    pub(crate) fn url_at(&self, base: &str, path: &str) -> TastyResult<String> {
         self.session.ensure_same_deployment(&self.config.base_url)?;
-        endpoint_url(&self.config.base_url, path)
+        endpoint_url(base, path)
     }
 
     /// Performs a GET with query parameters and decodes the response.
@@ -685,7 +697,28 @@ impl TastyTrade {
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
-        let full_url = self.request_url(url.as_ref())?;
+        let base = self.config.base_url.clone();
+        self.get_with_query_at(&base, url, query).await
+    }
+
+    /// A GET against a base other than the configured one.
+    ///
+    /// Everything else is identical — the deployment check, the pre-request
+    /// refresh, the redacted operation in the error, and the single place the
+    /// status is inspected — so a second host cannot drift away from the
+    /// invariants the first one keeps.
+    pub(crate) async fn get_with_query_at<T, R, U>(
+        &self,
+        base: &str,
+        url: U,
+        query: &[(&str, &str)],
+    ) -> TastyResult<R>
+    where
+        T: DeserializeOwned + Serialize + std::fmt::Debug,
+        R: FromTastyResponse<T>,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
         let query_string = query
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -777,7 +810,19 @@ impl TastyTrade {
         P: Serialize,
         U: AsRef<str>,
     {
-        let full_url = self.request_url(url.as_ref())?;
+        let base = self.config.base_url.clone();
+        self.post_at(&base, url, payload).await
+    }
+
+    /// A POST against a base other than the configured one. See
+    /// [`TastyTrade::get_with_query_at`].
+    pub(crate) async fn post_at<R, P, U>(&self, base: &str, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
         let report = RequestReport::new(
             "POST",
             redact_account_path(&full_url),
@@ -1449,6 +1494,36 @@ impl TastyTrade {
     /// connection cannot be established.
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         QuoteStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod second_host_tests {
+    use super::endpoint_url;
+    use crate::types::backtest::BACKTESTER_BASE_URL;
+
+    /// Backtesting is served by a host of its own, and the join has to produce
+    /// that host rather than the configured one.
+    ///
+    /// A unit test because the integration suite is network-free: a test that
+    /// actually called the backtester would reach the internet.
+    #[test]
+    fn a_second_host_joins_to_itself_and_not_to_the_configured_one() {
+        let joined =
+            endpoint_url(BACKTESTER_BASE_URL, "/backtests").expect("a relative path joins cleanly");
+
+        assert_eq!(joined, "https://backtester.vast.tastyworks.com/backtests");
+        assert!(
+            !joined.contains("tastyworks.com/tastyworks.com"),
+            "the bases must not be concatenated: {joined}"
+        );
+    }
+
+    /// The same guard the configured host has: an absolute URL is a caller
+    /// mistake, reported before anything is sent, on every host.
+    #[test]
+    fn an_absolute_path_is_still_refused_against_the_second_host() {
+        assert!(endpoint_url(BACKTESTER_BASE_URL, "https://elsewhere/backtests").is_err());
     }
 }
 

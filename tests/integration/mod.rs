@@ -12,6 +12,7 @@
 mod support;
 
 mod account_stream;
+mod backtesting;
 mod balances;
 mod complex_orders;
 mod crypto_suspension;
