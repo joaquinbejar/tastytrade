@@ -1,9 +1,11 @@
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
+use crate::api::query::QueryBuilder;
 use crate::api::url::encode_path_segment;
 use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter};
 use crate::types::balance::{Balance, BalanceSnapshot};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
+use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
@@ -404,6 +406,62 @@ impl Account<'_> {
             .get_with_query(&self.path("/positions"), &query.pairs())
             .await?;
         resp.into_items()
+    }
+
+    /// One page of the account's ledger.
+    ///
+    /// Everything that changed a balance or a position: fills, fees,
+    /// dividends, assignments, cash movements. `filter` carries the whole
+    /// documented query.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and when
+    /// transactions arrive but none can be decoded. A genuinely empty page is
+    /// `Ok`.
+    pub async fn transactions(
+        &self,
+        filter: &TransactionFilter,
+    ) -> TastyResult<Paginated<Transaction>> {
+        let query = filter.to_query();
+        self.tasty
+            .get_with_query::<Items<Transaction>, _, _>(&self.path("/transactions"), &query.pairs())
+            .await
+    }
+
+    /// One transaction by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for an identifier this
+    /// account does not have.
+    pub async fn transaction(&self, id: i64) -> TastyResult<Transaction> {
+        // `id` is an `i64`, so its rendering is already path-safe. The type is
+        // what guarantees that, not this call site.
+        self.tasty
+            .get(&self.path(&format!("/transactions/{id}")))
+            .await
+    }
+
+    /// What the account paid in fees on one day.
+    ///
+    /// `None` omits the `date` parameter, which leaves the venue's documented
+    /// default of today in place — sending today's date from this process
+    /// would substitute *this machine's* idea of the date for the venue's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn total_fees(&self, date: Option<NaiveDate>) -> TastyResult<TotalFees> {
+        let mut query = QueryBuilder::new();
+        query.push_opt("date", date);
+
+        self.tasty
+            .get_with_query::<TotalFees, TotalFees, _>(
+                &self.path("/transactions/total-fees"),
+                &query.pairs(),
+            )
+            .await
     }
 
     /// Orders that are still working.

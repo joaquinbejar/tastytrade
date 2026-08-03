@@ -1,0 +1,76 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": 252640963,
+        "account-number": "SENTINEL-5WX00042",
+        "symbol": "KBWD",
+        "instrument-type": "Equity",
+        "underlying-symbol": "KBWD",
+        "transaction-type": "Receive Deliver",
+        "transaction-sub-type": "Dividend",
+        "description": "Received 1.68074 Long KBWD via Dividend",
+        "action": "Buy to Open",
+        "quantity": "1.68074",
+        "price": "16.46",
+        "executed-at": "2023-07-28T21:00:00.000+00:00",
+        "transaction-date": "2023-07-28",
+        "value": "0.0",
+        "value-effect": "None",
+        "net-value": "0.0",
+        "net-value-effect": "None",
+        "is-estimated-fee": true
+      },
+      {
+        "id": 252640962,
+        "account-number": "SENTINEL-5WX00042",
+        "symbol": "PGX",
+        "instrument-type": "Equity",
+        "underlying-symbol": "PGX",
+        "transaction-type": "Receive Deliver",
+        "transaction-sub-type": "Dividend",
+        "description": "Received 0.55928 Long PGX via Dividend",
+        "action": "Buy to Open",
+        "quantity": "0.55928",
+        "price": "11.28",
+        "executed-at": "2023-07-28T21:00:00.000+00:00",
+        "transaction-date": "2023-07-28",
+        "value": "0.0",
+        "value-effect": "None",
+        "net-value": "0.0",
+        "net-value-effect": "None",
+        "is-estimated-fee": true
+      },
+      {
+        "id": 252634233,
+        "account-number": "SENTINEL-5WX00042",
+        "symbol": "KBWD",
+        "instrument-type": "Equity",
+        "underlying-symbol": "KBWD",
+        "transaction-type": "Money Movement",
+        "transaction-sub-type": "Dividend",
+        "description": "INVESCO EXCHANGE TRADED FD TR",
+        "executed-at": "2023-07-28T21:00:00.000+00:00",
+        "transaction-date": "2023-07-28",
+        "value": "27.74",
+        "value-effect": "Credit",
+        "net-value": "27.74",
+        "net-value-effect": "Credit",
+        "is-estimated-fee": true
+      }
+    ]
+  },
+  "api-version": "v1",
+  "context": "/accounts/SENTINEL-5WX00042/transactions",
+  "pagination": {
+    "per-page": 250,
+    "page-offset": 0,
+    "item-offset": 0,
+    "total-items": 1622,
+    "total-pages": 7,
+    "current-item-count": 250,
+    "previous-link": null,
+    "next-link": null,
+    "paging-link-template": null
+  }
+}

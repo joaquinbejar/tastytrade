@@ -482,6 +482,125 @@ macro_rules! wire_enum {
     };
 }
 
+// `macro_rules!` is textually scoped, so a macro defined here is invisible to
+// sibling modules without this. Re-exported at crate level rather than
+// `#[macro_export]`ed: the macro generates a **public** enum, and exporting it
+// from the crate root would make it part of the public API by accident.
+pub(crate) use wire_enum;
+
+/// Decodes a field the venue may answer with a value this crate does not model.
+///
+/// The row survives; the field becomes `None`. Without this a single
+/// unrecognised value fails the whole struct, and [`crate::api::base::Items`]
+/// drops a struct that fails — so a ledger quietly loses a transaction, with
+/// every other field on it intact and unread.
+///
+/// The cost is that an unrecognised value and an absent one both read as
+/// `None`. That is the lesser loss: the alternative is losing the row. The
+/// rejected text goes to DEBUG so it can be identified and modelled, and never
+/// higher, because it is venue data about an account's activity.
+///
+/// For enums whose full value set matters to the caller, [`wire_enum`] and its
+/// `Unknown(String)` arm are the better tool. This is for fields typed against
+/// an enum that is shared with request paths, where adding an arm would change
+/// what callers are allowed to send.
+pub(crate) fn tolerant_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    match serde_json::from_value::<T>(value.clone()) {
+        Ok(decoded) => Ok(Some(decoded)),
+        Err(error) => {
+            tracing::debug!(
+                "field value {} is not one this crate models ({}); the field reads as absent \
+                 and the rest of the record is kept",
+                value,
+                error
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Renders a value as JSON with the identifiers a log must not carry replaced.
+///
+/// `DebugPretty` and `DisplaySimple` render through `Serialize`, so a struct
+/// holding an account number prints it the moment anybody writes `{value:?}` —
+/// including the `tracing` macros, which is how it reaches an aggregator
+/// nobody meant to send it to. Redaction is a property of the type, so the
+/// types that carry an account number render through this instead of deriving.
+///
+/// Structural rather than per-field: it walks the serialized value and replaces
+/// **every** key whose name identifies an account, at any depth. A per-field
+/// implementation is a per-field opportunity to forget one, and these records
+/// nest — a complex order carries component orders, each with their own copy.
+///
+/// Serialization itself is untouched. Writing the record out is an explicit act
+/// with an explicit destination; rendering it is not.
+pub(crate) fn redacted_render(value: &impl serde::Serialize) -> String {
+    /// Keys whose value names an account, in the spellings the venue uses.
+    fn is_account_key(key: &str) -> bool {
+        matches!(key, "account-number" | "account_number" | "account-numbers")
+    }
+
+    fn redact(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, entry) in map.iter_mut() {
+                    if is_account_key(key) && !entry.is_null() {
+                        *entry = serde_json::Value::String("{account}".to_string());
+                    } else {
+                        redact(entry);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(redact),
+            _ => {}
+        }
+    }
+
+    match serde_json::to_value(value) {
+        Ok(mut rendered) => {
+            redact(&mut rendered);
+            rendered.to_string()
+        }
+        // A value that will not serialize has nothing safe to say about
+        // itself, so it says nothing rather than falling back to a derive.
+        Err(_) => "<unrenderable>".to_string(),
+    }
+}
+
+/// Writes `Debug` and `Display` through [`redacted_render`].
+///
+/// For records that are useful to look at and carry an account number: the
+/// record renders, the identifier does not.
+macro_rules! redacted_account_render {
+    ($name:ident) => {
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    concat!(stringify!($name), " {}"),
+                    $crate::types::wire::redacted_render(self)
+                )
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(&$crate::types::wire::redacted_render(self))
+            }
+        }
+    };
+}
+
+pub(crate) use redacted_account_render;
+
 wire_enum! {
     /// How an option series expires.
     ///

@@ -11,7 +11,7 @@ use std::fmt;
 ///
 /// This enum is used to indicate whether a price change results in a debit,
 /// a credit, or has no effect on the account balance.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum PriceEffect {
     /// Represents a debit, meaning a reduction in the account balance.
     Debit,
@@ -960,11 +960,16 @@ mod tests {
         assert_eq!(symbol1, symbol3);
     }
 
+    /// `PriceEffect` is `Copy` now, so a copy is a copy. It gained `Copy`,
+    /// `PartialEq` and `Eq` because the transaction ledger compares them: a
+    /// debit of 100 and a credit of 100 are opposite facts about one number.
     #[test]
-    fn test_price_effect_clone() {
+    fn test_price_effect_copies_and_compares() {
         let effect1 = PriceEffect::Debit;
-        let effect2 = effect1.clone();
-        matches!(effect2, PriceEffect::Debit);
+        let effect2 = effect1;
+
+        assert_eq!(effect1, effect2);
+        assert_ne!(effect1, PriceEffect::Credit);
     }
 
     #[test]
