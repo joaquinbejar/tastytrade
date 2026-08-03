@@ -3,8 +3,17 @@
 Reference frames for the account websocket, one per notification the four
 documented actions produce.
 
-**None of these is a captured venue frame.** They come from two places, and
-each is labelled:
+**None of these is a captured venue frame.** The machine-readable copies live
+in `Doc/frames/account/`, one file per notification, and the streaming tests
+read those rather than string literals — so replacing a fixture with a real
+capture changes what is tested, not just what is documented. `capture_frames`
+(in `examples/accounts-status`) writes them, redacted:
+
+```shell
+cargo run -p accounts-status --bin capture_frames
+```
+
+They come from two places, and each is labelled:
 
 * **documented** — copied from tastytrade's Streaming Account Data guide,
   with the account number replaced by a sentinel;

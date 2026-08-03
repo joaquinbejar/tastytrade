@@ -1,0 +1,44 @@
+{
+  "type": "Order",
+  "data": {
+    "id": 1,
+    "account-number": "SENTINEL-5WX00042",
+    "time-in-force": "Day",
+    "order-type": "Market",
+    "size": 100,
+    "underlying-symbol": "AAPL",
+    "underlying-instrument-type": "Equity",
+    "status": "Filled",
+    "cancellable": false,
+    "editable": false,
+    "edited": false,
+    "received-at": "2023-07-05T19:07:32.444+00:00",
+    "updated-at": 1688584052750,
+    "in-flight-at": "2023-07-05T19:07:32.494+00:00",
+    "live-at": "2023-07-05T19:07:32.495+00:00",
+    "terminal-at": "2023-07-05T19:07:32.737+00:00",
+    "user-id": 99,
+    "username": "coolperson",
+    "legs": [
+      {
+        "instrument-type": "Equity",
+        "symbol": "AAPL",
+        "quantity": 100,
+        "remaining-quantity": 0,
+        "action": "Buy to Open",
+        "fills": [
+          {
+            "ext-group-fill-id": "0",
+            "ext-exec-id": "1122",
+            "fill-id": "24_TW::TEST_A47504::20230705.1179-TEST_FILL",
+            "quantity": 100,
+            "fill-price": "100.0",
+            "filled-at": "2023-07-05T19:07:32.496+00:00",
+            "destination-venue": "TEST_A"
+          }
+        ]
+      }
+    ]
+  },
+  "timestamp": 1688595114405
+}

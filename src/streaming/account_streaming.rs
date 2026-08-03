@@ -1623,6 +1623,62 @@ mod frame_routing_tests {
         decode_account_frame(frame.as_bytes()).expect("valid JSON is always an event")
     }
 
+    /// The frames live in `Doc/frames/account/` rather than in string literals
+    /// here, so the same bytes a capture would replace are what the tests read.
+    /// `include_str!` on purpose: a fixture that is deleted or renamed fails
+    /// the build instead of quietly reducing what is covered.
+    ///
+    /// The suffix carries the provenance. `.documented` came from the venue's
+    /// own guide; `.derived` was assembled from the published swagger and is
+    /// evidence about shape only. See the README beside them.
+    mod fixture {
+        pub const ORDER_FILLED: &str =
+            include_str!("../../Doc/frames/account/order.documented.json");
+        pub const ORDER_MARKET: &str =
+            include_str!("../../Doc/frames/account/order-market.documented.json");
+        pub const ACCOUNT_BALANCE: &str =
+            include_str!("../../Doc/frames/account/account-balance.derived.json");
+        pub const CURRENT_POSITION: &str =
+            include_str!("../../Doc/frames/account/current-position.derived.json");
+        pub const QUOTE_ALERT: &str =
+            include_str!("../../Doc/frames/account/quote-alert.derived.json");
+        pub const PUBLIC_WATCHLISTS: &str =
+            include_str!("../../Doc/frames/account/public-watchlists.derived.json");
+        pub const STATUS_CONNECT: &str =
+            include_str!("../../Doc/frames/account/status-connect.documented.json");
+        pub const ERROR_CONNECT: &str =
+            include_str!("../../Doc/frames/account/error-connect.documented.json");
+
+        /// Every notification fixture, so one test can assert the set is
+        /// covered rather than each being remembered individually.
+        pub const NOTIFICATIONS: [(&str, &str); 6] = [
+            ("Order", ORDER_FILLED),
+            ("Order", ORDER_MARKET),
+            ("AccountBalance", ACCOUNT_BALANCE),
+            ("CurrentPosition", CURRENT_POSITION),
+            ("QuoteAlert", QUOTE_ALERT),
+            ("PublicWatchlists", PUBLIC_WATCHLISTS),
+        ];
+    }
+
+    /// Every fixture on disk decodes as the type its name claims. Cheap, and
+    /// it is what stops a capture from being committed without anybody
+    /// noticing it no longer matches the model.
+    #[test]
+    fn every_notification_fixture_decodes_as_its_own_type() {
+        for (kind, frame) in fixture::NOTIFICATIONS {
+            let AccountEvent::Notification(notification) = decode(frame) else {
+                panic!("{kind} fixture must decode as a notification");
+            };
+            assert_eq!(notification.kind, kind);
+            assert!(
+                !matches!(notification.payload, NotificationPayload::Unsupported(_)),
+                "the {kind} fixture no longer matches its model — reconcile the type \
+                 or the fixture, do not delete the assertion"
+            );
+        }
+    }
+
     /// The documented `connect` notification, verbatim from the account
     /// streaming guide, with the account number replaced by a sentinel.
     ///
@@ -1631,56 +1687,7 @@ mod frame_routing_tests {
     /// caller ever learns what they paid.
     #[test]
     fn the_documented_order_notification_decodes_with_its_fills() {
-        let frame = format!(
-            r#"{{
-              "type": "Order",
-              "data": {{
-                "id": 1,
-                "account-number": "{ACCOUNT_NUMBER}",
-                "time-in-force": "Day",
-                "order-type": "Market",
-                "size": 100,
-                "underlying-symbol": "AAPL",
-                "underlying-instrument-type": "Equity",
-                "price": "100.0",
-                "price-effect": "Debit",
-                "status": "Filled",
-                "cancellable": false,
-                "editable": false,
-                "edited": false,
-                "received-at": "2023-07-05T19:07:32.444+00:00",
-                "updated-at": 1688584052750,
-                "live-at": "2023-07-05T19:07:32.495+00:00",
-                "terminal-at": "2023-07-05T19:07:32.737+00:00",
-                "destination-venue": "TEST_A",
-                "user-id": "99",
-                "username": "coolperson",
-                "legs": [
-                  {{
-                    "instrument-type": "Equity",
-                    "symbol": "AAPL",
-                    "quantity": 100,
-                    "remaining-quantity": 0,
-                    "action": "Buy to Open",
-                    "fills": [
-                      {{
-                        "ext-group-fill-id": "0",
-                        "ext-exec-id": "1122",
-                        "fill-id": "24_TW::TEST_A47504::20230705.1179-TEST_FILL",
-                        "quantity": 100,
-                        "fill-price": "100.0",
-                        "filled-at": "2023-07-05T19:07:32.496+00:00",
-                        "destination-venue": "TEST_A"
-                      }}
-                    ]
-                  }}
-                ]
-              }},
-              "timestamp": 1688595114405
-            }}"#
-        );
-
-        let AccountEvent::Notification(notification) = decode(&frame) else {
+        let AccountEvent::Notification(notification) = decode(fixture::ORDER_FILLED) else {
             panic!("a documented order notification must be a notification");
         };
         assert_eq!(notification.kind, "Order");
@@ -1709,24 +1716,7 @@ mod frame_routing_tests {
     /// type there is — could not be decoded at all.
     #[test]
     fn a_market_order_notification_without_a_price_decodes() {
-        let frame = format!(
-            r#"{{"type":"Order","data":{{
-                 "id": 1,
-                 "account-number": "{ACCOUNT_NUMBER}",
-                 "time-in-force": "Day",
-                 "order-type": "Market",
-                 "size": 100,
-                 "underlying-symbol": "AAPL",
-                 "status": "Routed",
-                 "cancellable": true,
-                 "editable": true,
-                 "edited": false,
-                 "user-id": 99,
-                 "leg-count": 1
-               }}}}"#
-        );
-
-        let AccountEvent::Notification(notification) = decode(&frame) else {
+        let AccountEvent::Notification(notification) = decode(fixture::ORDER_MARKET) else {
             panic!("a market order is a notification");
         };
         let NotificationPayload::Order(order) = notification.payload else {
@@ -1745,12 +1735,7 @@ mod frame_routing_tests {
     /// decode and was dropped with a warning.
     #[test]
     fn a_connect_acknowledgement_without_a_request_id_is_delivered() {
-        let frame = format!(
-            r#"{{"status":"ok","action":"connect","web-socket-session-id":"5b6e2799",
-                 "value":["{ACCOUNT_NUMBER}"]}}"#
-        );
-
-        let AccountEvent::StatusMessage(status) = decode(&frame) else {
+        let AccountEvent::StatusMessage(status) = decode(fixture::STATUS_CONNECT) else {
             panic!("an acknowledgement must reach the caller");
         };
         assert_eq!(status.action, "connect");
@@ -1765,10 +1750,7 @@ mod frame_routing_tests {
 
     #[test]
     fn a_refusal_is_an_error_message() {
-        let frame = r#"{"status":"error","action":"connect","web-socket-session-id":"5b6e2799",
-                        "message":"connect-not-completed"}"#;
-
-        let AccountEvent::ErrorMessage(error) = decode(frame) else {
+        let AccountEvent::ErrorMessage(error) = decode(fixture::ERROR_CONNECT) else {
             panic!("a refusal must be an error message");
         };
         assert_eq!(error.message, "connect-not-completed");
@@ -1829,23 +1811,18 @@ mod frame_routing_tests {
 
     #[test]
     fn a_quote_alert_and_a_public_watchlist_are_typed() {
-        let AccountEvent::Notification(alert) = decode(
-            r#"{"type":"QuoteAlert","data":{"symbol":"AAPL","threshold-numeric":"200.00"}}"#,
-        ) else {
+        let AccountEvent::Notification(alert) = decode(fixture::QUOTE_ALERT) else {
             panic!("a quote alert is a notification");
         };
         assert!(matches!(alert.payload, NotificationPayload::QuoteAlert(_)));
 
-        let AccountEvent::Notification(watchlist) = decode(
-            r#"{"type":"PublicWatchlists","data":{"name":"High Options Volume",
-                 "watchlist-entries":[{"symbol":"AAPL"}]}}"#,
-        ) else {
+        let AccountEvent::Notification(watchlist) = decode(fixture::PUBLIC_WATCHLISTS) else {
             panic!("a watchlist is a notification");
         };
         let NotificationPayload::PublicWatchlist(list) = watchlist.payload else {
             panic!("the watchlist payload must be typed");
         };
-        assert_eq!(list.watchlist_entries.len(), 1);
+        assert_eq!(list.watchlist_entries.len(), 2);
     }
 
     /// A `type` with no `data` is still a notification. Treating the missing
