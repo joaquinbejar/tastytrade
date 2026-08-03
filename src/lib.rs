@@ -67,6 +67,40 @@
 //! }
 //! ```
 //!
+//! ## The customer resource
+//!
+//! [`TastyTrade::customer`] returns names, addresses, tax identifiers, birth
+//! dates, net worth and employment. It is the most sensitive object this crate
+//! touches, so **nothing in it renders itself**: `Debug` and `Display` print
+//! the type and a field count, never a value.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn who(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let customer = tasty.customer().await?;
+//!
+//! // Safe: renders as `Customer(<redacted, N field(s) present>)`.
+//! println!("{customer:?}");
+//!
+//! // Reading a value means naming the field, which is a decision rather than
+//! // an accident — and one a reviewer can grep for.
+//! if let Some(country) = customer.citizenship_country.as_deref() {
+//!     println!("citizenship: {country}");
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! A customer that may not exist is [`TastyTrade::find_customer`], which sends
+//! the venue's `allow-missing` and answers `Ok(None)` instead of a `404`.
+//!
+//! One account is one request. [`TastyTrade::account`] used to download every
+//! account and filter locally, so a *sibling* account that failed to
+//! deserialize took the one you asked for with it — `Items<T>` skips what it
+//! cannot parse, and the answer came back `Ok(None)`, indistinguishable from
+//! "this session cannot see that account". Now `Ok(None)` means the venue
+//! returned `404`.
+//!
 //! ## Balances and positions
 //!
 //! `GET /balances` answers with a **list** — one row per currency the account

@@ -245,6 +245,26 @@ impl Account<'_> {
         self.inner.account.account_number.clone()
     }
 
+    /// Everything the venue said about this account.
+    ///
+    /// Nickname, type, margin-or-cash, the approval flags and the dates. A
+    /// flag the broker did not send is `None`, never `false`.
+    ///
+    /// Account PII: [`AccountDetails::account_number`] is in here, so the same
+    /// care applies as to [`Account::number`].
+    pub fn details(&self) -> &AccountDetails {
+        &self.inner.account
+    }
+
+    /// What this session may do with the account, e.g. `owner`.
+    ///
+    /// Empty when the account came from the single-account endpoint, which
+    /// answers with the account itself rather than the listing's authority
+    /// decorator. Empty means "not reported", not "none".
+    pub fn authority_level(&self) -> &str {
+        &self.inner.authority_level
+    }
+
     /// `/accounts/{this account}{suffix}`, with the number percent-encoded.
     ///
     /// Every account-scoped request builds its path here, so no endpoint can

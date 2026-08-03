@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::sync::Arc;
 
+use crate::accounts::AccountDetails;
 use crate::accounts::{Account, AccountInner, AccountNumber};
 use crate::api::base::Items;
 use crate::api::base::Paginated;
@@ -8,8 +9,10 @@ use crate::api::base::Response;
 use crate::api::base::TastyApiResponse;
 use crate::api::base::TastyResult;
 use crate::api::oauth::{OAuthSession, authorization_code_grant, default_headers, refresh_grant};
+use crate::api::url::encode_path_segment;
 use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
+use crate::types::customer::Customer;
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::utils::config::TastyTradeConfig;
 use reqwest::ClientBuilder;
@@ -769,14 +772,96 @@ impl TastyTrade {
         &self,
         account_number: impl Into<AccountNumber>,
     ) -> TastyResult<Option<Account<'_>>> {
+        // One request for one account, rather than the whole listing filtered
+        // here. The old version could not tell "this session cannot see that
+        // account" from "a *sibling* account failed to deserialize, so
+        // `Items<T>` skipped it and the one you asked for vanished with it" —
+        // which is exactly what the `is-test-drive` bug looked like from
+        // outside. Now `Ok(None)` means the venue said 404.
+        self.account_by_number(account_number).await
+    }
+
+    /// One account by number, from its own endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error. A `404` is **not** an error: it is
+    /// `Ok(None)`, meaning this session cannot see that account. Every other
+    /// status is reported.
+    pub async fn account_by_number(
+        &self,
+        account_number: impl Into<AccountNumber>,
+    ) -> TastyResult<Option<Account<'_>>> {
         let account_number = account_number.into();
-        let accounts = self.accounts().await?;
-        for account in accounts {
-            if account.inner.account.account_number == account_number {
-                return Ok(Some(account));
+        let path = format!(
+            "/customers/me/accounts/{}",
+            encode_path_segment(&account_number.0)
+        );
+
+        match self.get::<AccountDetails, _>(&path).await {
+            Ok(account) => Ok(Some(Account {
+                inner: AccountInner {
+                    account,
+                    // The single-account endpoint answers with the account
+                    // itself rather than the listing's authority decorator, so
+                    // there is no authority level to report. Saying so is
+                    // better than inventing "owner".
+                    authority_level: String::new(),
+                },
+                tasty: self,
+            })),
+            Err(crate::TastyTradeError::Request { context, .. }) if context.status == Some(404) => {
+                Ok(None)
             }
+            Err(other) => Err(other),
         }
-        Ok(None)
+    }
+
+    /// The full customer resource for this session.
+    ///
+    /// **This is personal data** — names, addresses, tax identifiers, birth
+    /// dates. [`Customer`] renders as a field count and nothing else; reading a
+    /// value means naming the field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn customer(&self) -> TastyResult<Customer> {
+        self.customer_by_id("me").await
+    }
+
+    /// The full customer resource for one customer id.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for a customer this
+    /// session cannot see. Use [`TastyTrade::find_customer`] when a missing
+    /// customer is an ordinary answer rather than a failure.
+    pub async fn customer_by_id(&self, customer_id: &str) -> TastyResult<Customer> {
+        self.get(format!("/customers/{}", encode_path_segment(customer_id)))
+            .await
+    }
+
+    /// The customer resource, or nothing, without a `404`.
+    ///
+    /// Sends the venue's documented `allow-missing`, which suppresses the
+    /// `404`. A response that carries no `id` is treated as no customer: the
+    /// venue's own way of saying "not found" once it has been told not to
+    /// raise, and a customer with no identifier is not one this crate can hand
+    /// back as if it were real.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error. A missing customer is `Ok(None)`.
+    pub async fn find_customer(&self, customer_id: &str) -> TastyResult<Option<Customer>> {
+        let customer: Option<Customer> = self
+            .get_with_query::<Option<Customer>, _, _>(
+                format!("/customers/{}", encode_path_segment(customer_id)),
+                &[("allow-missing", "true")],
+            )
+            .await?;
+
+        Ok(customer.filter(|customer| customer.id.is_some()))
     }
 
     /// Opens a DXLink market-data streamer.
