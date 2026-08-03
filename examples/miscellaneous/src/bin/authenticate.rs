@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for (i, position) in positions.iter().enumerate().take(5) {
             println!(
-                "    {}. {} {} {} @ {}",
+                "    {}. {} {} {} @ {:?}",
                 i + 1,
                 position.symbol.0,
                 position.quantity_direction,
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for (i, order) in orders.iter().enumerate().take(3) {
             println!(
-                "    {}. {} {} {} @ {}",
+                "    {}. {} {} {} @ {:?}",
                 i + 1,
                 order.underlying_symbol.0,
                 order.status,

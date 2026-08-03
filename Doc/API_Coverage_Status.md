@@ -335,27 +335,32 @@ against the venue** — `/smoke` is the check.
 
 ### Account websocket — [#87](https://github.com/joaquinbejar/tastytrade/issues/87)
 
-All five documented actions are present in `SubRequestAction`
-(`src/streaming/account_streaming.rs:22`): `heartbeat`, `connect`,
-`public-watchlists-subscribe`, `quote-alerts-subscribe`,
-`user-message-subscribe`.
+The four documented actions are implemented, plus `user-message-subscribe`,
+which the crate keeps although tastytrade no longer documents it.
 
-`AccountMessage` (`:102`) cannot decode most of what those actions produce:
+| Notification | Typed | Source of the schema |
+|---|---|---|
+| `Order` | ✅ legs and fills included | `order-api-swagger_20260427` |
+| `AccountBalance` | ✅ | `account-positions-api-swagger_20240501` |
+| `CurrentPosition` | ✅ | `account-positions-api-swagger_20240501` |
+| `QuoteAlert` | ✅ | `quote-alerts-api-swagger` |
+| `PublicWatchlists` | ✅ | `watchlists-api-swagger` |
+| `OrderChain` | ⚠️ delivered untyped | no captured frame |
+| `ExternalTransaction` | ⚠️ delivered untyped | no captured frame |
+| `UserMessage` | ⚠️ delivered untyped | undocumented |
+| `ComplexOrder` | ⚠️ delivered untyped | [#71](https://github.com/joaquinbejar/tastytrade/issues/71) |
+| `TradingStatus` | ⚠️ delivered untyped | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
+| `UnderlyingYearGainSummary` | ⚠️ delivered untyped | no captured frame |
+| anything else | ⚠️ delivered untyped | — |
 
-| Notification | Decoded |
-|---|---|
-| Order | ✅ |
-| Account balance | ✅ |
-| Current position | ✅ |
-| Order chain | ⚠️ unit variant — `data` discarded |
-| External transaction | ⚠️ unit variant — `data` discarded |
-| Quote alert trigger | ❌ |
-| Public watchlist update | ❌ |
-| User message | ❌ |
+"Delivered untyped" means `NotificationPayload::Unsupported`, which carries the
+payload. Nothing is discarded any more: an unrecognised `type`, a payload that
+does not match its model, and a frame that is neither a notification nor an
+acknowledgement all reach the caller. Only bytes that are not JSON do not.
 
-`AccountEvent` (`:166`) is `#[serde(untagged)]` with no catch-all, so an
-unrecognised notification type is a decode failure and disappears — the
-opposite of the `wire_enum!` `Unknown(String)` rule the REST side settled on.
+The frames themselves are in `Doc/account_streaming_frames.md`, marked
+documented-or-derived. **None of them is a captured venue frame**; capturing
+one per notification needs `/smoke` against certification.
 
 ### DXLink as an account transport — [#54](https://github.com/joaquinbejar/tastytrade/issues/54), closed as not planned
 

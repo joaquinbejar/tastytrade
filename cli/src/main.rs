@@ -29,7 +29,7 @@ use rust_decimal::{
 };
 use serde::Serialize;
 use tastytrade::api::quote_streaming::DxFeedSymbol;
-use tastytrade::streaming::account_streaming::{AccountEvent, AccountMessage};
+use tastytrade::streaming::account_streaming::{AccountEvent, NotificationPayload};
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::{
     QuantityDirection, Symbol, TastyTrade,
@@ -285,8 +285,8 @@ async fn main() -> Result<()> {
                     }
             }
             ev = account_streamer.get_event() => {
-                if let Ok(AccountEvent::AccountMessage(msg)) = ev
-                    && let AccountMessage::AccountBalance(bal) = *msg {
+                if let Ok(AccountEvent::Notification(notification)) = ev
+                    && let NotificationPayload::AccountBalance(bal) = notification.payload {
                         app.balances.insert(bal.account_number.0, bal.cash_balance);
                     }
             }

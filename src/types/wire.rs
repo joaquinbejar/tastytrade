@@ -96,6 +96,44 @@ pub(crate) mod decimal_option {
     }
 }
 
+/// A field the venue is inconsistent about the *shape* of, not just the
+/// encoding: a JSON string on one path and a JSON number on another, with no
+/// captured frame to settle which.
+///
+/// Both are kept as text, unchanged. The alternative to a helper like this is
+/// picking one shape and having the whole surrounding object fail to decode
+/// whenever the other arrives — which on the streaming path turns a routine
+/// notification into an unreadable frame.
+///
+/// Use it only where the sources genuinely disagree. A field with one
+/// documented shape should have that shape's type.
+pub(crate) mod loose_string_option {
+    use super::*;
+
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<WireNumber>::deserialize(deserializer)? {
+            Some(WireNumber::Text(text)) => Some(text),
+            // With `arbitrary_precision` the Number keeps the venue's own
+            // digits, so this is a copy rather than a rendering.
+            Some(WireNumber::Number(number)) => Some(number.to_string()),
+            None => None,
+        })
+    }
+
+    pub(crate) fn serialize<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(value) => serializer.serialize_str(value),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

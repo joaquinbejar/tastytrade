@@ -9,6 +9,8 @@ pub(crate) mod event;
 pub(crate) mod instrument;
 pub(crate) mod order;
 pub(crate) mod position;
+pub(crate) mod quote_alert;
+pub(crate) mod watchlist;
 pub mod wire;
 
 pub mod dxfeed;
