@@ -29,7 +29,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     info!("Environment: {}", config.environment());
-    if config.environment() != Environment::Production || std::env::var(OPT_IN).is_err() {
+    // The exact value, not merely a set variable. An exported `=0`, an empty
+    // string left over from a shell profile, or a stale `=false` all read as
+    // present, and the usage text promises `=1`.
+    if config.environment() != Environment::Production
+        || std::env::var(OPT_IN)
+            .map(|value| value.trim() != "1")
+            .unwrap_or(true)
+    {
         info!(
             "Market Metrics is live only. Re-run with TASTYTRADE_USE_DEMO=false and \
              {OPT_IN}=1 to read it from production."

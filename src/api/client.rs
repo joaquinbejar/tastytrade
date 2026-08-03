@@ -1035,7 +1035,7 @@ impl TastyTrade {
         &self,
         symbols: &[impl AsRef<str>],
     ) -> TastyResult<Vec<MarketMetric>> {
-        let query = symbols_query(symbols);
+        let query = symbols_query(symbols)?;
         let resp: Items<MarketMetric> = self
             .get_with_query("/market-metrics", &query.pairs())
             .await?;

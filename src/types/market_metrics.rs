@@ -156,7 +156,37 @@ impl EarningsRange {
 /// **Comma-joined into one parameter**, not repeated keys. The venue documents
 /// it that way and getting it wrong returns metrics for one symbol — which
 /// looks like a thin answer rather than a client bug.
-pub(crate) fn symbols_query(symbols: &[impl AsRef<str>]) -> QueryBuilder {
+///
+/// Fallible because the joining makes two mistakes invisible: an empty list
+/// sends `symbols=` and asks about nothing, and an entry that carries a comma
+/// becomes two symbols the caller never counted.
+pub(crate) fn symbols_query(symbols: &[impl AsRef<str>]) -> crate::TastyResult<QueryBuilder> {
+    if symbols.is_empty() {
+        return Err(crate::TastyTradeError::Precondition(
+            "market metrics needs at least one symbol, and this request has none; \
+             an empty list sends `symbols=`, which asks about nothing"
+                .to_string(),
+        ));
+    }
+
+    for symbol in symbols {
+        let symbol = symbol.as_ref();
+        if symbol.trim().is_empty() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a blank symbol asks the venue about an instrument with no name".to_string(),
+            ));
+        }
+        // The parameter is comma-joined, so an entry carrying a comma becomes
+        // two symbols after joining. Whatever the caller counted is not what
+        // gets asked about.
+        if symbol.contains(',') {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "the symbol {symbol:?} contains a comma, which is the separator this \
+                 parameter is joined with; pass the symbols separately"
+            )));
+        }
+    }
+
     let mut query = QueryBuilder::new();
     query.push(
         "symbols",
@@ -166,7 +196,7 @@ pub(crate) fn symbols_query(symbols: &[impl AsRef<str>]) -> QueryBuilder {
             .collect::<Vec<_>>()
             .join(","),
     );
-    query
+    Ok(query)
 }
 
 #[cfg(test)]
@@ -181,14 +211,33 @@ mod tests {
     /// unlike the repeated `symbol[]` keys everywhere else in the crate.
     #[test]
     fn symbols_are_comma_joined_into_one_parameter() {
-        let query = symbols_query(&["AAPL", "TSLA", "SPY"]);
+        let query = symbols_query(&["AAPL", "TSLA", "SPY"]).expect("three real symbols");
 
         assert_eq!(query.pairs(), vec![("symbols", "AAPL,TSLA,SPY")]);
     }
 
     #[test]
     fn a_single_symbol_still_uses_the_same_parameter() {
-        assert_eq!(symbols_query(&["AAPL"]).pairs(), vec![("symbols", "AAPL")]);
+        assert_eq!(
+            symbols_query(&["AAPL"]).expect("one real symbol").pairs(),
+            vec![("symbols", "AAPL")]
+        );
+    }
+
+    /// The joining hides two mistakes, so both are refused before sending.
+    ///
+    /// An empty list produced `symbols=`, a required parameter asking about
+    /// nothing, and an entry carrying a comma became two symbols the caller
+    /// never counted — the same value expanding differently on the wire than
+    /// it does in the caller's head.
+    #[test]
+    fn an_empty_blank_or_comma_bearing_symbol_is_refused() {
+        let empty: &[&str] = &[];
+        for symbols in [empty, &["   "], &["AAPL,TSLA"], &[""]] {
+            let error = symbols_query(symbols).expect_err("must be refused");
+            assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
+            assert!(!error.is_retryable(), "nothing was sent");
+        }
     }
 
     /// `start-date` is required by the venue and required by the type, so the
