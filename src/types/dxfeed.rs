@@ -176,7 +176,8 @@ impl CandlePeriod {
     fn checked(count: u32, build: fn(u32) -> Self) -> crate::TastyResult<Self> {
         if count == 0 {
             return Err(crate::TastyTradeError::Precondition(
-                "a candle period of zero is not a period; the venue accepts the suffix and then                  delivers nothing, which looks exactly like a quiet market"
+                "a candle period of zero is not a period; the venue accepts the suffix \
+                 and then delivers nothing, which looks exactly like a quiet market"
                     .to_string(),
             ));
         }
