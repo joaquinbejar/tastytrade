@@ -20,6 +20,7 @@ mod instrument_listings;
 mod margin;
 mod market_data;
 mod market_metrics;
+mod market_time;
 mod orders;
 mod paths;
 mod rest;

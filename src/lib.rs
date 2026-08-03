@@ -562,6 +562,41 @@
 //! in certification, so its examples require an explicit read-only production
 //! opt-in.
 //!
+//! ### Is the market open?
+//!
+//! Eleven endpoints, and the reason they exist: a hardcoded exchange calendar
+//! is wrong roughly once a quarter.
+//!
+//! ```rust,no_run
+//! # use chrono::Utc;
+//! # use tastytrade::prelude::*;
+//! # async fn clock(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! let session = tasty
+//!     .current_market_session(InstrumentCollection::Equity, &[])
+//!     .await?;
+//!
+//! // Derived from the session the venue sent, never from a local assumption
+//! // about the exchange's timezone. `None` means the venue did not send both
+//! // boundaries — which is not "closed".
+//! match session.is_open_at(Utc::now().fixed_offset()) {
+//!     Some(true) => println!("open"),
+//!     Some(false) => println!("closed"),
+//!     None => println!("the venue did not say"),
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Session boundaries keep the offset the venue sent — going to UTC is one-way
+//! — and holidays are `NaiveDate`, because a holiday is a day.
+//!
+//! `to-date` on [`prelude::SessionRange`] is a constructor argument because the
+//! venue marks it required, and a range longer than nine months is refused
+//! locally with the limit named in the message.
+//! `instrument-collections[]` is required too, so
+//! [`TastyTrade::current_market_session`] takes a first collection separately
+//! from the rest: an empty selection is unrepresentable.
+//!
 //! ## Real-time Data
 //!
 //! Market data comes over DXLink. All eleven event types the feed models are

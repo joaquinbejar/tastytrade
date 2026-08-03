@@ -19,6 +19,8 @@ pub mod option_chain;
 
 /// Instruments: equities, futures, options, cryptocurrencies and warrants.
 pub mod instrument;
+/// Market sessions and holidays.
+pub mod market_time;
 /// Query-string assembly and the page a listing is asked for.
 pub mod query;
 /// DXLink token exchange and streamer-symbol lookup.
