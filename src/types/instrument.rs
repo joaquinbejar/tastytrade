@@ -41,7 +41,7 @@ pub struct CompactOptionChain {
 }
 
 /// Represents the different types of financial instruments.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum InstrumentType {
     /// Represents an equity instrument.
     Equity,

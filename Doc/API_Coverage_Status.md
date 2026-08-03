@@ -23,7 +23,7 @@ difference is exactly what
 | Account Status | 1 | 0 | 1 | 0% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
 | Accounts and Customers | 4 | 2 | 2 | 50% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
 | Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
-| Balances and Positions | 4 | 3 | 1 | 75% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
+| Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 0 | 2 | 0% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 0 | 1 | 0% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 0 | 3 | 0% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 0 | 9 | 0% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **34** | **63** | **35%** | |
+| **TOTAL** | **97** | **35** | **62** | **36%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -86,16 +86,26 @@ endpoint.
 
 | Endpoint | Method | Status |
 |----------|--------|--------|
-| `GET /accounts/{account_number}/balance-snapshots` | `balance_snapshot()` | ✅ |
-| `GET /accounts/{account_number}/balances` | `balance()` | ✅ |
-| `GET /accounts/{account_number}/balances/{currency}` | — | ❌ |
-| `GET /accounts/{account_number}/positions` | `positions()` | ⚠️ |
+| `GET /accounts/{account_number}/balance-snapshots` | `balance_snapshots()` | ✅ |
+| `GET /accounts/{account_number}/balances` | `balances()` / `balance()` | ✅ |
+| `GET /accounts/{account_number}/balances/{currency}` | `balance_in()` | ✅ |
+| `GET /accounts/{account_number}/positions` | `positions()` / `positions_matching()` | ✅ |
 
-`positions()` sends no query parameters. The endpoint accepts
-`underlying-symbol[]`, `symbol`, `instrument-type`, `include-closed`,
-`underlying-product-code`, `partition-keys[]`, `net-positions` and
-`include-marks`; without them a caller cannot ask for closed positions or
-filter server-side.
+`/balances` answers with an **`items` envelope**, not a single object — the
+venue changed it on 2024-05-01 and this crate decoded `data` straight into a
+`Balance`, so the call could only fail. `balances()` returns every currency
+row; `balance()` is the single-row shortcut and refuses when the account holds
+more than one rather than picking a currency for the caller.
+
+`positions_matching(&PositionFilter)` exposes all eight documented filters, with
+`underlying-symbol[]` and `partition-keys[]` as repeated keys. `positions()` is
+unchanged and sends no query at all.
+
+`BalanceSnapshotFilter` covers the whole snapshot query. `time-of-day` is a
+constructor argument because the venue marks it required, and a single day and
+a date range are one enum so the contradictory query is unrepresentable. Its
+value used to go out as `Eod` rather than `EOD`: `SnapshotTimeOfDay`'s
+`Display` was the derived `Debug`, and the query was built from it.
 
 ## Instruments
 

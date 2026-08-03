@@ -407,10 +407,102 @@ pub struct BalanceSnapshot {
     pub pending_cash_effect: PriceEffect,
     /// The date of the snapshot.
     pub snapshot_date: chrono::NaiveDate,
+
+    // Everything below was in the venue's schema and not in this struct, so a
+    // caller reading a snapshot saw twenty-nine fewer numbers than arrived.
+    // All `Option`: certification omits fields production sends, and a
+    // balance that defaults to zero is a balance that lies.
+    /// Margin required against bond positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub bond_margin_requirement: Option<Decimal>,
+    /// Cash portion of the settlement balance.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub cash_settle_balance: Option<Decimal>,
+    /// Balance available through closed-loop transfer.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub closed_loop_available_balance: Option<Decimal>,
+    /// Margin required against cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub cryptocurrency_margin_requirement: Option<Decimal>,
+    /// Which currency this row is denominated in.
+    #[serde(default)]
+    pub currency: Option<String>,
+    /// Margin required against equity offerings.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub equity_offering_margin_requirement: Option<Decimal>,
+    /// Margin required against fixed-income positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub fixed_income_security_margin_requirement: Option<Decimal>,
+    /// Intraday equities cash movement.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub intraday_equities_cash_amount: Option<Decimal>,
+    /// Whether the intraday equities cash moved in or out.
+    #[serde(default)]
+    pub intraday_equities_cash_effect: Option<PriceEffect>,
+    /// When the intraday equities cash settles.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub intraday_equities_cash_effective_date: Option<chrono::NaiveDate>,
+    /// Intraday futures cash movement.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub intraday_futures_cash_amount: Option<Decimal>,
+    /// Whether the intraday futures cash moved in or out.
+    #[serde(default)]
+    pub intraday_futures_cash_effect: Option<PriceEffect>,
+    /// When the intraday futures cash settles.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub intraday_futures_cash_effective_date: Option<chrono::NaiveDate>,
+    /// Value of long bond positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_bond_value: Option<Decimal>,
+    /// Value of long cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_cryptocurrency_value: Option<Decimal>,
+    /// Value of long fixed-income positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub long_fixed_income_security_value: Option<Decimal>,
+    /// Margin portion of the settlement balance.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub margin_settle_balance: Option<Decimal>,
+    /// When the previous day's cryptocurrency fiat movement settles.
+    #[serde(default, with = "crate::types::wire::date_option")]
+    pub previous_date_cryptocurrency_fiat_effective_date: Option<chrono::NaiveDate>,
+    /// Previous day's cryptocurrency fiat movement.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub previous_day_cryptocurrency_fiat_amount: Option<Decimal>,
+    /// Whether that movement was in or out.
+    #[serde(default)]
+    pub previous_day_cryptocurrency_fiat_effect: Option<PriceEffect>,
+    /// Value of short cryptocurrency positions.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub short_cryptocurrency_value: Option<Decimal>,
+    /// Equity-option buying power from the special memorandum account.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub sma_equity_option_buying_power: Option<Decimal>,
+    /// Clearing-firm adjustment to the special memorandum account.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub special_memorandum_account_apex_adjustment: Option<Decimal>,
+    /// Special memorandum account value.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub special_memorandum_account_value: Option<Decimal>,
+    /// Whether this snapshot is beginning or end of day.
+    #[serde(default)]
+    pub time_of_day: Option<SnapshotTimeOfDay>,
+    /// Total settlement balance.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub total_settle_balance: Option<Decimal>,
+    /// Unsettled cryptocurrency fiat amount.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub unsettled_cryptocurrency_fiat_amount: Option<Decimal>,
+    /// Whether the unsettled cryptocurrency fiat is in or out.
+    #[serde(default)]
+    pub unsettled_cryptocurrency_fiat_effect: Option<PriceEffect>,
+    /// Derivative buying power already consumed.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub used_derivative_buying_power: Option<Decimal>,
 }
 
 /// Represents the time of day for a snapshot.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotTimeOfDay {
     /// End of Day.
     #[serde(rename = "EOD")]
@@ -420,9 +512,30 @@ pub enum SnapshotTimeOfDay {
     Bod,
 }
 
+impl SnapshotTimeOfDay {
+    /// The text the venue uses for this value.
+    ///
+    /// `EOD` and `BOD`, not `Eod` and `Bod`. The distinction is not cosmetic:
+    /// `time-of-day` is a **required** query parameter on the snapshot
+    /// endpoint, and this is what goes into it.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            SnapshotTimeOfDay::Eod => "EOD",
+            SnapshotTimeOfDay::Bod => "BOD",
+        }
+    }
+}
+
 impl fmt::Display for SnapshotTimeOfDay {
+    /// The venue's spelling.
+    ///
+    /// This used to be the derived `Debug` — `Eod` — and the snapshot query
+    /// was built from it, so the required `time-of-day` parameter went out as
+    /// `Eod` on every request. The serde rename was right all along and only
+    /// the `Display` was wrong, which is why nothing that round-tripped
+    /// through JSON ever noticed.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        f.write_str(self.as_wire())
     }
 }
 
@@ -434,10 +547,19 @@ mod tests {
     use rust_decimal::Decimal;
     use std::str::FromStr;
 
+    /// The regression: this test used to assert `"Eod"`, pinning the defect
+    /// rather than the contract. The snapshot query is built from `Display`,
+    /// so a required parameter was going out with a value the venue does not
+    /// use.
     #[test]
     fn test_snapshot_time_of_day_display() {
-        assert_eq!(format!("{}", SnapshotTimeOfDay::Eod), "Eod");
-        assert_eq!(format!("{}", SnapshotTimeOfDay::Bod), "Bod");
+        assert_eq!(format!("{}", SnapshotTimeOfDay::Eod), "EOD");
+        assert_eq!(format!("{}", SnapshotTimeOfDay::Bod), "BOD");
+        // And it agrees with what serde writes, which is the whole point.
+        assert_eq!(
+            serde_json::to_string(&SnapshotTimeOfDay::Eod).expect("serialises"),
+            "\"EOD\""
+        );
     }
 
     #[test]
@@ -575,6 +697,38 @@ mod tests {
             pending_cash: Decimal::from_str("0.00").unwrap(),
             pending_cash_effect: PriceEffect::Credit,
             snapshot_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            // The fields this struct gained from the venue's schema. `None`
+            // rather than zero: a balance nobody reported is not a balance of
+            // nothing.
+            bond_margin_requirement: None,
+            cash_settle_balance: None,
+            closed_loop_available_balance: None,
+            cryptocurrency_margin_requirement: None,
+            currency: None,
+            equity_offering_margin_requirement: None,
+            fixed_income_security_margin_requirement: None,
+            intraday_equities_cash_amount: None,
+            intraday_equities_cash_effect: None,
+            intraday_equities_cash_effective_date: None,
+            intraday_futures_cash_amount: None,
+            intraday_futures_cash_effect: None,
+            intraday_futures_cash_effective_date: None,
+            long_bond_value: None,
+            long_cryptocurrency_value: None,
+            long_fixed_income_security_value: None,
+            margin_settle_balance: None,
+            previous_date_cryptocurrency_fiat_effective_date: None,
+            previous_day_cryptocurrency_fiat_amount: None,
+            previous_day_cryptocurrency_fiat_effect: None,
+            short_cryptocurrency_value: None,
+            sma_equity_option_buying_power: None,
+            special_memorandum_account_apex_adjustment: None,
+            special_memorandum_account_value: None,
+            time_of_day: None,
+            total_settle_balance: None,
+            unsettled_cryptocurrency_fiat_amount: None,
+            unsettled_cryptocurrency_fiat_effect: None,
+            used_derivative_buying_power: None,
         };
 
         assert_eq!(snapshot.account_number.0, "SNAP123");
