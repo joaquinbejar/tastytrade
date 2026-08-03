@@ -22,7 +22,7 @@ difference is exactly what
 |------|-----------|-------------|---------|---|-------|
 | Account Status | 1 | 1 | 0 | 100% | [#73](https://github.com/joaquinbejar/tastytrade/issues/73) |
 | Accounts and Customers | 4 | 4 | 0 | 100% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
-| Backtesting | 7 | 0 | 7 | 0% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
+| Backtesting | 7 | 7 | 0 | 100% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
 | Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
@@ -36,7 +36,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 9 | 0 | 100% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **90** | **7** | **93%** | |
+| **TOTAL** | **97** | **97** | **0** | **100%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -87,15 +87,39 @@ identifiers, birth dates, net worth. Nothing in it renders itself: `Debug` and
 
 ## Backtesting
 
-| Endpoint | Status |
-|----------|--------|
-| `GET /backtests` | ❌ |
-| `POST /backtests` | ❌ |
-| `GET /backtests/{id}` | ❌ |
-| `GET /backtests/{id}/logs` | ❌ |
-| `POST /backtests/{id}/cancel` | ❌ |
-| `GET /available-dates` | ❌ |
-| `POST /simulate-trade` | ❌ |
+| Endpoint | Method | Status |
+|----------|--------|--------|
+| `GET /backtests` | `backtests()` | ✅ |
+| `POST /backtests` | `create_backtest()` | ✅ |
+| `GET /backtests/{id}` | `backtest()` | ✅ |
+| `GET /backtests/{id}/logs` | `backtest_logs()` | ✅ |
+| `POST /backtests/{id}/cancel` | `cancel_backtest()` | ✅ |
+| `GET /available-dates` | `available_dates()` | ✅ |
+| `POST /simulate-trade` | `simulate_trade()` | ✅ |
+
+**The host question is answered.** The published document does declare a
+server — `https://backtester.vast.tastyworks.com` — as an OpenAPI 3 `servers`
+entry, which is why it did not show up as the `host` field the Swagger 2 areas
+use. It is a **separate host**, and there is exactly **one**: no cert/production
+pair, so this crate does not invent a second URL.
+
+That leaves `environment()` correct as it stands. It derives from the configured
+`base_url`, which is still a tastytrade API host — the session authenticated
+against cert or production and a backtest run by that session is still that
+session's. Nothing about the derivation needed changing; a backtest error names
+the session's environment, which is what a caller needs to know.
+
+The verbs were generalised rather than copied (`get_with_query_at`, `post_at`),
+so the second host keeps the deployment check, the pre-request token refresh,
+the redacted operation in the error and the single place the status is
+inspected.
+
+Its JSON is **camelCase**, like the net-liq service and unlike every other area.
+
+`status` stays `String` and `simulate-trade`'s body is passed through as JSON:
+no payload from this service has been captured — the whole area is unreachable
+from a checkout with no OAuth grant — and a guessed type would refuse requests
+the venue accepts.
 
 ## Balances and Positions
 

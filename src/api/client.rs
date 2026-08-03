@@ -226,6 +226,105 @@ fn is_dot_segment(segment: &str) -> bool {
     decoded == "." || decoded == ".."
 }
 
+/// Decodes a response body that is not wrapped in the tastytrade envelope.
+///
+/// The backtester is a different service on a different host, and its published
+/// contract answers with raw arrays and objects — no `data`, no `context`, no
+/// `pagination`. [`decode_response`] requires that envelope, so every one of
+/// those operations would have failed decoding before its return type was ever
+/// reached, regardless of what the type said.
+///
+/// The failure half is shared: a non-2xx status still produces the same
+/// redacted [`crate::TastyTradeError::Request`], and the body is still never
+/// logged at any level, because the reason for that rule does not depend on
+/// which host answered.
+async fn decode_raw_response<R>(
+    report: &RequestReport,
+    response: reqwest::Response,
+) -> TastyResult<R>
+where
+    R: DeserializeOwned,
+{
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(e) => {
+            debug!(
+                "{} {}: reading the body failed after {}: {}",
+                report.method,
+                report.operation,
+                status.as_u16(),
+                e.without_url()
+            );
+            return Err(crate::TastyTradeError::Request {
+                context: report.context(Some(status.as_u16())),
+                api: None,
+            });
+        }
+    };
+
+    if !status.is_success() {
+        // As in `decode_response`: the shape of the body, never the body.
+        let parsed = serde_json::from_str::<TastyApiResponse<serde_json::Value>>(&body);
+        debug!(
+            "{} {} -> {} ({} bytes in {:?})",
+            report.method,
+            report.operation,
+            status.as_u16(),
+            body.len(),
+            report.started.elapsed()
+        );
+        return Err(crate::TastyTradeError::Request {
+            context: report.context(Some(status.as_u16())),
+            api: match parsed {
+                Ok(TastyApiResponse::Error { error }) => Some(sanitize_api_error(error)),
+                _ => None,
+            },
+        });
+    }
+
+    debug!(
+        "{} {} -> {} ({} bytes in {:?})",
+        report.method,
+        report.operation,
+        status.as_u16(),
+        body.len(),
+        report.started.elapsed()
+    );
+
+    // A `204` carries nothing, and `serde_json` will not read `()` out of an
+    // empty string. `null` is the value that deserializes into `()`, into
+    // `Option::None` and into nothing else, which is the right reading of a
+    // body that is not there.
+    let body = if body.trim().is_empty() {
+        "null"
+    } else {
+        &body
+    };
+
+    serde_json::from_str::<R>(body).map_err(|e| {
+        // The error renders the value it rejected, so it stays out of the
+        // message the caller sees and out of the logs.
+        debug!(
+            "{} {}: the body did not match the expected shape: {:?} at line {}, column {}",
+            report.method,
+            report.operation,
+            e.classify(),
+            e.line(),
+            e.column()
+        );
+        crate::TastyTradeError::Unknown(format!(
+            "{} {} answered with a body this crate could not decode ({:?} at line {}, \
+             column {}); raise the log level for details",
+            report.method,
+            report.operation,
+            e.classify(),
+            e.line(),
+            e.column()
+        ))
+    })
+}
+
 /// What a request needs in order to report itself without leaking anything.
 ///
 /// Built once per request and carried through both the transport failure and
@@ -664,8 +763,20 @@ impl TastyTrade {
 
     /// Joins the base URL and a path, after checking the session belongs here.
     fn request_url(&self, path: &str) -> TastyResult<String> {
+        self.url_at(&self.config.base_url, path)
+    }
+
+    /// The same, against a base other than the configured one.
+    ///
+    /// One area — backtesting — is served by a **different host**, declared in
+    /// its own OpenAPI document. The deployment check still runs against the
+    /// configured base URL, because that is what the session authenticated
+    /// with: a certification session talking to the backtester is still a
+    /// certification session, and reporting otherwise would misname the
+    /// environment in every error it produced.
+    pub(crate) fn url_at(&self, base: &str, path: &str) -> TastyResult<String> {
         self.session.ensure_same_deployment(&self.config.base_url)?;
-        endpoint_url(&self.config.base_url, path)
+        endpoint_url(base, path)
     }
 
     /// Performs a GET with query parameters and decodes the response.
@@ -685,7 +796,28 @@ impl TastyTrade {
         R: FromTastyResponse<T>,
         U: AsRef<str>,
     {
-        let full_url = self.request_url(url.as_ref())?;
+        let base = self.config.base_url.clone();
+        self.get_with_query_at(&base, url, query).await
+    }
+
+    /// A GET against a base other than the configured one.
+    ///
+    /// Everything else is identical — the deployment check, the pre-request
+    /// refresh, the redacted operation in the error, and the single place the
+    /// status is inspected — so a second host cannot drift away from the
+    /// invariants the first one keeps.
+    pub(crate) async fn get_with_query_at<T, R, U>(
+        &self,
+        base: &str,
+        url: U,
+        query: &[(&str, &str)],
+    ) -> TastyResult<R>
+    where
+        T: DeserializeOwned + Serialize + std::fmt::Debug,
+        R: FromTastyResponse<T>,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
         let query_string = query
             .iter()
             .map(|(k, v)| format!("{}={}", k, v))
@@ -740,6 +872,74 @@ impl TastyTrade {
         decode_response::<T, R>(&report, response).await
     }
 
+    /// A GET against a second host that answers with a raw body.
+    ///
+    /// Same deployment check, same pre-request refresh, same redacted
+    /// operation and same single place the status is inspected — only the
+    /// success decoding differs, because the body is not wrapped.
+    pub(crate) async fn get_raw_at<R, U>(&self, base: &str, url: U) -> TastyResult<R>
+    where
+        R: DeserializeOwned,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
+        let report = RequestReport::new(
+            "GET",
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let authorization = self.authorization().await?;
+        let response = self
+            .client
+            .get(&full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        decode_raw_response::<R>(&report, response).await
+    }
+
+    /// A POST against a second host that answers with a raw body.
+    ///
+    /// See [`TastyTrade::get_raw_at`]. `R` may be `()` for an operation the
+    /// contract answers with `204 No Content`.
+    pub(crate) async fn post_raw_at<R, P, U>(
+        &self,
+        base: &str,
+        url: U,
+        payload: P,
+    ) -> TastyResult<R>
+    where
+        R: DeserializeOwned,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
+        let report = RequestReport::new(
+            "POST",
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let authorization = self.authorization().await?;
+        let response = self
+            .client
+            .post(&full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .header(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )
+            .body(serde_json::to_string(&payload)?)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        decode_raw_response::<R>(&report, response).await
+    }
+
     /// Performs a GET with no query parameters.
     ///
     /// # Errors
@@ -777,7 +977,19 @@ impl TastyTrade {
         P: Serialize,
         U: AsRef<str>,
     {
-        let full_url = self.request_url(url.as_ref())?;
+        let base = self.config.base_url.clone();
+        self.post_at(&base, url, payload).await
+    }
+
+    /// A POST against a base other than the configured one. See
+    /// [`TastyTrade::get_with_query_at`].
+    pub(crate) async fn post_at<R, P, U>(&self, base: &str, url: U, payload: P) -> TastyResult<R>
+    where
+        R: DeserializeOwned + Serialize + std::fmt::Debug,
+        P: Serialize,
+        U: AsRef<str>,
+    {
+        let full_url = self.url_at(base, url.as_ref())?;
         let report = RequestReport::new(
             "POST",
             redact_account_path(&full_url),
@@ -1449,6 +1661,79 @@ impl TastyTrade {
     /// connection cannot be established.
     pub async fn create_quote_streamer(&self) -> TastyResult<QuoteStreamer> {
         QuoteStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod second_host_tests {
+    use super::endpoint_url;
+    use crate::types::backtest::BACKTESTER_BASE_URL;
+
+    /// Backtesting is served by a host of its own, and the join has to produce
+    /// that host rather than the configured one.
+    ///
+    /// A unit test because the integration suite is network-free: a test that
+    /// actually called the backtester would reach the internet.
+    #[test]
+    fn a_second_host_joins_to_itself_and_not_to_the_configured_one() {
+        let joined =
+            endpoint_url(BACKTESTER_BASE_URL, "/backtests").expect("a relative path joins cleanly");
+
+        assert_eq!(joined, "https://backtester.vast.tastyworks.com/backtests");
+        assert!(
+            !joined.contains("tastyworks.com/tastyworks.com"),
+            "the bases must not be concatenated: {joined}"
+        );
+    }
+
+    /// The same guard the configured host has: an absolute URL is a caller
+    /// mistake, reported before anything is sent, on every host.
+    #[test]
+    fn an_absolute_path_is_still_refused_against_the_second_host() {
+        assert!(endpoint_url(BACKTESTER_BASE_URL, "https://elsewhere/backtests").is_err());
+    }
+
+    /// The backtester's bodies are not wrapped, and the enveloped decoder
+    /// cannot read them.
+    ///
+    /// This is what made every successful backtesting response fail before its
+    /// return type was reached: the shared decoder requires `{data, context}`
+    /// and the published contract answers with raw arrays and objects. The
+    /// assertion is on the shapes the document declares, decoded the way the
+    /// raw path decodes them.
+    #[test]
+    fn the_backtester_shapes_decode_raw_and_not_through_the_envelope() {
+        use crate::api::base::TastyApiResponse;
+        use crate::types::backtest::{AvailableDates, Backtest};
+
+        // `GET /backtests`: an array of identifiers.
+        let listing = r#"["run-1","run-2"]"#;
+        let ids: Vec<String> = serde_json::from_str(listing).expect("a raw array of strings");
+        assert_eq!(ids, vec!["run-1".to_string(), "run-2".to_string()]);
+        assert!(
+            serde_json::from_str::<TastyApiResponse<Vec<String>>>(listing).is_err(),
+            "the enveloped decoder must not be able to read this"
+        );
+
+        // `GET /backtests/{id}`: a bare object, camelCase.
+        let run = r#"{"id":"run-1","symbol":"SPY","status":"running","progress":42}"#;
+        let decoded: Backtest = serde_json::from_str(run).expect("a raw object");
+        assert_eq!(decoded.id.as_deref(), Some("run-1"));
+        assert_eq!(decoded.status.as_deref(), Some("running"));
+
+        // `GET /available-dates`: an array of objects, not an `Items` listing.
+        let dates = r#"[{"symbol":"SPY","startDate":"2019-01-01","endDate":"2024-12-31"}]"#;
+        let decoded: Vec<AvailableDates> = serde_json::from_str(dates).expect("a raw array");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].symbol.as_deref(), Some("SPY"));
+        assert!(
+            serde_json::from_str::<crate::api::base::Items<AvailableDates>>(dates).is_err(),
+            "an Items listing expects an object with an items key"
+        );
+
+        // `POST /backtests/{id}/cancel`: 204, no body. The raw decoder reads
+        // an empty body as `null`, which is the only value `()` accepts.
+        serde_json::from_str::<()>("null").expect("an empty body is the unit value");
     }
 }
 

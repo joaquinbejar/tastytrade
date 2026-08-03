@@ -7,6 +7,8 @@
 
 /// Accounts: balances, positions, live orders and the reviewed-placement flow.
 pub mod accounts;
+/// Server-side strategy backtests, on their own host.
+pub mod backtesting;
 /// Response envelopes, pagination and the tolerant `Items<T>` listing.
 pub mod base;
 /// The client itself: the OAuth2 session and the generic HTTP verbs.

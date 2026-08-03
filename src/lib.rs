@@ -698,6 +698,42 @@
 //! [`QuoteStreamer::create_sub_with_capacity`](streaming::quote_streamer::QuoteStreamer::create_sub_with_capacity)
 //! when the default does not fit the history you are asking for.
 //!
+//! ## Backtesting
+//!
+//! Server-side strategy backtests, and the **only area served by a different
+//! host**: `https://backtester.vast.tastyworks.com`, declared in its own
+//! OpenAPI document. One host, with no sandbox counterpart — so the session's
+//! environment decides which credentials are used, not which service is
+//! reached, and errors name the session's environment because that is what a
+//! caller needs to know.
+//!
+//! A backtest is asynchronous, and the polling is yours:
+//!
+//! ```rust,no_run
+//! # use chrono::NaiveDate;
+//! # use tastytrade::prelude::*;
+//! # async fn run(tasty: &TastyTrade, backtest: NewBacktest)
+//! # -> Result<(), Box<dyn std::error::Error>> {
+//! let started = tasty.create_backtest(&backtest).await?;
+//! let Some(id) = started.id else { return Ok(()) };
+//!
+//! loop {
+//!     let run = tasty.backtest(&id).await?;
+//!     // An unrecognised status is **not** finished: a loop that stopped on
+//!     // one would abandon a run that was still going.
+//!     if run.is_finished() {
+//!         println!("{} trial(s)", run.trials.len());
+//!         break;
+//!     }
+//!     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Its JSON is camelCase, not kebab-case, like the net-liq service and unlike
+//! everything else. Nothing here routes an order or touches a position.
+//!
 //! ## Watchlists
 //!
 //! The only user-owned, mutable resource in the API besides orders, and the

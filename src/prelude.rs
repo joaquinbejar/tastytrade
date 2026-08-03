@@ -84,6 +84,13 @@ pub use crate::types::market_metrics::{
     DividendReport, EarningsRange, EarningsReport, ExpirationImpliedVolatility, MarketMetric,
 };
 
+// Re-export the backtesting surface
+pub use crate::types::backtest::{
+    AvailableDates, BACKTESTER_BASE_URL, Backtest, BacktestDirection, BacktestInstrument,
+    BacktestLeg, BacktestSide, EntryConditions, ExitConditions, MAX_BACKTEST_QUANTITY, NewBacktest,
+    SimulateTrade, SimulatedLeg, SimulatedTradePoint, Snapshot, StrikeSelection, Trial,
+};
+
 // Re-export market sessions and holidays
 pub use crate::types::market_time::{
     CurrentMarketSession, FuturesExchange, InstrumentCollection, MAX_SESSION_RANGE_MONTHS,
