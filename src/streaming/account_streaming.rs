@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
@@ -19,7 +19,7 @@ use tracing::{debug, error, warn};
 /**
 Represents the different types of subscription requests.  Used for managing real-time data streams.
 */
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubRequestAction {
     /// Represents a heartbeat message.  Used to maintain an active connection.
@@ -64,6 +64,14 @@ struct SubRequest<T: Serialize> {
     action: SubRequestAction,
     /// Value associated with the action.  This field is optional.
     value: Option<T>,
+    /// Correlates this request with the venue's answer.
+    ///
+    /// Optional on the wire, and this crate used to send none — which is why
+    /// nothing could tell a socket write from the venue accepting the action.
+    /// The guide is explicit that an id which is sent comes back: *"The
+    /// `request-id` isn't required, but our servers will include it in their
+    /// response messages."*
+    request_id: u64,
 }
 
 impl<T: Serialize> std::fmt::Debug for SubRequest<T> {
@@ -77,6 +85,7 @@ impl<T: Serialize> std::fmt::Debug for SubRequest<T> {
         f.debug_struct("SubRequest")
             .field("auth_token", &"***")
             .field("action", &self.action)
+            .field("request_id", &self.request_id)
             .finish_non_exhaustive()
     }
 }
@@ -273,6 +282,13 @@ pub struct ErrorMessage {
     /// The ID of the WebSocket session where the error occurred.
     #[serde(default)]
     pub web_socket_session_id: Option<String>,
+    /// The identifier the refused request carried, echoed back.
+    ///
+    /// `Option` because the documented example of a refusal does not show one.
+    /// When it is absent the refusal is matched to the oldest action in flight
+    /// with the same `action`, which is why that field is not optional.
+    #[serde(default)]
+    pub request_id: Option<u64>,
     /// A human-readable description of the error.
     ///
     /// Venue prose. It can name an account or a subscription, so it goes in
@@ -529,9 +545,12 @@ impl AccountStreamer {
             .await?;
 
         // Recorded only after the venue accepted it, and it is what a
-        // reconnect replays. A reconnect that silently forgets what it was
-        // watching is worse than one that fails, because the caller keeps
-        // waiting for events that will never come.
+        // reconnect replays. That sentence used to be aspirational: `send`
+        // resolved when the websocket write landed, so a refused `connect`
+        // returned `Ok` and the account went into the set anyway — to be
+        // re-subscribed, and refused again, on every future reconnect. `send`
+        // now waits for the venue's own acknowledgement, so this line means
+        // what it says.
         subscribed_of(&self.subscribed).insert(number);
 
         Ok(())
@@ -550,6 +569,18 @@ impl AccountStreamer {
     /// * `value` - An optional value associated with the action. This value is serialized and sent
     ///   along with the action.
     ///
+    /// # Errors
+    ///
+    /// Resolves when **the venue acknowledges the action**, not when the write
+    /// reaches the socket. A refusal comes back as
+    /// [`TastyTradeError::Streaming`] carrying the venue's own message, and an
+    /// acknowledgement that never arrives times out rather than leaving the
+    /// caller waiting on a socket that has gone quiet.
+    ///
+    /// The correlation is by `request-id`, which this crate now sends. A venue
+    /// that answers without echoing one still resolves the oldest action in
+    /// flight with the same name, so the fallback keeps working rather than
+    /// timing out everything.
     pub async fn send<T: Serialize + Send + Sync + 'static>(
         &self,
         action: SubRequestAction,
@@ -705,6 +736,88 @@ async fn resubscribe(
     true
 }
 
+/// How long an action waits for the venue to answer it.
+///
+/// Generous against a thirty-second heartbeat: an acknowledgement that has not
+/// arrived in ten seconds is not late, it is missing. The alternative to a
+/// timeout is a caller awaiting a socket that has gone quiet, which is the
+/// failure this whole path exists to remove.
+const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// An action that has been written and is waiting for the venue's answer.
+struct PendingAction {
+    /// Which action, so a refusal that carries no request id can still be
+    /// matched to something.
+    action: SubRequestAction,
+    /// When this stops being worth waiting for.
+    deadline: tokio::time::Instant,
+    /// Where the caller is waiting.
+    ack: Option<oneshot::Sender<TastyResult<()>>>,
+}
+
+/// Resolves whichever action a status or error frame is answering.
+///
+/// Correlation is by `request-id` when the venue echoes one, which the guide
+/// says it does for any id it was given. The fallback matters more than it
+/// looks: if the venue ever stopped echoing, matching only by id would leave
+/// every action to time out, turning a working client into a broken one. So a
+/// frame with no id resolves the **oldest** action in flight with the same
+/// `action` name — imprecise when two of the same kind overlap, and far better
+/// than nothing.
+fn settle(pending: &mut HashMap<u64, PendingAction>, event: &AccountEvent) {
+    let (request_id, action, outcome) = match event {
+        AccountEvent::StatusMessage(status) => (status.request_id, status.action.as_str(), Ok(())),
+        AccountEvent::ErrorMessage(error) => (
+            error.request_id,
+            error.action.as_str(),
+            // The venue's own words reach the caller who asked for the action.
+            // They do not reach a log: the message can name an account or a
+            // subscription.
+            Err(TastyTradeError::Streaming(format!(
+                "the venue refused {}: {}",
+                error.action, error.message
+            ))),
+        ),
+        _ => return,
+    };
+
+    let matched = match request_id {
+        Some(id) if pending.contains_key(&id) => Some(id),
+        Some(id) => {
+            // An id that matches nothing is not an error: heartbeats carry one
+            // and are deliberately not tracked.
+            debug!("Account frame answered request {id}, which nothing is waiting on");
+            None
+        }
+        None => pending
+            .iter()
+            .filter(|(_, waiting)| waiting.action.to_string() == action)
+            .min_by_key(|(id, waiting)| (waiting.deadline, **id))
+            .map(|(id, _)| *id),
+    };
+
+    let Some(id) = matched else {
+        return;
+    };
+    if let Some(waiting) = pending.remove(&id) {
+        report(waiting.ack, outcome);
+    }
+}
+
+/// Fails every action still waiting, with `reason`.
+///
+/// A session that ends takes its in-flight actions with it: the frame is gone
+/// with the socket, and a caller must not be left awaiting an answer that can
+/// no longer come.
+fn abandon(pending: &mut HashMap<u64, PendingAction>, reason: &str) {
+    for (_, waiting) in pending.drain() {
+        report(
+            waiting.ack,
+            Err(TastyTradeError::Streaming(reason.to_string())),
+        );
+    }
+}
+
 /// Runs one session until either half ends.
 /// Runs one session until either half ends.
 ///
@@ -728,11 +841,39 @@ async fn run_session(
     heartbeat.tick().await; // the first tick is immediate
     let mut wrote_successfully = false;
 
+    // Actions written and not yet answered. Per session on purpose: the socket
+    // that carried them is what would have brought the answer back.
+    let mut pending: HashMap<u64, PendingAction> = HashMap::new();
+    let mut next_request_id: u64 = 1;
+    // The ids are assigned here rather than by `send`, because correlation is
+    // entirely between this loop and the venue — a caller never sees one.
+    let mut sweep = tokio::time::interval(Duration::from_secs(1));
+
     loop {
         tokio::select! {
             _ = &mut *cancelled => {
                 debug!("Account streamer dropped, ending the session");
+                abandon(&mut pending, "the account stream was closed before the venue answered");
                 return wrote_successfully;
+            }
+            _ = sweep.tick() => {
+                let now = tokio::time::Instant::now();
+                let expired: Vec<u64> = pending
+                    .iter()
+                    .filter(|(_, waiting)| waiting.deadline <= now)
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in expired {
+                    if let Some(waiting) = pending.remove(&id) {
+                        // The action name is safe to log; nothing else about it
+                        // is.
+                        warn!("The venue did not answer a {} within {ACTION_TIMEOUT:?}", waiting.action);
+                        report(waiting.ack, Err(TastyTradeError::Streaming(format!(
+                            "the venue did not acknowledge the {} within {ACTION_TIMEOUT:?}",
+                            waiting.action
+                        ))));
+                    }
+                }
             }
             _ = heartbeat.tick() => {
                 // Every frame carries a token, and a token lasts a quarter of
@@ -747,18 +888,25 @@ async fn run_session(
                         return wrote_successfully;
                     }
                 };
+                let request_id = next_request_id;
+                next_request_id += 1;
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
                     auth_token,
                     action: SubRequestAction::Heartbeat,
                     value: None,
+                    request_id,
                 };
                 let Ok(text) = serde_json::to_string(&message) else {
                     continue;
                 };
                 if write.send(Message::Text(text.into())).await.is_err() {
                     debug!("Account websocket heartbeat failed, ending the session");
+                    abandon(&mut pending, "the account stream dropped before the venue answered");
                     return wrote_successfully;
                 }
+                // Deliberately not tracked. Nobody is awaiting a heartbeat, and
+                // its acknowledgement matching nothing is what `settle` treats
+                // as ordinary rather than as an error.
                 // The venue accepted an authenticated write, so this is a
                 // session that actually worked.
                 wrote_successfully = true;
@@ -791,8 +939,15 @@ async fn run_session(
                     continue;
                 };
 
+                // Resolved first, then delivered. A caller awaiting the action
+                // and a caller reading the stream are usually the same task, so
+                // settling after a full event queue would deadlock the one on
+                // the other.
+                settle(&mut pending, &event);
+
                 if events.send_async(event).await.is_err() {
                     debug!("Account event receiver dropped, ending the session");
+                    abandon(&mut pending, "the account stream was closed before the venue answered");
                     return wrote_successfully;
                 }
             }
@@ -813,10 +968,14 @@ async fn run_session(
                         return wrote_successfully;
                     }
                 };
+                let request_id = next_request_id;
+                next_request_id += 1;
+                let requested = action.action;
                 let message = SubRequest::<Box<dyn erased_serde::Serialize + Send + Sync>> {
                     auth_token,
                     action: action.action,
                     value: action.value,
+                    request_id,
                 };
                 let text = match serde_json::to_string(&message) {
                     Ok(text) => text,
@@ -835,13 +994,22 @@ async fn run_session(
                 match write.send(Message::Text(text.into())).await {
                     Ok(()) => {
                         wrote_successfully = true;
-                        report(ack, Ok(()));
+                        // **Not** resolved here. The write reaching the socket
+                        // is not the venue accepting the action, and treating
+                        // it as such is what let a refused `connect` return
+                        // `Ok` and be recorded for every future reconnect.
+                        pending.insert(request_id, PendingAction {
+                            action: requested,
+                            deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                            ack,
+                        });
                     }
                     Err(e) => {
                         debug!("Account websocket write failed: {e}");
                         report(ack, Err(TastyTradeError::Streaming(
                             "the account stream closed before the action was sent".to_string(),
                         )));
+                        abandon(&mut pending, "the account stream dropped before the venue answered");
                         return wrote_successfully;
                     }
                 }
@@ -1086,6 +1254,160 @@ impl TastyTrade {
 }
 
 #[cfg(test)]
+mod acknowledgement_tests {
+    use super::*;
+
+    const ACCOUNT_NUMBER: &str = "SENTINEL-5WX00042";
+
+    fn waiting(action: SubRequestAction) -> (PendingAction, oneshot::Receiver<TastyResult<()>>) {
+        let (ack, answered) = oneshot::channel();
+        (
+            PendingAction {
+                action,
+                deadline: tokio::time::Instant::now() + ACTION_TIMEOUT,
+                ack: Some(ack),
+            },
+            answered,
+        )
+    }
+
+    fn frame(json: &str) -> AccountEvent {
+        decode_account_frame(json.as_bytes()).expect("valid JSON is an event")
+    }
+
+    /// The acknowledgement resolves the action it names, and nothing else.
+    #[tokio::test]
+    async fn a_matching_acknowledgement_resolves_its_own_action() {
+        let mut pending = HashMap::new();
+        let (connect, connected) = waiting(SubRequestAction::Connect);
+        let (alerts, alerted) = waiting(SubRequestAction::QuoteAlertsSubscribe);
+        pending.insert(1, connect);
+        pending.insert(2, alerts);
+
+        settle(
+            &mut pending,
+            &frame(r#"{"status":"ok","action":"connect","request-id":1}"#),
+        );
+
+        assert!(connected.await.expect("answered").is_ok());
+        assert_eq!(pending.len(), 1, "only the matching action is resolved");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), alerted)
+                .await
+                .is_err(),
+            "the other action is still in flight"
+        );
+    }
+
+    /// The defect this exists for: a refused `connect` used to return `Ok` and
+    /// be recorded for every future reconnect.
+    #[tokio::test]
+    async fn a_refusal_reaches_the_caller_who_asked_for_it() {
+        let mut pending = HashMap::new();
+        let (connect, connected) = waiting(SubRequestAction::Connect);
+        pending.insert(7, connect);
+
+        settle(
+            &mut pending,
+            &frame(
+                r#"{"status":"error","action":"connect","request-id":7,
+                    "message":"connect-not-completed"}"#,
+            ),
+        );
+
+        let error = connected
+            .await
+            .expect("answered")
+            .expect_err("a refusal is not a success");
+        assert!(
+            format!("{error}").contains("connect-not-completed"),
+            "the venue's own words are what the caller acts on: {error}"
+        );
+        assert!(pending.is_empty());
+    }
+
+    /// The fallback that stops this from being a regression if the venue ever
+    /// answers without echoing the id: matching only by id would leave every
+    /// action to time out.
+    #[tokio::test]
+    async fn an_answer_without_an_id_resolves_the_oldest_action_of_its_kind() {
+        let mut pending = HashMap::new();
+        let (first, first_answered) = waiting(SubRequestAction::Connect);
+        let mut second = waiting(SubRequestAction::Connect);
+        // Later deadline, so it is unambiguously the younger of the two.
+        second.0.deadline += Duration::from_secs(1);
+        pending.insert(1, first);
+        pending.insert(2, second.0);
+
+        settle(
+            &mut pending,
+            &frame(r#"{"status":"ok","action":"connect"}"#),
+        );
+
+        assert!(first_answered.await.expect("answered").is_ok());
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key(&2), "the younger one still waits");
+    }
+
+    /// A heartbeat carries an id and is deliberately not tracked, so its
+    /// acknowledgement matching nothing must be ordinary rather than an error.
+    #[tokio::test]
+    async fn an_acknowledgement_for_nothing_disturbs_nothing() {
+        let mut pending = HashMap::new();
+        let (connect, connected) = waiting(SubRequestAction::Connect);
+        pending.insert(1, connect);
+
+        settle(
+            &mut pending,
+            &frame(r#"{"status":"ok","action":"heartbeat","request-id":99}"#),
+        );
+
+        assert_eq!(pending.len(), 1, "nothing was resolved");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), connected)
+                .await
+                .is_err(),
+            "the connect is untouched"
+        );
+    }
+
+    /// A notification is not an answer to anything.
+    #[tokio::test]
+    async fn a_notification_never_resolves_an_action() {
+        let mut pending = HashMap::new();
+        let (connect, _connected) = waiting(SubRequestAction::Connect);
+        pending.insert(1, connect);
+
+        settle(
+            &mut pending,
+            &frame(&format!(
+                r#"{{"type":"Order","data":{{"account-number":"{ACCOUNT_NUMBER}"}}}}"#
+            )),
+        );
+
+        assert_eq!(pending.len(), 1);
+    }
+
+    /// A session that ends takes its in-flight actions with it: the socket
+    /// that would have brought the answer back is gone.
+    #[tokio::test]
+    async fn ending_a_session_fails_everything_still_waiting() {
+        let mut pending = HashMap::new();
+        let (connect, connected) = waiting(SubRequestAction::Connect);
+        pending.insert(1, connect);
+
+        abandon(&mut pending, "the account stream dropped");
+
+        let error = connected
+            .await
+            .expect("answered")
+            .expect_err("a dropped stream cannot have accepted it");
+        assert!(format!("{error}").contains("dropped"), "{error}");
+        assert!(pending.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod credential_tests {
     use super::*;
     use crate::accounts::AccountNumber;
@@ -1101,6 +1423,7 @@ mod credential_tests {
             auth_token: crate::oauth::AccessToken::new(TOKEN).bearer(),
             action: SubRequestAction::Connect,
             value: Some(vec![AccountNumber("SENTINEL-5WX00042".to_string())]),
+            request_id: 1,
         };
 
         // What goes on the wire still carries it, prefix included.
