@@ -147,6 +147,26 @@ let held = account
 is `None` because the venue did not send one, which is not the same as a
 mark of zero.
 
+#### Can this account trade?
+
+[`accounts::Account::trading_status`] is one request and answers before the
+venue answers with a rejection.
+
+```rust
+let status = account.trading_status().await?;
+
+if status.is_blocked() {
+    println!("this account cannot trade");
+} else if !status.is_known_blocked() {
+    // The venue did not send the flags, so "not blocked" is not something
+    // this process actually knows. Every flag is `Option<bool>`, and a flag
+    // the broker omitted is unknown rather than false.
+    println!("unverified: the venue reported neither flag");
+}
+
+println!("day trades used: {:?}", status.day_trade_count);
+```
+
 #### Transactions
 
 The ledger: fills, fees, dividends, assignments, cash movements. It is the

@@ -5,6 +5,7 @@ use crate::api::url::encode_path_segment;
 use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter};
 use crate::types::balance::{Balance, BalanceSnapshot};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
+use crate::types::trading_status::TradingStatus;
 use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
 use chrono::{DateTime, FixedOffset, NaiveDate};
@@ -462,6 +463,23 @@ impl Account<'_> {
                 &query.pairs(),
             )
             .await
+    }
+
+    /// Whether the account may trade, and what it may trade.
+    ///
+    /// The cheap check before an order: a closed or frozen account cannot trade
+    /// at all, a closing-only account can only reduce, and the feature flags
+    /// decide whether futures, cryptocurrency or uncovered short calls are
+    /// available. It also carries the live day-trade count.
+    ///
+    /// Every flag is `Option<bool>`: one the venue omitted is unknown, never
+    /// `false`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn trading_status(&self) -> TastyResult<TradingStatus> {
+        self.tasty.get(&self.path("/trading-status")).await
     }
 
     /// Orders that are still working.
