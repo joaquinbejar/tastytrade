@@ -21,3 +21,5 @@ pub mod option_chain;
 pub mod instrument;
 /// DXLink token exchange and streamer-symbol lookup.
 pub mod quote_streaming;
+/// Percent-encoding for the dynamic parts of a request path.
+pub(crate) mod url;

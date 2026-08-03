@@ -1,5 +1,6 @@
 use super::base::{Items, Paginated};
 use crate::api::base::TastyResult;
+use crate::api::url::encode_path_segment;
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::{FullPosition, LiveOrderRecord, TastyTrade};
@@ -243,6 +244,20 @@ impl Account<'_> {
         self.inner.account.account_number.clone()
     }
 
+    /// `/accounts/{this account}{suffix}`, with the number percent-encoded.
+    ///
+    /// Every account-scoped request builds its path here, so no endpoint can
+    /// be added that forgets the encoding — the seven that existed before this
+    /// each interpolated the number raw. `suffix` starts with `/` and carries
+    /// any further dynamic segment already encoded, because only its caller
+    /// knows where the boundaries between segments are.
+    fn path(&self, suffix: &str) -> String {
+        format!(
+            "/accounts/{}{suffix}",
+            encode_path_segment(&self.inner.account.account_number.0)
+        )
+    }
+
     /// Current balances: cash, buying power and margin requirements.
     ///
     /// Every monetary field is `Decimal`.
@@ -251,13 +266,7 @@ impl Account<'_> {
     ///
     /// Propagates the venue's error; the response body never reaches it.
     pub async fn balance(&self) -> TastyResult<Balance> {
-        let resp = self
-            .tasty
-            .get(&format!(
-                "/accounts/{}/balances",
-                self.inner.account.account_number.0
-            ))
-            .await?;
+        let resp = self.tasty.get(&self.path("/balances")).await?;
         Ok(resp)
     }
 
@@ -277,10 +286,7 @@ impl Account<'_> {
         let resp: Paginated<BalanceSnapshot> = self
             .tasty
             .get_with_query::<Items<BalanceSnapshot>, _, _>(
-                &format!(
-                    "/accounts/{}/balance-snapshots",
-                    self.inner.account.account_number.0
-                ),
+                &self.path("/balance-snapshots"),
                 &[
                     ("start-date", &start_date.format("%Y-%m-%d").to_string()),
                     ("end-date", &end_date.format("%Y-%m-%d").to_string()),
@@ -300,13 +306,7 @@ impl Account<'_> {
     /// in this crate rather than a flat account. A genuinely empty list is
     /// `Ok`.
     pub async fn positions(&self) -> TastyResult<Vec<FullPosition>> {
-        let resp: Items<FullPosition> = self
-            .tasty
-            .get(&format!(
-                "/accounts/{}/positions",
-                self.inner.account.account_number.0
-            ))
-            .await?;
+        let resp: Items<FullPosition> = self.tasty.get(&self.path("/positions")).await?;
         resp.into_items()
     }
 
@@ -316,13 +316,7 @@ impl Account<'_> {
     ///
     /// As [`Account::positions`].
     pub async fn live_orders(&self) -> TastyResult<Vec<LiveOrderRecord>> {
-        let resp: Items<LiveOrderRecord> = self
-            .tasty
-            .get(&format!(
-                "/accounts/{}/orders/live",
-                self.inner.account.account_number.0
-            ))
-            .await?;
+        let resp: Items<LiveOrderRecord> = self.tasty.get(&self.path("/orders/live")).await?;
         resp.into_items()
     }
 
@@ -385,13 +379,7 @@ impl Account<'_> {
     pub async fn dry_run(&self, order: &Order) -> TastyResult<DryRunResult> {
         let resp: DryRunResult = self
             .tasty
-            .post(
-                &format!(
-                    "/accounts/{}/orders/dry-run",
-                    self.inner.account.account_number.0
-                ),
-                order,
-            )
+            .post(&self.path("/orders/dry-run"), order)
             .await?;
         Ok(resp)
     }
@@ -403,13 +391,7 @@ impl Account<'_> {
     /// impossible to skip past without saying so. This one remains for callers
     /// that manage the review themselves.
     pub async fn place_order(&self, order: &Order) -> TastyResult<OrderPlacedResult> {
-        let resp: OrderPlacedResult = self
-            .tasty
-            .post(
-                &format!("/accounts/{}/orders", self.inner.account.account_number.0),
-                order,
-            )
-            .await?;
+        let resp: OrderPlacedResult = self.tasty.post(&self.path("/orders"), order).await?;
         Ok(resp)
     }
 
@@ -423,10 +405,10 @@ impl Account<'_> {
     /// Propagates the venue's error, including a refusal to cancel.
     pub async fn cancel_order(&self, id: OrderId) -> TastyResult<LiveOrderRecord> {
         self.tasty
-            .delete(&format!(
-                "/accounts/{}/orders/{}",
-                self.inner.account.account_number.0, id.0
-            ))
+            // `OrderId` is a `u64`, so its decimal rendering is already inside
+            // the unreserved set and encoding it would be a no-op. The type is
+            // what guarantees that, not this call site.
+            .delete(&self.path(&format!("/orders/{}", id.0)))
             .await
     }
 }

@@ -4,6 +4,7 @@
    Date: 9/3/25
 ******************************************************************************/
 use crate::api::base::{Items, Paginated};
+use crate::api::url::encode_path_segment;
 use crate::types::instrument::{
     CompactOptionChain, Cryptocurrency, EquityInstrument, EquityInstrumentInfo, EquityOption,
     FutureOption, FutureOptionProduct, FutureProduct, FuturesNestedOptionChain, NestedOptionChain,
@@ -22,8 +23,11 @@ impl TastyTrade {
         &self,
         symbol: impl AsSymbol,
     ) -> TastyResult<EquityInstrumentInfo> {
-        self.get(format!("/instruments/equities/{}", symbol.as_symbol().0))
-            .await
+        self.get(format!(
+            "/instruments/equities/{}",
+            encode_path_segment(&symbol.as_symbol().0)
+        ))
+        .await
     }
 
     /// Equities by symbol.
@@ -78,8 +82,11 @@ impl TastyTrade {
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
     pub async fn get_equity(&self, symbol: impl AsSymbol) -> TastyResult<EquityInstrument> {
-        self.get(format!("/instruments/equities/{}", symbol.as_symbol().0))
-            .await
+        self.get(format!(
+            "/instruments/equities/{}",
+            encode_path_segment(&symbol.as_symbol().0)
+        ))
+        .await
     }
 
     /// The flat option chain for an underlying.
@@ -96,7 +103,7 @@ impl TastyTrade {
         let resp: Items<EquityOption> = self
             .get(format!(
                 "/option-chains/{}",
-                underlying_symbol.as_symbol().0
+                encode_path_segment(&underlying_symbol.as_symbol().0)
             ))
             .await?;
         resp.into_items()
@@ -122,7 +129,7 @@ impl TastyTrade {
         let resp: Items<CompactOptionChain> = self
             .get(format!(
                 "/option-chains/{}/compact",
-                underlying_symbol.as_symbol().0
+                encode_path_segment(&underlying_symbol.as_symbol().0)
             ))
             .await?;
 
@@ -147,7 +154,7 @@ impl TastyTrade {
         let resp: Items<NestedOptionChain> = self
             .get(format!(
                 "/option-chains/{}/nested",
-                underlying_symbol.as_symbol().0
+                encode_path_segment(&underlying_symbol.as_symbol().0)
             ))
             .await?;
         resp.into_items()
@@ -199,7 +206,7 @@ impl TastyTrade {
         // check it never did and the body it put into the error message.
         self.get(format!(
             "/instruments/equity-options/{}",
-            symbol.as_symbol().0
+            encode_path_segment(&symbol.as_symbol().0)
         ))
         .await
     }
@@ -269,9 +276,11 @@ impl TastyTrade {
         &self,
         symbol: impl AsSymbol,
     ) -> TastyResult<crate::types::instrument::Future> {
-        let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
-        self.get(format!("/instruments/futures/{}", encoded_symbol))
-            .await
+        self.get(format!(
+            "/instruments/futures/{}",
+            encode_path_segment(&symbol.as_symbol().0)
+        ))
+        .await
     }
 
     /// Every futures product the venue lists.
@@ -299,7 +308,8 @@ impl TastyTrade {
     ) -> TastyResult<FutureProduct> {
         self.get(format!(
             "/instruments/future-products/{}/{}",
-            exchange, code
+            encode_path_segment(exchange),
+            encode_path_segment(code)
         ))
         .await
     }
@@ -330,7 +340,8 @@ impl TastyTrade {
     ) -> TastyResult<FutureOptionProduct> {
         self.get(format!(
             "/instruments/future-option-products/{}/{}",
-            exchange, root_symbol
+            encode_path_segment(exchange),
+            encode_path_segment(root_symbol)
         ))
         .await
     }
@@ -347,7 +358,7 @@ impl TastyTrade {
     ) -> TastyResult<FutureOptionProduct> {
         self.get(format!(
             "/instruments/future-option-products/{}",
-            root_symbol
+            encode_path_segment(root_symbol)
         ))
         .await
     }
@@ -364,7 +375,10 @@ impl TastyTrade {
         product_code: &str,
     ) -> TastyResult<Vec<FutureOption>> {
         let resp: Items<FutureOption> = self
-            .get(format!("/futures-option-chains/{}", product_code))
+            .get(format!(
+                "/futures-option-chains/{}",
+                encode_path_segment(product_code)
+            ))
             .await?;
         resp.into_items()
     }
@@ -382,7 +396,10 @@ impl TastyTrade {
     ) -> TastyResult<Vec<FuturesNestedOptionChain>> {
         // This endpoint returns data in standard TastyApiResponse format with FuturesNestedOptionChain in data field
         let nested_chain: FuturesNestedOptionChain = self
-            .get(format!("/futures-option-chains/{}/nested", product_code))
+            .get(format!(
+                "/futures-option-chains/{}/nested",
+                encode_path_segment(product_code)
+            ))
             .await?;
 
         // Return as a vector with single item to match the expected return type
@@ -424,12 +441,7 @@ impl TastyTrade {
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
     pub async fn get_future_option(&self, symbol: impl AsSymbol) -> TastyResult<FutureOption> {
-        let encoded_symbol = symbol
-            .as_symbol()
-            .0
-            .replace("/", "%2F")
-            .replace(".", "%2E")
-            .replace(" ", "%20");
+        let encoded_symbol = encode_path_segment(&symbol.as_symbol().0);
         self.get(format!("/instruments/future-options/{encoded_symbol}"))
             .await
     }
@@ -472,7 +484,7 @@ impl TastyTrade {
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
     pub async fn get_cryptocurrency(&self, symbol: impl AsSymbol) -> TastyResult<Cryptocurrency> {
-        let encoded_symbol = symbol.as_symbol().0.replace("/", "%2F");
+        let encoded_symbol = encode_path_segment(&symbol.as_symbol().0);
         self.get(format!("/instruments/cryptocurrencies/{encoded_symbol}"))
             .await
     }
@@ -512,8 +524,11 @@ impl TastyTrade {
     /// Fails when the venue does not recognise the symbol, and propagates its
     /// error otherwise.
     pub async fn get_warrant(&self, symbol: impl AsSymbol) -> TastyResult<Warrant> {
-        self.get(format!("/instruments/warrants/{}", symbol.as_symbol().0))
-            .await
+        self.get(format!(
+            "/instruments/warrants/{}",
+            encode_path_segment(&symbol.as_symbol().0)
+        ))
+        .await
     }
 
     /// How many decimal places each instrument type accepts for a quantity.
