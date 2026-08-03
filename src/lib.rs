@@ -142,8 +142,31 @@
 //! ```
 //!
 //! A reconnect resumes each candle series one millisecond past the last bar
-//! actually delivered, rather than replaying the original start — otherwise
-//! every reconnect would re-send a history the consumer already has.
+//! delivered **contiguously**, rather than replaying the original start —
+//! otherwise every reconnect would re-send a history the consumer already has.
+//!
+//! ### Falling behind
+//!
+//! A subscription's buffer is bounded, so a consumer that does not keep up
+//! loses events rather than stalling every other subscription. That is the
+//! right trade for quotes and the wrong one for a price series, so it is
+//! observable:
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # fn check(bars: &QuoteSubscription) {
+//! if bars.lagged() > 0 {
+//!     // Those events are gone; reading faster will not bring them back.
+//!     println!("{} events lost", bars.lagged());
+//! }
+//! # }
+//! ```
+//!
+//! For candles it is also recoverable across a reconnect: a dropped bar stops
+//! the resume point advancing, so the next connection asks for it again. Within
+//! one connection a dropped bar stays dropped. Size the buffer with
+//! [`QuoteStreamer::create_sub_with_capacity`](streaming::quote_streamer::QuoteStreamer::create_sub_with_capacity)
+//! when the default does not fit the history you are asking for.
 //!
 //! ## Account streaming
 //!

@@ -73,6 +73,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nhourly bars:");
     read_bounded(&mut hour, MAX_EVENTS, print_bar).await;
 
+    // The question a caller assembling a series actually needs answered.
+    // A history arrives all at once, so this is where a buffer too small for
+    // it shows up — and reading faster does not bring those bars back.
+    for (label, sub) in [("five-minute", &five), ("hourly", &hour)] {
+        match sub.lagged() {
+            0 => println!("{label}: complete, nothing lost"),
+            lost => println!(
+                "{label}: {lost} event(s) lost — raise the buffer with \
+                 create_sub_with_capacity"
+            ),
+        }
+    }
+
     Ok(())
 }
 
