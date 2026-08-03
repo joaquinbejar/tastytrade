@@ -305,9 +305,14 @@ impl OAuthSession {
             // comes from an endpoint this crate does not control, on the one
             // request whose parameters are all secret.
             let parsed = serde_json::from_str::<TokenErrorResponse>(&body).ok();
+            // `code()` answers with a `&'static str` from the spec's own list,
+            // so nothing the endpoint chose to put in that field can travel
+            // through here — not into this log line, and not into the error
+            // below. Deserialization enforces no grammar on it, and this is
+            // the one response whose neighbouring fields are all secret.
             let code = parsed
                 .as_ref()
-                .map(|error| error.error.as_str())
+                .map(TokenErrorResponse::code)
                 .unwrap_or("no error code");
 
             debug!(

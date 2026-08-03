@@ -48,7 +48,7 @@ impl std::fmt::Display for SubRequestAction {
 ///
 /// This struct is used to send subscription requests to the server.
 /// The `value` field is optional and its type depends on the `action` field.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
 struct SubRequest<T: Serialize> {
     /// The OAuth2 access token, `Bearer `-prefixed.
@@ -62,6 +62,21 @@ struct SubRequest<T: Serialize> {
     action: SubRequestAction,
     /// Value associated with the action.  This field is optional.
     value: Option<T>,
+}
+
+impl<T: Serialize> std::fmt::Debug for SubRequest<T> {
+    /// Redacts the credential.
+    ///
+    /// The derived `Debug` printed the whole `Bearer …` value. Nothing logs a
+    /// `SubRequest` today, which is exactly why it was easy to miss: the next
+    /// person adding a trace to the writer would have leaked a live access
+    /// token on the first line they wrote.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubRequest")
+            .field("auth_token", &"***")
+            .field("action", &self.action)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Represents an action to be performed by a handler.
@@ -791,6 +806,45 @@ impl TastyTrade {
     /// * `Err(TastyTradeError)` - If an error occurs during connection or setup.
     pub async fn create_account_streamer(&self) -> TastyResult<AccountStreamer> {
         AccountStreamer::connect(self).await
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    use crate::accounts::AccountNumber;
+
+    /// The websocket takes the same `Bearer `-prefixed value as the HTTP
+    /// header, and the whole request must be safe to format. A derived `Debug`
+    /// rendered the live token.
+    #[test]
+    fn formatting_a_subscription_request_never_shows_the_token() {
+        const TOKEN: &str = "SENTINEL-access-token-5Nd9";
+
+        let message = SubRequest::<Vec<AccountNumber>> {
+            auth_token: crate::oauth::AccessToken::new(TOKEN).bearer(),
+            action: SubRequestAction::Connect,
+            value: Some(vec![AccountNumber("SENTINEL-5WX00042".to_string())]),
+        };
+
+        // What goes on the wire still carries it, prefix included.
+        let sent = serde_json::to_string(&message).expect("the request serializes");
+        assert!(
+            sent.contains(&format!(r#""auth-token":"Bearer {TOKEN}""#)),
+            "the prefix is part of the credential: {sent}"
+        );
+
+        // What goes anywhere else does not.
+        let rendered = format!("{message:?}");
+        assert!(
+            !rendered.contains(TOKEN),
+            "the token reached Debug: {rendered}"
+        );
+        assert!(rendered.contains("***"), "{rendered}");
+        assert!(
+            rendered.contains("Connect"),
+            "the action is safe: {rendered}"
+        );
     }
 }
 

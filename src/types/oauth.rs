@@ -46,6 +46,19 @@ pub(crate) const REFRESH_MARGIN: Duration = Duration::from_secs(60);
 /// missing from the response, which the OAuth2 spec permits.
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(15 * 60);
 
+/// The longest lifetime this crate will believe.
+///
+/// `expires_in` is a number chosen by the endpoint, and `Instant + Duration`
+/// **panics** when the sum leaves the platform's range — so an absurd value in
+/// an otherwise successful response could abort the caller's process inside
+/// `connect`. A library does not get to do that.
+///
+/// Twenty-four hours is far past the documented fifteen minutes and still
+/// bounded. Clamping errs towards refreshing sooner than the venue said, which
+/// costs one request; believing an unbounded lifetime costs a token that is
+/// never renewed.
+const MAX_TOKEN_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Defines a secret string whose `Debug` and `Display` never reveal it.
 ///
 /// Deliberately not `Serialize`: a secret that can be serialized is a secret
@@ -430,9 +443,13 @@ impl TokenResponse {
     /// `expires_in`, which RFC 6749 §5.1 allows it to do. Guessing short is
     /// the safe direction: an unnecessary refresh costs one request, and a
     /// token believed live past its expiry costs a 401 mid-flow.
+    ///
+    /// Clamped to twenty-four hours. The value comes from the endpoint, and an
+    /// unbounded one would panic the moment it was added to an `Instant`.
     pub fn lifetime(&self) -> Duration {
         self.expires_in
             .map(Duration::from_secs)
+            .map(|lifetime| lifetime.min(MAX_TOKEN_LIFETIME))
             .unwrap_or(DEFAULT_TOKEN_LIFETIME)
     }
 }
@@ -470,11 +487,17 @@ pub(crate) struct ActiveToken {
 
 impl ActiveToken {
     /// A token that expires `lifetime` from now.
+    ///
+    /// `checked_add` rather than `+`: the caller is expected to have clamped
+    /// the lifetime, but this is the line that would panic if it had not, and
+    /// a panic here happens inside the caller's `connect`. An overflow falls
+    /// back to the documented lifetime, which is short and therefore safe.
     pub(crate) fn new(token: AccessToken, lifetime: Duration) -> Self {
-        Self {
-            token,
-            expires_at: Instant::now() + lifetime,
-        }
+        let expires_at = Instant::now()
+            .checked_add(lifetime)
+            .unwrap_or_else(|| Instant::now() + DEFAULT_TOKEN_LIFETIME);
+
+        Self { token, expires_at }
     }
 
     /// Whether this token is inside the refresh margin, or already past it.
@@ -488,27 +511,78 @@ impl ActiveToken {
     }
 }
 
+/// Every error code RFC 6749 defines for the token and authorization
+/// endpoints, and nothing else.
+///
+/// The list is the whitelist: a code outside it never reaches a log or an
+/// error value.
+const SPECIFIED_ERROR_CODES: [&str; 10] = [
+    "invalid_request",
+    "invalid_client",
+    "invalid_grant",
+    "unauthorized_client",
+    "unsupported_grant_type",
+    "invalid_scope",
+    "access_denied",
+    "unsupported_response_type",
+    "server_error",
+    "temporarily_unavailable",
+];
+
+/// Written instead of an error code the spec does not define.
+const UNRECOGNISED_ERROR_CODE: &str = "an unrecognised error code";
+
 /// What the venue said when it refused a token request.
 ///
 /// RFC 6749 §5.2 defines the codes; the accompanying `error_description` is
 /// free prose from an endpoint this crate does not control, so it is dropped
 /// rather than carried into an error a caller will log.
-#[derive(Debug, Deserialize)]
+///
+/// `Debug` is manual and redacting. Deserialization enforces nothing about
+/// what `error` contains, and this is the response to the one request whose
+/// every parameter is a secret — an endpoint that echoed a client secret back
+/// in that field would otherwise write it wherever this value went.
+#[derive(Deserialize)]
 pub(crate) struct TokenErrorResponse {
-    pub(crate) error: String,
+    error: String,
 }
 
 impl TokenErrorResponse {
+    /// The code, when it is one the spec defines, and a constant label
+    /// otherwise.
+    ///
+    /// `&'static str` on purpose: nothing venue-controlled can leave through
+    /// this, whatever arrived in the body. It is the only accessor, so there
+    /// is no second path.
+    pub(crate) fn code(&self) -> &'static str {
+        SPECIFIED_ERROR_CODES
+            .into_iter()
+            .find(|known| *known == self.error.trim())
+            .unwrap_or(UNRECOGNISED_ERROR_CODE)
+    }
+
     /// Whether this refusal is about the credentials rather than the request.
     ///
     /// A rejected credential is terminal: presenting it again produces the
     /// same answer, and both streamers treat [`TastyTradeError::Auth`] as the
-    /// end of the line rather than something to back off and retry.
+    /// end of the line rather than something to back off and retry. An
+    /// unrecognised code is **not** treated as terminal — giving up on a code
+    /// this crate cannot read would turn an unexpected reply into a dead
+    /// session.
     pub(crate) fn is_credential_failure(&self) -> bool {
         matches!(
-            self.error.as_str(),
+            self.code(),
             "invalid_grant" | "invalid_client" | "unauthorized_client" | "access_denied"
         )
+    }
+}
+
+impl fmt::Debug for TokenErrorResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The sanitised code, never the field.
+        f.debug_struct("TokenErrorResponse")
+            .field("error", &self.code())
+            .finish()
     }
 }
 
@@ -720,22 +794,85 @@ mod tests {
             "access_denied",
         ] {
             assert!(
-                TokenErrorResponse {
-                    error: code.to_string()
-                }
-                .is_credential_failure(),
+                refusal(code).is_credential_failure(),
                 "{code} is about the credential"
             );
         }
         for code in ["invalid_request", "server_error", "temporarily_unavailable"] {
             assert!(
-                !TokenErrorResponse {
-                    error: code.to_string()
-                }
-                .is_credential_failure(),
+                !refusal(code).is_credential_failure(),
                 "{code} is not about the credential"
             );
         }
+    }
+
+    fn refusal(code: &str) -> TokenErrorResponse {
+        serde_json::from_str(&format!(r#"{{"error":"{code}"}}"#)).expect("a refusal document")
+    }
+
+    /// `error` is untrusted response text — deserialization enforces no
+    /// grammar on it — and this is the reply to the one request whose every
+    /// parameter is a secret. An endpoint that echoed a client secret back in
+    /// that field must not get it into a log or an error value.
+    #[test]
+    fn an_error_code_the_spec_does_not_define_never_travels() {
+        let refusal = refusal(SECRET);
+
+        assert_eq!(
+            refusal.code(),
+            UNRECOGNISED_ERROR_CODE,
+            "only the spec's own codes may leave this type"
+        );
+        assert!(
+            !format!("{refusal:?}").contains(SECRET),
+            "Debug rendered the field: {refusal:?}"
+        );
+        // And an unreadable code is not treated as a dead credential: giving
+        // up on a reply this crate cannot parse would turn a surprise into a
+        // terminated session.
+        assert!(!refusal.is_credential_failure());
+    }
+
+    /// The whitelist is the whole mechanism, so it has to actually pass the
+    /// codes through.
+    #[test]
+    fn a_specified_error_code_survives_intact() {
+        for code in SPECIFIED_ERROR_CODES {
+            assert_eq!(refusal(code).code(), code);
+            // Surrounding whitespace is a transport artefact, not a different
+            // code.
+            assert_eq!(refusal(&format!("  {code} ")).code(), code);
+        }
+    }
+
+    /// `expires_in` is a number the endpoint chooses, and `Instant + Duration`
+    /// panics when the sum leaves the platform's range. A malformed but
+    /// otherwise successful response must not abort the caller's process.
+    #[test]
+    fn an_absurd_lifetime_is_clamped_rather_than_panicking() {
+        let response = TokenResponse {
+            access_token: AccessToken::new(ACCESS),
+            refresh_token: None,
+            token_type: None,
+            expires_in: Some(u64::MAX),
+            id_token: None,
+        };
+
+        assert_eq!(
+            response.lifetime(),
+            MAX_TOKEN_LIFETIME,
+            "an unbounded lifetime is not a lifetime"
+        );
+
+        // The construction that would have panicked, with the unclamped value
+        // and with the clamped one.
+        let token = ActiveToken::new(AccessToken::new(ACCESS), Duration::from_secs(u64::MAX));
+        assert!(!token.is_stale(), "the fallback still has to be usable");
+        assert!(
+            ActiveToken::new(AccessToken::new(ACCESS), response.lifetime())
+                .remaining()
+                .is_some()
+        );
     }
 
     /// A configuration file can supply a secret, which means the newtype has

@@ -204,6 +204,10 @@ async fn a_refused_grant_is_an_authentication_failure_and_is_not_retryable() {
 
     let rendered = format!("{error}");
     assert!(rendered.contains("invalid_grant"), "{rendered}");
+    // The refusal document echoed a credential back in `error_description`,
+    // and the sentinel body also puts one in `error` itself. Neither field is
+    // trusted: only the spec's own codes leave the type.
+    assert!(!rendered.contains(sentinel::REFRESH_TOKEN), "{rendered}");
     // Which deployment refused is part of what makes the message actionable.
     // A loopback host is reported as production, the answer that fails safe.
     assert!(rendered.contains("production"), "{rendered}");
@@ -211,6 +215,38 @@ async fn a_refused_grant_is_an_authentication_failure_and_is_not_retryable() {
     // travel any further than the socket it arrived on.
     assert!(!rendered.contains("SENTINEL"), "{rendered}");
     assert_no_secret_leaked(&logs);
+}
+
+/// `error` is untrusted response text. An endpoint that echoes a credential
+/// back in that field must not get it into the error a caller logs, and the
+/// classification must not turn an unreadable reply into a dead session.
+#[tokio::test]
+async fn an_error_code_the_spec_does_not_define_never_reaches_the_caller() {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "POST /oauth/token".to_string(),
+        Route::status(400, format!(r#"{{"error":"{}"}}"#, sentinel::CLIENT_SECRET)),
+    );
+    let venue = MockVenue::start(routes).await;
+    let config = config_for(&venue);
+
+    let (result, logs) =
+        capture_logs_at(Level::TRACE, async { TastyTrade::connect(&config).await }).await;
+    let error = result.expect_err("a 400 is not a session");
+
+    let rendered = format!("{error} {error:?}");
+    assert!(
+        !rendered.contains("SENTINEL"),
+        "the code reached the caller: {rendered}"
+    );
+    assert_no_secret_leaked(&logs);
+
+    // Not classified as a credential failure: this crate could not read the
+    // code, so giving up on the grant would be a guess.
+    assert!(
+        !matches!(error, TastyTradeError::Auth(_)),
+        "an unreadable code must not be treated as a dead credential: {error:?}"
+    );
 }
 
 /// A token endpoint that is down says nothing about whether the secret is
