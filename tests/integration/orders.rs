@@ -12,7 +12,11 @@ use tastytrade::TastyTrade;
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 
-use crate::support::{MockVenue, Route, one_account_body, sentinel, token_response_body};
+use tracing::Level;
+
+use crate::support::{
+    MockVenue, Route, capture_logs_at, one_account_body, sentinel, token_response_body,
+};
 
 fn config_for(venue: &MockVenue) -> TastyTradeConfig {
     TastyTradeConfig {
@@ -401,4 +405,73 @@ async fn a_customer_search_always_sends_at_least_one_account() {
         target.contains("account-numbers%5B%5D="),
         "the required parameter must be sent: {target}"
     );
+}
+
+/// The customer order endpoints take account numbers as query parameters, and
+/// a failure must not report them back.
+///
+/// This is the case path redaction could not reach: `RequestReport.operation`
+/// keeps the whole URL, so a transport or HTTP failure rendered every account
+/// number the filter asked about, in `Display`, in `Debug` and in the DEBUG
+/// line the client writes about the request.
+#[tokio::test]
+async fn a_failing_customer_order_search_reports_no_account_number() {
+    const ERROR: &str = r#"{"error":{"code":"oops","message":"server"}}"#;
+
+    let venue = venue_with(vec![
+        (
+            "GET /customers/me/orders".to_string(),
+            Route::status(500, ERROR),
+        ),
+        (
+            "GET /customers/me/orders/live".to_string(),
+            Route::status(500, ERROR),
+        ),
+    ])
+    .await;
+
+    let (errors, logs) = capture_logs_at(Level::TRACE, async {
+        let client = TastyTrade::connect(&config_for(&venue))
+            .await
+            .expect("authentication must succeed");
+        let history = client
+            .customer_orders(&CustomerOrderFilter::for_accounts(
+                AccountNumber::from(sentinel::ACCOUNT_NUMBER),
+                &[AccountNumber::from("5WX00002")],
+            ))
+            .await
+            .expect_err("a 500 must surface as an error");
+        let live = client
+            .customer_live_orders(&CustomerLiveOrderFilter::for_accounts(
+                AccountNumber::from(sentinel::ACCOUNT_NUMBER),
+                &[AccountNumber::from("5WX00002")],
+            ))
+            .await
+            .expect_err("a 500 must surface as an error");
+        (history, live)
+    })
+    .await;
+
+    // Both were really sent, so this is not passing because nothing happened.
+    assert_eq!(
+        venue
+            .requests()
+            .iter()
+            .filter(|request| request.target.starts_with("/customers/me/orders"))
+            .count(),
+        2
+    );
+
+    let rendered = format!("{} {:?} {} {:?}", errors.0, errors.0, errors.1, errors.1);
+    for number in [sentinel::ACCOUNT_NUMBER, "5WX00002"] {
+        assert!(
+            !rendered.contains(number),
+            "an account number reached the error: {rendered}"
+        );
+        assert!(
+            !logs.contents().contains(number),
+            "an account number reached a log line"
+        );
+    }
+    assert!(rendered.contains("{account}"), "{rendered}");
 }

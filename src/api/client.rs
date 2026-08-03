@@ -69,7 +69,30 @@ impl Display for TastyTrade {
 /// `/customers/me` is left alone. It is a literal the venue defines rather than
 /// an identifier, it is by far the most common form, and redacting it would
 /// make the ordinary path unreadable while hiding nothing.
+///
+/// The **query string** carries them too. The customer order endpoints take
+/// `account-numbers[]` as a repeated parameter, so redacting only the path left
+/// the identifiers in `RequestReport.operation` — and from there in every error
+/// the request produced. The parameter names are matched by
+/// [`crate::types::wire::names_an_account`], the same rule the JSON renderer
+/// uses, so a new spelling is handled in one place rather than two.
 fn redact_account_path(url: &str) -> String {
+    let (path, query) = match url.find('?') {
+        Some(at) => (&url[..at], Some(&url[at + 1..])),
+        None => (url, None),
+    };
+
+    let mut out = redact_path_identifiers(path);
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(&redact_query_identifiers(query));
+    }
+
+    out
+}
+
+/// The path half of [`redact_account_path`].
+fn redact_path_identifiers(path: &str) -> String {
     /// What the next segment is an identifier *of*, when it is one.
     enum Next {
         Nothing,
@@ -77,18 +100,17 @@ fn redact_account_path(url: &str) -> String {
         Customer,
     }
 
-    let mut out = String::with_capacity(url.len());
+    let mut out = String::with_capacity(path.len());
     let mut next = Next::Nothing;
 
-    for (index, segment) in url.split('/').enumerate() {
+    for (index, segment) in path.split('/').enumerate() {
         if index > 0 {
             out.push('/');
         }
-        // An identifier can be the last path segment, in which case the query
-        // string is part of the same split. Only the identifier is replaced:
-        // the query is request context worth keeping, and dropping it here
-        // would silently shorten every error about a paginated endpoint.
-        let (identifier, tail) = match segment.find(['?', '#']) {
+        // A fragment would end the path the way a query does. The verbs never
+        // build one, but the redaction is what stands between a URL and a log
+        // line, so it does not assume that.
+        let (identifier, tail) = match segment.find('#') {
             Some(at) => segment.split_at(at),
             None => (segment, ""),
         };
@@ -118,6 +140,24 @@ fn redact_account_path(url: &str) -> String {
     }
 
     out
+}
+
+/// The query half of [`redact_account_path`].
+///
+/// Only the value is replaced. The parameter names are what say which request
+/// was made, and an error that cannot name the request it failed on is worse
+/// than one that says too much.
+fn redact_query_identifiers(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if crate::types::wire::names_an_account(key) => {
+                format!("{key}={{account}}")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// Joins the configured base URL and a request path.
@@ -1177,6 +1217,41 @@ mod tests {
             redact_account_path("https://api.tastyworks.com/customers/78a1f0c2?per-page=100");
         assert!(!redacted.contains("78a1f0c2"), "{redacted}");
         assert!(redacted.contains("per-page=100"), "{redacted}");
+    }
+
+    /// The customer order endpoints take the identifiers as query parameters
+    /// rather than path segments, so redacting the path alone left them in
+    /// `RequestReport.operation` and from there in every error the request
+    /// produced. The parameter names survive: an error that cannot say which
+    /// request failed is worse than one that says too much.
+    #[test]
+    fn redacts_an_account_number_carried_in_the_query() {
+        let redacted = redact_account_path(
+            "https://api.tastyworks.com/orders?account-numbers[]=5WX12345&\
+             account-numbers[]=5WX00002&per-page=50",
+        );
+
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+        assert!(!redacted.contains("5WX00002"), "{redacted}");
+        assert_eq!(redacted.matches("{account}").count(), 2, "{redacted}");
+        // The names and the unrelated parameters are context worth keeping.
+        assert!(redacted.contains("account-numbers[]="), "{redacted}");
+        assert!(redacted.contains("per-page=50"), "{redacted}");
+
+        // The HTTP client percent-encodes the brackets, which is the form the
+        // redaction actually sees on a real request.
+        let redacted =
+            redact_account_path("https://api.tastyworks.com/orders?account-numbers%5B%5D=5WX12345");
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+
+        // The singular spelling and the qualified one the trading status uses.
+        let redacted = redact_account_path(
+            "https://api.tastyworks.com/x?account-number=5WX12345&\
+             clearing-account-number=99887&sort=Desc",
+        );
+        assert!(!redacted.contains("5WX12345"), "{redacted}");
+        assert!(!redacted.contains("99887"), "{redacted}");
+        assert!(redacted.contains("sort=Desc"), "{redacted}");
     }
 
     /// `me` is a literal the venue defines rather than an identifier. It is the

@@ -612,20 +612,38 @@ where
 ///
 /// Serialization itself is untouched. Writing the record out is an explicit act
 /// with an explicit destination; rendering it is not.
+/// Whether a field or parameter name identifies an account.
+///
+/// Matched on the **suffix** rather than the whole name, because the venue
+/// qualifies the concept: `clearing-account-number` is an account number too,
+/// and an exact list missed it. A suffix rule covers the qualified spellings
+/// that exist and the ones that arrive later. Both separators are accepted:
+/// the same concept is `account-number` on the wire and `account_number` in a
+/// derived Rust field name.
+///
+/// One rule, two places that need it — the JSON renderer here and the request
+/// URL redaction in [`crate::api::client`], where the venue takes the same
+/// identifiers as query parameters.
+pub(crate) fn names_an_account(name: &str) -> bool {
+    let name = name.replace('_', "-");
+    // `account-numbers[]` is how the customer order endpoints spell a repeated
+    // parameter, and the brackets are part of the key. The HTTP client
+    // percent-encodes them on the way out, so the name reaches the redaction
+    // as `account-numbers%5B%5D` — matching only the literal form would have
+    // let every real request through.
+    let lowered = name.to_ascii_lowercase();
+    let name = lowered
+        .strip_suffix("[]")
+        .or_else(|| lowered.strip_suffix("%5b%5d"))
+        .unwrap_or(&lowered);
+    name == "account-number"
+        || name == "account-numbers"
+        || name.ends_with("-account-number")
+        || name.ends_with("-account-numbers")
+}
+
 pub(crate) fn redacted_render(value: &impl serde::Serialize) -> String {
-    /// Keys whose value names an account.
-    ///
-    /// Matched on the **suffix** rather than the whole name, because the venue
-    /// qualifies the concept: `clearing-account-number` is an account number
-    /// too, and an exact list missed it. A suffix rule covers the qualified
-    /// spellings that exist and the ones that arrive later.
-    fn is_account_key(key: &str) -> bool {
-        let key = key.replace('_', "-");
-        key == "account-number"
-            || key == "account-numbers"
-            || key.ends_with("-account-number")
-            || key.ends_with("-account-numbers")
-    }
+    use names_an_account as is_account_key;
 
     fn redact(value: &mut serde_json::Value) {
         match value {

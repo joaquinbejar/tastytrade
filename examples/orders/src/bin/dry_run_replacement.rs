@@ -41,13 +41,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
 
     let live = account.live_orders().await?;
     let Some(target) = live.iter().find(|order| order.editable) else {
-        info!("No editable working order to preview an amendment against.");
+        println!("No editable working order to preview an amendment against.");
         return Ok(());
     };
-    info!("Previewing an amendment to order #{}", target.id.0);
+    println!("Previewing an amendment to order #{}", target.id.0);
 
     let amendment = OrderAmendment::new(
         OrderType::Limit,
@@ -62,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .review_amendment(target.id, AmendmentIntent::Replace, &amendment)
         .await?;
 
-    info!(
+    println!(
         "Buying power effect: {:?}",
         receipt.result().buying_power_effect
     );
@@ -70,9 +74,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Venue prose written for a person: it can name the account or the
         // buying power, so it goes on screen rather than into a log
         // aggregator.
-        info!("  warning: {warning}");
+        println!("  warning: {warning}");
     }
-    info!(
+    println!(
         "Clean: {} — the receipt is what `place_reviewed_amendment` needs, and \
          this example stops here.",
         receipt.is_clean()

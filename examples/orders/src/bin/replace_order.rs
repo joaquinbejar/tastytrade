@@ -44,10 +44,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {} (CERTIFICATION)", account.number().redacted());
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
 
     let live = account.live_orders().await?;
     let Some(target) = live.iter().find(|order| order.editable) else {
-        info!("No editable working order to replace.");
+        println!("No editable working order to replace.");
         return Ok(());
     };
 
@@ -69,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     for warning in receipt.warnings() {
-        info!("warning: {warning}");
+        println!("warning: {warning}");
     }
 
     // `accept()` refuses when the venue attached warnings — not a refusal to
@@ -78,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reviewed = receipt.accept()?;
     let replaced = account.place_reviewed_amendment(reviewed).await?;
 
-    info!(
+    println!(
         "Replaced: order #{} is now {}",
         replaced.id.0, replaced.status
     );

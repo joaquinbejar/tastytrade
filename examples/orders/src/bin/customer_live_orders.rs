@@ -24,9 +24,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let tasty = TastyTrade::connect(&config).await?;
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
     let accounts = tasty.accounts().await?;
     let Some(first) = accounts.first() else {
-        info!("This session sees no accounts.");
+        println!("This session sees no accounts.");
         return Ok(());
     };
 
@@ -39,13 +43,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    info!(
+    println!(
         "{} working order(s) across {} account(s)",
         page.len(),
         1 + rest.len()
     );
     for order in &page {
-        info!(
+        println!(
             "  {} #{} {} {}",
             order.account_number.redacted(),
             order.id.0,

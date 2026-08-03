@@ -28,32 +28,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
 
     let page = account
         .search_orders(&OrderFilter::new().with_page(PageRequest::first().with_per_page(1)))
         .await?;
     let Some(newest) = page.items.first() else {
-        info!("This account has no orders yet.");
+        println!("This account has no orders yet.");
         return Ok(());
     };
 
     let order = account.order(newest.id).await?;
 
-    info!("Order #{} — {}", order.id.0, order.status);
-    info!("  underlying: {}", order.underlying_symbol.0);
-    info!(
+    println!("Order #{} — {}", order.id.0, order.status);
+    println!("  underlying: {}", order.underlying_symbol.0);
+    println!(
         "  type: {:?}, time in force: {:?}",
         order.order_type, order.time_in_force
     );
     // `price` is `Option` because a market order has none — not because it
     // might be zero.
-    info!("  price: {:?} {:?}", order.price, order.price_effect);
-    info!(
+    println!("  price: {:?} {:?}", order.price, order.price_effect);
+    println!(
         "  cancellable: {}, editable: {}",
         order.cancellable, order.editable
     );
     for leg in &order.legs {
-        info!("    {} {} {:?}", leg.symbol.0, leg.quantity, leg.action);
+        println!("    {} {} {:?}", leg.symbol.0, leg.quantity, leg.action);
     }
 
     Ok(())

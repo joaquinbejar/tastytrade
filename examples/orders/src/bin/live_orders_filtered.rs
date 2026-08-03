@@ -31,10 +31,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
 
     // The no-argument call still works and still returns every working order.
     let all = account.live_orders().await?;
-    info!("{} working order(s) unfiltered", all.len());
+    println!("{} working order(s) unfiltered", all.len());
 
     let live = account
         .live_orders_matching(
@@ -43,14 +47,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_page(PageRequest::first().with_per_page(25)),
         )
         .await?;
-    info!(
+    println!(
         "{} live order(s) on page {} of {}",
         live.len(),
         live.pagination.page_offset,
         live.pagination.total_pages
     );
     for order in &live {
-        info!(
+        println!(
             "  #{} {} {}",
             order.id.0, order.underlying_symbol.0, order.status
         );

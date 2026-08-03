@@ -31,6 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Order contents go to stdout, not through `tracing`. Underlying, price,
+    // leg symbols, quantities and actions are what an account is doing with
+    // its money, and INFO is the default level that reaches whatever
+    // aggregator the consuming application configured.
 
     // Terminal statuses over the last month, oldest first. `status[]` is a
     // repeated key here, unlike the live endpoint's singular `status`.
@@ -47,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    info!(
+    println!(
         "{} order(s) on page {} of {}, {} in the history",
         page.len(),
         page.pagination.page_offset,
@@ -55,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         page.pagination.total_items
     );
     for order in page.iter().take(MAX_ROWS) {
-        info!(
+        println!(
             "  #{} {} {} — {} ({} legs)",
             order.id.0,
             order.underlying_symbol.0,
