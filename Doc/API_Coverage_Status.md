@@ -255,17 +255,26 @@ reconstruct what an account actually did.
 | `GET /pairs-watchlists` | ❌ |
 | `GET /pairs-watchlists/{pairs_watchlist_name}` | ❌ |
 
-## Authentication
+## Authentication — broken against the live venue
 
 Tracked in [#85](https://github.com/joaquinbejar/tastytrade/issues/85).
 
-- **Session lifecycle.** `POST /sessions` is implemented. There is no logout,
-  and the `remember-token` the venue returns in `LoginResponse` is parsed and
-  then dropped — nothing can re-authenticate with it, so `TASTYTRADE_REMEMBER_ME`
-  buys the caller nothing today.
-- **OAuth2.** `POST /oauth/token` and the refresh-token flow are not
-  implemented. This is the auth path tastytrade documents for third-party
-  applications; session tokens are the personal-use path.
+**`POST /sessions` was fully decommissioned on 2026-02-11.** From the official
+release notes: *"Legacy /sessions authentication has been fully decommissioned.
+If you are still using POST /sessions for your API application you likely are
+experiencing login issues. Please switch over to OAuth2 immediately."*
+
+`TastyTrade::login()` is the only authentication this crate implements, so
+every row marked ✅ above is implemented but unreachable in practice: REST,
+both streamers, the CLI, every example and `/smoke` all start from that call.
+
+OAuth2 (`POST /oauth/token`, both the personal refresh-token grant and the
+third-party authorization-code grant) is the replacement and is not
+implemented. Access tokens last about 15 minutes and go in
+`Authorization: Bearer`, including the account websocket's `auth-token` field.
+
+The logout and remember-token work originally filed here is moot: those are
+surfaces of a retired API.
 
 ## Streaming
 
@@ -274,7 +283,7 @@ subscribes to more than it can deliver.
 
 ### DXLink market data — [#86](https://github.com/joaquinbejar/tastytrade/issues/86)
 
-dxlink 0.3 models nine `MarketEvent` variants. The crate routes three.
+dxlink 0.3.1 models eleven `MarketEvent` variants. The crate routes three.
 
 | Event type | Routed |
 |---|---|
@@ -287,6 +296,15 @@ dxlink 0.3 models nine `MarketEvent` variants. The crate routes three.
 | `Profile` | ❌ |
 | `Underlying` | ❌ |
 | `TheoPrice` | ❌ |
+| `TradeETH` | ❌ — new in 0.3.1 |
+| `Series` | ❌ — new in 0.3.1 |
+
+`Cargo.toml` pins `dxlink = "0.3"`, so `0.3.1` arrives on the next
+`cargo update`. `MarketEvent` is not `#[non_exhaustive]` and `event_kind()`
+matches exhaustively without a wildcard, so **the build stops compiling when
+the lock file moves** — the intended tripwire, and the starting point of #86.
+dxlink types are not re-exported here (`get_event` returns
+`crate::types::dxfeed::Event`), so this breaks our build, not our consumers'.
 
 `event_kind()` (`src/streaming/quote_streamer.rs:811`) already enumerates all
 nine exhaustively, so upstream coverage is known; `event_symbol()` (`:789`)
@@ -330,9 +348,35 @@ All five documented actions are present in `SubRequestAction`
 unrecognised notification type is a decode failure and disappears — the
 opposite of the `wire_enum!` `Unknown(String)` rule the REST side settled on.
 
-### DXLink as an account transport — [#54](https://github.com/joaquinbejar/tastytrade/issues/54)
+### DXLink as an account transport — [#54](https://github.com/joaquinbejar/tastytrade/issues/54), closed as not planned
 
-Blocked upstream. dxlink 0.3 does not model account events: `MarketEvent` has
-no `Order` / `Message` variants and `EventType::compact_fields()` returns
-`None` for them, so the decoder rejects those rows. Subscribing works;
-receiving does not.
+The premise did not hold. Two independent reasons:
+
+1. **tastytrade does not publish account data over DXLink.** Account
+   notifications go over the tastytrade account websocket at
+   `wss://streamer.[cert.]tastyworks.com`, authenticated with the session token
+   as the `auth-token` field of each `SubRequest`. DXLink is the market-data
+   streamer, reached through `GET /api-quote-tokens`. Different services,
+   different credentials.
+2. **In dxFeed, `Order` is order-book depth**, not "your order filled". A
+   decoder for it would produce correct events of the wrong kind. `Order` and
+   `Message` also have no decoder in dxlink 0.3 (`compact_fields()` → `None`),
+   so a row of either aborts the batch decode rather than being skipped.
+
+#17 removing DXLink from `AccountStreamer` was right for a stronger reason than
+recorded at the time: not merely unproven, but the wrong service. What remains
+of the account-streaming gap is tracked in
+[#87](https://github.com/joaquinbejar/tastytrade/issues/87).
+
+### Upstream (dxlink 0.3)
+
+Nothing this crate needs for market data is missing upstream — `MarketEvent`
+decodes all nine types the tastytrade docs describe, `CandleEvent` is complete,
+and `FeedSubscription::from_time` already exists. Six `EventType` variants are
+declared but undecoded (`Order`, `TradeETH`, `SpreadOrder`, `Series`,
+`Configuration`, `Message`). Two are worth having and are filed:
+[DXlink#66](https://github.com/joaquinbejar/DXlink/issues/66) (`TradeETH`,
+extended-hours prints) and
+[DXlink#67](https://github.com/joaquinbejar/DXlink/issues/67) (`Series`,
+per-expiration option data). The other four are order-book depth — likely
+outside this entitlement — or protocol plumbing.
