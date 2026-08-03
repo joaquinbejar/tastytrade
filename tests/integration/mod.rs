@@ -19,6 +19,7 @@ mod customer;
 mod instrument_listings;
 mod margin;
 mod market_data;
+mod market_metrics;
 mod orders;
 mod paths;
 mod rest;

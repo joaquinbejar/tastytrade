@@ -530,6 +530,38 @@
 //! [`prelude::MAX_MARKET_DATA_SYMBOLS`] across all types together. Over the cap
 //! is a non-retryable precondition, refused before anything is sent.
 //!
+//! ### Volatility, dividends and earnings
+//!
+//! For an options client this is the data that decides whether a trade is
+//! worth putting on: the crate could fetch a chain but not tell you whether its
+//! volatility was high or low.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn vol(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
+//! for metric in tasty.market_metrics(&["AAPL", "TSLA"]).await? {
+//!     println!("{}: rank {:?}", metric.symbol, metric.implied_volatility_rank);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `symbols` is **comma-joined into one parameter** here, not the repeated keys
+//! the instrument listings use — the venue documents it that way, and getting
+//! it wrong returns metrics for one symbol.
+//!
+//! Earnings take [`prelude::EarningsRange`], which carries the start date the
+//! venue requires: a required query parameter should be impossible to omit
+//! rather than a runtime `400`.
+//!
+//! An option expiration decodes as a **calendar day** even though the schema
+//! types it as a timestamp — an expiration is a day of market, and there is no
+//! timezone to invent.
+//!
+//! **Live only**: the venue's sandbox page lists Market Metrics as unavailable
+//! in certification, so its examples require an explicit read-only production
+//! opt-in.
+//!
 //! ## Real-time Data
 //!
 //! Market data comes over DXLink. All eleven event types the feed models are

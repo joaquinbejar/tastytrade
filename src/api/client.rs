@@ -16,6 +16,9 @@ use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
 use crate::types::margin::{MarginConfiguration, SpanExchange, SpanRow};
 use crate::types::market_data::{MarketDataRequest, MarketDataSnapshot};
+use crate::types::market_metrics::{
+    DividendReport, EarningsRange, EarningsReport, MarketMetric, symbols_query,
+};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::types::order::LiveOrderRecord;
 use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
@@ -1012,6 +1015,70 @@ impl TastyTrade {
         let query = request.to_query();
         let resp: Items<MarketDataSnapshot> = self
             .get_with_query("/market-data/by-type", &query.pairs())
+            .await?;
+        resp.into_items()
+    }
+
+    /// Volatility and liquidity for several underlyings.
+    ///
+    /// `symbols` is **comma-joined into one parameter**, which is how the venue
+    /// documents it and unlike the repeated keys the instrument listings use.
+    ///
+    /// **Live only**: the venue's sandbox page lists Market Metrics as
+    /// unavailable in certification.
+    ///
+    /// # Errors
+    ///
+    /// Fails when metrics arrive but none can be decoded; a genuinely empty
+    /// result is `Ok`.
+    pub async fn market_metrics(
+        &self,
+        symbols: &[impl AsRef<str>],
+    ) -> TastyResult<Vec<MarketMetric>> {
+        let query = symbols_query(symbols)?;
+        let resp: Items<MarketMetric> = self
+            .get_with_query("/market-metrics", &query.pairs())
+            .await?;
+        resp.into_items()
+    }
+
+    /// An underlying's dividend history.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::market_metrics`].
+    pub async fn historic_dividends(&self, symbol: &str) -> TastyResult<Vec<DividendReport>> {
+        let resp: Items<DividendReport> = self
+            .get(format!(
+                "/market-metrics/historic-corporate-events/dividends/{}",
+                encode_path_segment(symbol)
+            ))
+            .await?;
+        resp.into_items()
+    }
+
+    /// An underlying's earnings history over a range.
+    ///
+    /// [`EarningsRange`] carries the start date the venue requires, so it
+    /// cannot be omitted.
+    ///
+    /// # Errors
+    ///
+    /// As [`TastyTrade::market_metrics`].
+    pub async fn historic_earnings(
+        &self,
+        symbol: &str,
+        range: &EarningsRange,
+    ) -> TastyResult<Vec<EarningsReport>> {
+        let query = range.to_query();
+        let resp: Items<EarningsReport> = self
+            .get_with_query(
+                format!(
+                    "/market-metrics/historic-corporate-events/earnings-reports/{}",
+                    encode_path_segment(symbol)
+                ),
+                &query.pairs(),
+            )
             .await?;
         resp.into_items()
     }
