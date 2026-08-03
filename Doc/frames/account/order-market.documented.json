@@ -1,0 +1,29 @@
+{
+  "type": "Order",
+  "data": {
+    "id": 1,
+    "account-number": "SENTINEL-5WX00042",
+    "time-in-force": "Day",
+    "order-type": "Market",
+    "size": 100,
+    "underlying-symbol": "AAPL",
+    "underlying-instrument-type": "Equity",
+    "status": "Routed",
+    "cancellable": true,
+    "editable": true,
+    "edited": false,
+    "user-id": 99,
+    "leg-count": 1,
+    "legs": [
+      {
+        "instrument-type": "Equity",
+        "symbol": "AAPL",
+        "quantity": 100,
+        "remaining-quantity": 100,
+        "action": "Buy to Open",
+        "fills": []
+      }
+    ]
+  },
+  "timestamp": 1688595114405
+}

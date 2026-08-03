@@ -1,0 +1,23 @@
+{
+  "type": "CurrentPosition",
+  "data": {
+    "account-number": "SENTINEL-5WX00042",
+    "symbol": "AAPL",
+    "instrument-type": "Equity",
+    "underlying-symbol": "AAPL",
+    "quantity": "100",
+    "quantity-direction": "Long",
+    "close-price": "100.0",
+    "average-open-price": "99.5",
+    "multiplier": 1,
+    "cost-effect": "Debit",
+    "is-suppressed": false,
+    "is-frozen": false,
+    "restricted-quantity": "0",
+    "realized-day-gain": "0.0",
+    "realized-today": "0.0",
+    "created-at": "2026-08-01T14:30:00.000+00:00",
+    "updated-at": "2026-08-03T14:30:00.000+00:00"
+  },
+  "timestamp": 1688595114405
+}

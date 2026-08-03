@@ -1,0 +1,20 @@
+{
+  "type": "QuoteAlert",
+  "data": {
+    "alert-external-id": "alert-1",
+    "user-external-id": "SENTINEL-U0001",
+    "symbol": "AAPL",
+    "dx-symbol": "AAPL",
+    "instrument-type": "Equity",
+    "field": "Last",
+    "operator": ">",
+    "threshold": "200.00",
+    "threshold-numeric": 200.0,
+    "provider": "dxfeed",
+    "created-at": "2026-08-01T12:00:00.000+00:00",
+    "triggered-at": "2026-08-03T14:30:00.000-04:00",
+    "completed-at": "2026-08-03T14:30:00.100-04:00",
+    "expires-at": "1788595114405"
+  },
+  "timestamp": 1688595114405
+}
