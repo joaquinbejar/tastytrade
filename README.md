@@ -208,6 +208,35 @@ new status vanish from a listing without an error, and
 [`prelude::OrderStatus::is_terminal`] answers `false` for it: a status this
 crate has not seen says nothing about whether the order is finished.
 
+#### Complex orders
+
+OCO, OTOCO, PAIRS and the rest: a container of component orders whose fates
+are linked. "Take profit or stop out, whichever comes first" is one object
+at the venue, not two orders and a race.
+
+```rust
+let request = ComplexOrderRequest::new(ComplexOrderType::Oco, vec![take, stop]);
+
+let receipt = account.review_complex_order(&request).await?;
+for warning in receipt.warnings() {
+    println!("{warning}");
+}
+let placed = account.place_reviewed_complex_order(receipt.accept()?).await?;
+```
+
+The same receipt discipline as a plain order, for the same reason: it routes
+real money. Local checks run first — an OCO with one component is not an
+OCO, and a PAIRS trade with no threshold has no trigger — so neither reaches
+the venue.
+
+`PATCH /complex-orders/{id}` changes the **threshold price of a PAIRS trade
+and nothing else**, which is narrower than the plain-order patch. It has its
+own type rather than a generic edit that would advertise fields the route
+ignores, and its own receipt.
+
+Cancelling a container requests cancellation of every component that is not
+already terminal. A component that has filled stays filled.
+
 #### Can this account trade?
 
 [`accounts::Account::trading_status`] is one request and answers before the
