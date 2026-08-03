@@ -11,6 +11,7 @@
 //! venue accepts, which is worse than making the caller write the JSON — and it
 //! becomes a modelled type as soon as a real payload is captured.
 
+use rust_decimal::Decimal;
 use tastytrade::prelude::*;
 use tastytrade::utils::config::TastyTradeConfig;
 use tastytrade::utils::logger::setup_logger;
@@ -27,22 +28,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    let request = serde_json::json!({
-        "symbol": "SPY",
-        "legs": [{
-            "type": "Put",
-            "direction": "Short",
-            "quantity": 1,
-            "strikeSelection": "Delta",
-            "delta": 0.16,
-            "daysUntilExpiration": 45
-        }]
-    });
+    // The covered call from the published request examples. This endpoint
+    // takes instruments that already exist, by symbol — it is not a backtest,
+    // which describes a strike to select.
+    let request = SimulateTrade::new(
+        "SPY",
+        vec![
+            SimulatedLeg {
+                symbol: "SPY   190227C00275000".to_string(),
+                direction: BacktestDirection::Short,
+                quantity: Decimal::ONE,
+            },
+            SimulatedLeg {
+                symbol: "SPY".to_string(),
+                direction: BacktestDirection::Long,
+                quantity: Decimal::from(100),
+            },
+        ],
+    );
 
     match tasty.simulate_trade(&request).await {
-        Ok(result) => info!("Simulated: {result}"),
-        // What this endpoint accepts is undocumented, so a rejection is data
-        // about the contract rather than a failure to hide.
+        Ok(points) => {
+            info!("Simulated over {} point(s)", points.len());
+            for point in points.iter().take(10) {
+                println!(
+                    "  {}: {} {} (underlying {})",
+                    point.date_time.as_deref().unwrap_or("-"),
+                    point
+                        .price
+                        .map(|price| price.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    point.effect.as_deref().unwrap_or("-"),
+                    point
+                        .underlying_price
+                        .map(|price| price.to_string())
+                        .unwrap_or_else(|| "-".to_string())
+                );
+            }
+        }
         Err(error) => info!("The venue rejected the simulation: {error}"),
     }
 

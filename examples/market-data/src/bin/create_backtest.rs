@@ -36,13 +36,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "SPY",
         NaiveDate::from_ymd_opt(2024, 1, 1).expect("a real date"),
         NaiveDate::from_ymd_opt(2024, 3, 31).expect("a real date"),
+        // A short put: `type` names the instrument and `side` names the
+        // option side. They are different fields with different value sets.
         vec![BacktestLeg {
-            leg_type: "Put".to_string(),
-            direction: "Short".to_string(),
-            quantity: 1,
-            strike_selection: "Delta".to_string(),
+            leg_type: BacktestInstrument::EquityOption,
+            direction: BacktestDirection::Short,
+            quantity: Decimal::ONE,
+            strike_selection: StrikeSelection::Delta,
             days_until_expiration: 45,
-            side: None,
+            side: Some(BacktestSide::Put),
             strike_relative_leg: None,
             delta: Some(Decimal::new(16, 2)),
             percentage_otm: None,

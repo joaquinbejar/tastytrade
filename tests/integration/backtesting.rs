@@ -50,12 +50,12 @@ fn day(year: i32, month: u32, day: u32) -> NaiveDate {
 
 fn leg() -> BacktestLeg {
     BacktestLeg {
-        leg_type: "Put".to_string(),
-        direction: "Short".to_string(),
-        quantity: 1,
-        strike_selection: "Delta".to_string(),
+        leg_type: BacktestInstrument::EquityOption,
+        direction: BacktestDirection::Short,
+        quantity: Decimal::ONE,
+        strike_selection: StrikeSelection::Delta,
         days_until_expiration: 45,
-        side: None,
+        side: Some(BacktestSide::Put),
         strike_relative_leg: None,
         delta: Some(Decimal::new(16, 2)),
         percentage_otm: None,
@@ -74,10 +74,59 @@ async fn an_impossible_backtest_never_leaves_the_process() {
         .await
         .expect("authentication must succeed");
 
+    // An equity leg carrying a side, an option leg with none, a quantity
+    // outside the documented range and a fractional one — each is a request
+    // the venue rejects, built from a misreading of which field means what.
+    let equity_with_side = || {
+        let mut leg = leg();
+        leg.leg_type = BacktestInstrument::Equity;
+        leg
+    };
+    let option_without_side = || {
+        let mut leg = leg();
+        leg.side = None;
+        leg
+    };
+    let quantity = |value: Decimal| {
+        let mut leg = leg();
+        leg.quantity = value;
+        leg
+    };
+
     for bad in [
         NewBacktest::new("SPY", day(2024, 1, 1), day(2024, 12, 31), vec![]),
         NewBacktest::new("SPY", day(2024, 12, 31), day(2024, 1, 1), vec![leg()]),
         NewBacktest::new("  ", day(2024, 1, 1), day(2024, 12, 31), vec![leg()]),
+        NewBacktest::new(
+            "SPY",
+            day(2024, 1, 1),
+            day(2024, 12, 31),
+            vec![equity_with_side()],
+        ),
+        NewBacktest::new(
+            "SPY",
+            day(2024, 1, 1),
+            day(2024, 12, 31),
+            vec![option_without_side()],
+        ),
+        NewBacktest::new(
+            "SPY",
+            day(2024, 1, 1),
+            day(2024, 12, 31),
+            vec![quantity(Decimal::from(MAX_BACKTEST_QUANTITY + 1))],
+        ),
+        NewBacktest::new(
+            "SPY",
+            day(2024, 1, 1),
+            day(2024, 12, 31),
+            vec![quantity(Decimal::new(15, 1))],
+        ),
+        NewBacktest::new(
+            "SPY",
+            day(2024, 1, 1),
+            day(2024, 12, 31),
+            vec![quantity(Decimal::ZERO)],
+        ),
     ] {
         let error = client
             .create_backtest(&bad)
@@ -134,4 +183,81 @@ fn the_backtester_host_is_a_separate_published_one() {
         BACKTESTER_BASE_URL.starts_with("https://"),
         "a second host must still be https"
     );
+}
+
+/// A simulated trade is not a backtest leg.
+///
+/// `POST /simulate-trade` takes instruments that already exist, by symbol.
+/// Sending a backtest leg — with a `type`, a `strikeSelection`, a `delta` and a
+/// `daysUntilExpiration` — describes a strike to select, which is a different
+/// request the venue does not accept.
+#[tokio::test]
+async fn an_impossible_simulation_never_leaves_the_process() {
+    let venue = venue().await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let good_leg = || SimulatedLeg {
+        symbol: "SPY   190227C00275000".to_string(),
+        direction: BacktestDirection::Short,
+        quantity: Decimal::ONE,
+    };
+
+    for bad in [
+        SimulateTrade::new("SPY", vec![]),
+        SimulateTrade::new("  ", vec![good_leg()]),
+        SimulateTrade::new(
+            "SPY",
+            vec![SimulatedLeg {
+                symbol: "  ".to_string(),
+                ..good_leg()
+            }],
+        ),
+        SimulateTrade::new(
+            "SPY",
+            vec![SimulatedLeg {
+                quantity: Decimal::new(5, 1),
+                ..good_leg()
+            }],
+        ),
+    ] {
+        let error = client
+            .simulate_trade(&bad)
+            .await
+            .expect_err("the local checks must refuse this");
+        assert!(matches!(error, TastyTradeError::Precondition(_)));
+        assert!(!error.is_retryable(), "nothing was sent");
+    }
+
+    assert!(
+        venue
+            .requests()
+            .iter()
+            .all(|request| request.target == "/oauth/token"),
+        "nothing may have been sent: {:?}",
+        venue.requests()
+    );
+
+    // The documented covered call passes, and serializes to the documented
+    // shape rather than to a backtest leg.
+    let good = SimulateTrade::new(
+        "SPY",
+        vec![
+            good_leg(),
+            SimulatedLeg {
+                symbol: "SPY".to_string(),
+                direction: BacktestDirection::Long,
+                quantity: Decimal::from(100),
+            },
+        ],
+    );
+    let body = serde_json::to_value(&good).expect("serialises");
+    assert_eq!(body["underlying"], "SPY");
+    assert_eq!(body["legs"][0]["symbol"], "SPY   190227C00275000");
+    assert_eq!(body["legs"][0]["direction"], "short");
+    assert_eq!(body["legs"][0]["quantity"], 1);
+    assert!(body["legs"][0].get("type").is_none(), "{body}");
+    assert!(body["legs"][0].get("strikeSelection").is_none(), "{body}");
+    assert!(body.get("startTime").is_none(), "{body}");
 }

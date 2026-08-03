@@ -30,19 +30,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tasty = TastyTrade::connect(&config).await?;
 
+    // The listing answers with identifiers. Fetching each run is a separate
+    // call, which is the caller's decision rather than one this makes for
+    // them by turning a listing into an unbounded number of requests.
     match tasty.backtests().await {
-        Ok(runs) => {
-            info!("{} backtest(s)", runs.len());
-            for run in runs.iter().take(20) {
-                info!(
-                    "  {} {} — {} ({}%)",
-                    run.id.as_deref().unwrap_or("-"),
-                    run.symbol.as_deref().unwrap_or("-"),
-                    run.status.as_deref().unwrap_or("unstated"),
-                    run.progress
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "-".to_string())
-                );
+        Ok(ids) => {
+            info!("{} backtest(s)", ids.len());
+            for id in ids.iter().take(20) {
+                match tasty.backtest(id).await {
+                    Ok(run) => println!(
+                        "  {id} {} — {} ({}%)",
+                        run.symbol.as_deref().unwrap_or("-"),
+                        run.status.as_deref().unwrap_or("unstated"),
+                        run.progress
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    ),
+                    Err(error) => println!("  {id}: {error}"),
+                }
             }
         }
         // Whether the area is still publicly available is exactly what running

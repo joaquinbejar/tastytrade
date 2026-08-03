@@ -24,24 +24,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    // An unrecognised status counts as still running, so this errs towards
-    // trying rather than towards abandoning a run that is going.
-    let Some(id) = tasty
-        .backtests()
-        .await?
-        .into_iter()
-        .find(|run| !run.is_finished())
-        .and_then(|run| run.id)
-    else {
+    // The listing answers with identifiers, so finding an unfinished run means
+    // fetching them. An unrecognised status counts as still running, so this
+    // errs towards trying rather than towards abandoning a run that is going.
+    let mut unfinished = None;
+    for id in tasty.backtests().await? {
+        if let Ok(run) = tasty.backtest(&id).await
+            && !run.is_finished()
+        {
+            unfinished = Some(id);
+            break;
+        }
+    }
+    let Some(id) = unfinished else {
         info!("No unfinished backtest to cancel.");
         return Ok(());
     };
 
-    let cancelled = tasty.cancel_backtest(&id).await?;
-    info!(
-        "Cancelled {id}: now {}",
-        cancelled.status.as_deref().unwrap_or("unstated")
-    );
+    // The venue answers 204 with no body, so there is nothing to report back
+    // beyond the fact that it worked.
+    tasty.cancel_backtest(&id).await?;
+    info!("Cancelled {id}");
 
     Ok(())
 }

@@ -28,6 +28,82 @@ use serde::{Deserialize, Serialize};
 /// derived from the configured `base_url` rather than from the request URL.
 pub const BACKTESTER_BASE_URL: &str = "https://backtester.vast.tastyworks.com";
 
+/// What kind of instrument a backtested leg is.
+///
+/// The document enumerates two values in lowercase. `call` and `put` are not
+/// among them — those are [`BacktestSide`], which is a different field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BacktestInstrument {
+    /// Shares.
+    Equity,
+    /// Options on shares.
+    EquityOption,
+}
+
+/// Which way a backtested leg is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BacktestDirection {
+    /// Bought.
+    Long,
+    /// Sold.
+    Short,
+}
+
+/// Which side of the option chain a leg is on.
+///
+/// Only meaningful for [`BacktestInstrument::EquityOption`], which is what the
+/// document says and what [`TastyTrade::create_backtest`] checks before it
+/// sends anything.
+///
+/// [`TastyTrade::create_backtest`]: crate::TastyTrade::create_backtest
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BacktestSide {
+    /// A call.
+    Call,
+    /// A put.
+    Put,
+}
+
+/// How a backtested leg picks its strike.
+///
+/// Seven values, spelled exactly as the document does — mixed case included,
+/// which is why the variants carry explicit renames rather than a container
+/// rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StrikeSelection {
+    /// By target delta.
+    #[serde(rename = "delta")]
+    Delta,
+    /// By percentage out of the money.
+    #[serde(rename = "percentageOTM")]
+    PercentageOtm,
+    /// By percentage out of the money, relative to another leg.
+    #[serde(rename = "percentageOTMRelative")]
+    PercentageOtmRelative,
+    /// By offset from the current price.
+    #[serde(rename = "currentPriceOffset")]
+    CurrentPriceOffset,
+    /// By offset from the current price, relative to another leg.
+    #[serde(rename = "currentPriceOffsetRelative")]
+    CurrentPriceOffsetRelative,
+    /// By exact offset from the current price, relative to another leg.
+    #[serde(rename = "currentPriceExactOffsetRelative")]
+    CurrentPriceExactOffsetRelative,
+    /// By target premium.
+    #[serde(rename = "premium")]
+    Premium,
+}
+
+/// The most contracts or shares a backtested leg may carry.
+///
+/// The document bounds `quantity` at 1 to 100. Checked locally so a backtest
+/// that was always going to be rejected fails before the wait rather than
+/// after it.
+pub const MAX_BACKTEST_QUANTITY: u32 = 100;
+
 /// One leg of a backtested strategy.
 ///
 /// The venue marks `type`, `direction`, `quantity`, `strikeSelection` and
@@ -37,23 +113,32 @@ pub const BACKTESTER_BASE_URL: &str = "https://backtester.vast.tastyworks.com";
 /// — no captured payload shows the mapping.
 #[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
 pub struct BacktestLeg {
-    /// `Call` or `Put`, as the venue spells it.
+    /// Whether the leg is shares or options.
+    ///
+    /// Not the option side: `call` and `put` belong to
+    /// [`BacktestLeg::side`], and putting them here sent a request the venue
+    /// rejects.
     #[serde(rename = "type")]
-    pub leg_type: String,
-    /// `Long` or `Short`.
-    pub direction: String,
-    /// How many contracts.
-    pub quantity: i64,
-    /// How the strike is chosen, e.g. by delta or by percentage out of the
-    /// money.
+    pub leg_type: BacktestInstrument,
+    /// Whether the leg is bought or sold.
+    pub direction: BacktestDirection,
+    /// How many contracts or shares.
+    ///
+    /// `Decimal` because every quantity in this crate is, per the money rule —
+    /// the backtester types it as an integer bounded 1 to
+    /// [`MAX_BACKTEST_QUANTITY`], which is checked locally before the request
+    /// is sent, and it is serialized as a JSON number with no fractional part.
+    #[serde(with = "crate::types::wire::decimal")]
+    pub quantity: Decimal,
+    /// How the strike is chosen.
     #[serde(rename = "strikeSelection")]
-    pub strike_selection: String,
+    pub strike_selection: StrikeSelection,
     /// How many days until the leg expires.
     #[serde(rename = "daysUntilExpiration")]
     pub days_until_expiration: i64,
-    /// Which side of the book, when the strategy names one.
+    /// Which side of the chain, for an option leg.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub side: Option<String>,
+    pub side: Option<BacktestSide>,
     /// Which leg the strike is relative to.
     #[serde(
         rename = "strikeRelativeLeg",
@@ -252,6 +337,50 @@ impl NewBacktest {
                 self.start_date, self.end_date
             )));
         }
+
+        for (index, leg) in self.legs.iter().enumerate() {
+            // The document bounds quantity at 1 to 100 and types it as an
+            // integer. `Decimal` is what every quantity in this crate is, so
+            // the range and the whole-number rule are checked here rather than
+            // encoded in the field type.
+            if leg.quantity <= Decimal::ZERO
+                || leg.quantity > Decimal::from(MAX_BACKTEST_QUANTITY)
+                || leg.quantity.fract() != Decimal::ZERO
+            {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "leg {index} asks for {} contracts; the backtester takes a whole \
+                     number from 1 to {MAX_BACKTEST_QUANTITY}",
+                    leg.quantity
+                )));
+            }
+
+            // `side` names call or put, and the document says it applies only
+            // to an option leg. Sending it on an equity leg is a request built
+            // from a misreading of which field carries which concept.
+            match (leg.leg_type, leg.side) {
+                (BacktestInstrument::EquityOption, None) => {
+                    return Err(crate::TastyTradeError::Precondition(format!(
+                        "leg {index} is an option leg with no side; it has to say call \
+                         or put"
+                    )));
+                }
+                (BacktestInstrument::Equity, Some(side)) => {
+                    return Err(crate::TastyTradeError::Precondition(format!(
+                        "leg {index} is an equity leg carrying a {side:?} side; call and \
+                         put describe an option"
+                    )));
+                }
+                _ => {}
+            }
+
+            if leg.days_until_expiration < 0 {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "leg {index} expires {} days from entry, which is in the past",
+                    leg.days_until_expiration
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -388,6 +517,143 @@ pub struct AvailableDates {
     pub end_date: Option<String>,
 }
 
+/// One leg of a trade to simulate.
+///
+/// **Not** a [`BacktestLeg`]. `POST /simulate-trade` takes an existing
+/// instrument by symbol and asks what it would have done; a backtest leg
+/// describes a strike to *select*. Sending the second where the first belongs
+/// is a request the venue does not accept — it carries no `type`,
+/// `strikeSelection`, `delta` or `daysUntilExpiration`.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+pub struct SimulatedLeg {
+    /// The instrument, in the tastytrade OCC symbology.
+    pub symbol: String,
+    /// Whether it is held long or short.
+    pub direction: BacktestDirection,
+    /// How many contracts or shares.
+    ///
+    /// `Decimal` for the same reason as everywhere else; the document types it
+    /// as an integer, which is checked locally before the request is sent.
+    #[serde(with = "crate::types::wire::decimal")]
+    pub quantity: Decimal,
+}
+
+/// A trade to run against historical data.
+///
+/// Modelled from the published request schema rather than passed through as
+/// raw JSON: the shape is documented, with three worked examples, so there was
+/// nothing to be tolerant about.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+pub struct SimulateTrade {
+    /// The underlying the trade is on.
+    pub underlying: String,
+    /// When the trade opens. Optional; the venue picks a default.
+    #[serde(
+        rename = "startTime",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::datetime_option"
+    )]
+    pub start_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// When it closes.
+    #[serde(
+        rename = "endTime",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::types::wire::datetime_option"
+    )]
+    pub end_time: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// The legs, each naming an instrument that already exists.
+    pub legs: Vec<SimulatedLeg>,
+}
+
+impl SimulateTrade {
+    /// A simulation of `legs` on `underlying`.
+    pub fn new(underlying: impl Into<String>, legs: Vec<SimulatedLeg>) -> Self {
+        Self {
+            underlying: underlying.into(),
+            start_time: None,
+            end_time: None,
+            legs,
+        }
+    }
+
+    /// Bounds the simulation in time.
+    #[must_use]
+    pub fn between(
+        mut self,
+        start: chrono::DateTime<chrono::FixedOffset>,
+        end: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Self {
+        self.start_time = Some(start);
+        self.end_time = Some(end);
+        self
+    }
+
+    /// Fails when the simulation cannot be what the venue accepts.
+    ///
+    /// Local checks, so [`crate::TastyTradeError::Precondition`] and not
+    /// retryable.
+    pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        if self.underlying.trim().is_empty() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a simulated trade needs an underlying symbol".to_string(),
+            ));
+        }
+        if self.legs.is_empty() {
+            return Err(crate::TastyTradeError::Precondition(
+                "a simulated trade needs at least one leg".to_string(),
+            ));
+        }
+        for (index, leg) in self.legs.iter().enumerate() {
+            if leg.symbol.trim().is_empty() {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "simulated leg {index} has a blank symbol"
+                )));
+            }
+            if leg.quantity <= Decimal::ZERO || leg.quantity.fract() != Decimal::ZERO {
+                return Err(crate::TastyTradeError::Precondition(format!(
+                    "simulated leg {index} asks for {} contracts; the backtester takes \
+                     a whole number above zero",
+                    leg.quantity
+                )));
+            }
+        }
+        if let (Some(start), Some(end)) = (self.start_time, self.end_time)
+            && start > end
+        {
+            return Err(crate::TastyTradeError::Precondition(
+                "the simulation starts after it ends".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One point of a simulated trade's history.
+///
+/// The response is an array of these; the document names four fields and gives
+/// no others.
+#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+pub struct SimulatedTradePoint {
+    /// When this point is.
+    #[serde(rename = "dateTime", default)]
+    pub date_time: Option<String>,
+    /// What the trade was worth, as a magnitude.
+    #[serde(default, with = "crate::types::wire::decimal_option")]
+    pub price: Option<Decimal>,
+    /// Whether that price is a debit or a credit.
+    #[serde(default)]
+    pub effect: Option<String>,
+    /// The underlying's price at the same moment.
+    #[serde(
+        rename = "underlyingPrice",
+        default,
+        with = "crate::types::wire::decimal_option"
+    )]
+    pub underlying_price: Option<Decimal>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,13 +663,16 @@ mod tests {
     }
 
     fn leg() -> BacktestLeg {
+        // A short put: `type` is the instrument and `side` is call or put.
+        // Putting "Put" in `type` and "Short" in `direction` — which is what
+        // this used to do — sends a request the venue rejects on both fields.
         BacktestLeg {
-            leg_type: "Put".to_string(),
-            direction: "Short".to_string(),
-            quantity: 1,
-            strike_selection: "Delta".to_string(),
+            leg_type: BacktestInstrument::EquityOption,
+            direction: BacktestDirection::Short,
+            quantity: Decimal::ONE,
+            strike_selection: StrikeSelection::Delta,
             days_until_expiration: 45,
-            side: None,
+            side: Some(BacktestSide::Put),
             strike_relative_leg: None,
             delta: Some(Decimal::new(16, 2)),
             percentage_otm: None,
@@ -425,8 +694,13 @@ mod tests {
         assert_eq!(body["symbol"], "SPY");
         assert_eq!(body["startDate"], "2024-01-01");
         assert_eq!(body["endDate"], "2024-12-31");
-        assert_eq!(body["legs"][0]["strikeSelection"], "Delta");
+        assert_eq!(body["legs"][0]["strikeSelection"], "delta");
         assert_eq!(body["legs"][0]["daysUntilExpiration"], 45);
+        // The document spells these lowercase, and `type` is the instrument
+        // rather than the option side.
+        assert_eq!(body["legs"][0]["type"], "equity-option");
+        assert_eq!(body["legs"][0]["direction"], "short");
+        assert_eq!(body["legs"][0]["side"], "put");
         // Unset selectors are omitted rather than sent as null.
         assert!(body["legs"][0].get("premium").is_none(), "{body}");
         assert!(body.get("entryConditions").is_none(), "{body}");

@@ -9,23 +9,33 @@
 //! the caller's, deliberately. How long to wait and what to do meanwhile is not
 //! a decision this library gets to make, and a blocking helper would hide a
 //! request that can run for minutes.
+//!
+//! One more difference, and it is the one that decides whether any of this
+//! works: the backtester answers with **raw** arrays and objects. There is no
+//! `data`, no `context` and no `pagination`, so these operations go through the
+//! raw verbs rather than the enveloped ones — the shared decoder would have
+//! rejected every successful response before its return type was reached.
 
 use crate::TastyTrade;
-use crate::api::base::{Items, TastyResult};
+use crate::api::base::TastyResult;
 use crate::api::url::encode_path_segment;
-use crate::types::backtest::{AvailableDates, BACKTESTER_BASE_URL, Backtest, NewBacktest};
+use crate::types::backtest::{
+    AvailableDates, BACKTESTER_BASE_URL, Backtest, NewBacktest, SimulateTrade, SimulatedTradePoint,
+};
 
 impl TastyTrade {
-    /// Every backtest this user has run.
+    /// The identifiers of every backtest this user has run.
+    ///
+    /// **Identifiers, not runs.** The published contract answers with an array
+    /// of strings; fetching each one is [`TastyTrade::backtest`], and doing it
+    /// automatically would turn one listing into an unbounded number of
+    /// requests without the caller asking.
     ///
     /// # Errors
     ///
-    /// Fails when runs arrive but none can be decoded.
-    pub async fn backtests(&self) -> TastyResult<Vec<Backtest>> {
-        let resp: Items<Backtest> = self
-            .get_with_query_at(BACKTESTER_BASE_URL, "/backtests", &[])
-            .await?;
-        resp.into_items()
+    /// Propagates the venue's error.
+    pub async fn backtests(&self) -> TastyResult<Vec<String>> {
+        self.get_raw_at(BACKTESTER_BASE_URL, "/backtests").await
     }
 
     /// Starts a backtest.
@@ -44,7 +54,7 @@ impl TastyTrade {
     pub async fn create_backtest(&self, backtest: &NewBacktest) -> TastyResult<Backtest> {
         backtest.validate()?;
 
-        self.post_at(BACKTESTER_BASE_URL, "/backtests", backtest)
+        self.post_raw_at(BACKTESTER_BASE_URL, "/backtests", backtest)
             .await
     }
 
@@ -54,10 +64,9 @@ impl TastyTrade {
     ///
     /// Propagates the venue's error, including a `404`.
     pub async fn backtest(&self, id: &str) -> TastyResult<Backtest> {
-        self.get_with_query_at(
+        self.get_raw_at(
             BACKTESTER_BASE_URL,
             format!("/backtests/{}", encode_path_segment(id)),
-            &[],
         )
         .await
     }
@@ -72,10 +81,9 @@ impl TastyTrade {
     ///
     /// Propagates the venue's error.
     pub async fn backtest_logs(&self, id: &str) -> TastyResult<serde_json::Value> {
-        self.get_with_query_at(
+        self.get_raw_at(
             BACKTESTER_BASE_URL,
             format!("/backtests/{}/logs", encode_path_segment(id)),
-            &[],
         )
         .await
     }
@@ -85,12 +93,17 @@ impl TastyTrade {
     /// **Mutates server-side state**, though nothing about an account: a
     /// cancelled backtest is a computation stopped, not a position changed.
     ///
+    /// Returns nothing, because the venue returns nothing: the published
+    /// contract answers `204 No Content`. Asking for a [`Backtest`] back made
+    /// this call cancel the computation and then fail parsing an empty body,
+    /// so a cancellation that had already happened was reported as an error.
+    ///
     /// # Errors
     ///
     /// Propagates the venue's error, including a refusal to cancel a run that
     /// has already finished.
-    pub async fn cancel_backtest(&self, id: &str) -> TastyResult<Backtest> {
-        self.post_at(
+    pub async fn cancel_backtest(&self, id: &str) -> TastyResult<()> {
+        self.post_raw_at(
             BACKTESTER_BASE_URL,
             format!("/backtests/{}/cancel", encode_path_segment(id)),
             serde_json::Value::Object(serde_json::Map::new()),
@@ -104,29 +117,32 @@ impl TastyTrade {
     ///
     /// Fails when ranges arrive but none can be decoded.
     pub async fn available_dates(&self) -> TastyResult<Vec<AvailableDates>> {
-        let resp: Items<AvailableDates> = self
-            .get_with_query_at(BACKTESTER_BASE_URL, "/available-dates", &[])
-            .await?;
-        resp.into_items()
+        self.get_raw_at(BACKTESTER_BASE_URL, "/available-dates")
+            .await
     }
 
-    /// Simulates one trade.
+    /// Simulates one trade against historical data.
     ///
-    /// The body is passed through as JSON: the published document describes
-    /// this endpoint's request only as an object, so there is nothing to model
-    /// against and a guessed type would refuse requests the venue accepts.
-    /// It becomes a modelled type once a real payload is captured.
+    /// Takes existing instruments by symbol and asks what they would have
+    /// done. That is a different request from a backtest, which describes
+    /// strikes to *select* — a backtest leg has no place here and the venue
+    /// does not accept one.
     ///
     /// **Simulates.** Nothing routes and no position changes.
     ///
     /// # Errors
     ///
-    /// Propagates the venue's error.
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the trade has no legs, no
+    /// underlying, a blank leg symbol, a quantity that is not a whole number
+    /// above zero, or a window that ends before it starts.
     pub async fn simulate_trade(
         &self,
-        request: &serde_json::Value,
-    ) -> TastyResult<serde_json::Value> {
-        self.post_at(BACKTESTER_BASE_URL, "/simulate-trade", request)
+        request: &SimulateTrade,
+    ) -> TastyResult<Vec<SimulatedTradePoint>> {
+        request.validate()?;
+
+        self.post_raw_at(BACKTESTER_BASE_URL, "/simulate-trade", request)
             .await
     }
 }

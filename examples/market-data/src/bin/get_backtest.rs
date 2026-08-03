@@ -22,13 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    let Some(id) = tasty
-        .backtests()
-        .await?
-        .into_iter()
-        .next()
-        .and_then(|run| run.id)
-    else {
+    // The listing answers with identifiers, not runs; fetching one is the
+    // next call.
+    let Some(id) = tasty.backtests().await?.into_iter().next() else {
         info!("No backtests yet. Run create_backtest first.");
         return Ok(());
     };
