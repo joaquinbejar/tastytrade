@@ -28,9 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     for container in account.live_complex_orders().await? {
-        info!(
+        println!(
             "{} {}",
             container
                 .id
@@ -44,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or("(no type)")
         );
         for component in &container.orders {
-            info!(
+            println!(
                 "  {} [{}] {} {}",
                 component.id.as_deref().unwrap_or("-"),
                 component.complex_order_tag.as_deref().unwrap_or("-"),
@@ -61,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         for related in &container.related_orders {
-            info!(
+            println!(
                 "  (related) {} {}",
                 related.id.as_deref().unwrap_or("-"),
                 related

@@ -37,25 +37,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {} (CERTIFICATION)", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     let live = account.live_complex_orders().await?;
     let Some(target) = live
         .iter()
         .find(|container| container.has_working_components())
     else {
-        info!("No complex order with working components to cancel.");
+        println!("No complex order with working components to cancel.");
         return Ok(());
     };
     let Some(id) = target.id.clone() else {
-        info!("The venue returned a complex order with no id.");
+        println!("The venue returned a complex order with no id.");
         return Ok(());
     };
 
     let cancelled = account.cancel_complex_order(&id).await?;
 
-    info!("Requested cancellation of {}", id.0);
+    println!("Requested cancellation of {}", id.0);
     for component in &cancelled.orders {
-        info!(
+        println!(
             "  {} is now {}",
             component.id.as_deref().unwrap_or("-"),
             component

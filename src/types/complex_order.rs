@@ -73,7 +73,7 @@ impl<T: AsRef<str>> From<T> for ComplexOrderId {
 }
 
 /// A contingent order and its components.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct ComplexOrder {
     /// The venue's identifier.
@@ -81,7 +81,7 @@ pub struct ComplexOrder {
     pub id: Option<ComplexOrderId>,
     /// Which account it belongs to. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<crate::api::accounts::AccountNumber>,
     /// How the components are linked.
     #[serde(rename = "type", default)]
     pub complex_order_type: Option<ComplexOrderType>,
@@ -124,7 +124,7 @@ impl ComplexOrder {
 /// Modelled separately from [`crate::prelude::LiveOrderRecord`] because the
 /// identifiers are strings and almost every field is optional here — the venue
 /// sends what applies to the component's stage.
-#[derive(DebugPretty, DisplaySimple, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct ComplexOrderComponent {
     /// The component's identifier.
@@ -132,7 +132,7 @@ pub struct ComplexOrderComponent {
     pub id: Option<String>,
     /// Which account it belongs to. Account PII.
     #[serde(default)]
-    pub account_number: Option<String>,
+    pub account_number: Option<crate::api::accounts::AccountNumber>,
     /// Which container it belongs to.
     #[serde(default)]
     pub complex_order_id: Option<String>,
@@ -286,8 +286,10 @@ const fn minimum_components(complex_order_type: &ComplexOrderType) -> usize {
     match complex_order_type {
         ComplexOrderType::Oco | ComplexOrderType::Otoco => 2,
         ComplexOrderType::Blast | ComplexOrderType::Oto | ComplexOrderType::Pairs => 1,
-        // A strategy this crate does not recognise: require at least one
-        // component and let the venue apply its own rule.
+        // A strategy this crate does not recognise. Reached only from a
+        // decoded response, since `ComplexOrderRequest::validate` refuses to
+        // send one: require at least one component and let the venue apply
+        // its own rule.
         ComplexOrderType::Unknown(_) => 1,
     }
 }
@@ -329,6 +331,20 @@ impl ComplexOrderRequest {
     /// retryable: nothing was sent, and this is a money path where a rejected
     /// container can leave some components placed.
     pub(crate) fn validate(&self) -> crate::TastyResult<()> {
+        // Tolerance belongs on the way in, not on the way out. `ComplexOrder`
+        // keeps `Unknown` because `Items<T>` would otherwise drop a live
+        // contingent order the caller has money in. Sending one is the
+        // opposite: this crate would be routing a real order under a strategy
+        // it cannot reason about, and `minimum_components` would apply the
+        // weakest rule it has to it.
+        if let ComplexOrderType::Unknown(strategy) = &self.complex_order_type {
+            return Err(crate::TastyTradeError::Precondition(format!(
+                "{strategy:?} is not a complex order strategy this crate models, so it \
+                 cannot check what the venue requires of it; placing it would route a \
+                 real order under a rule that was guessed"
+            )));
+        }
+
         let minimum = minimum_components(&self.complex_order_type);
         if self.orders.len() < minimum {
             return Err(crate::TastyTradeError::Precondition(format!(
@@ -459,20 +475,6 @@ mod tests {
         );
     }
 
-    /// A strategy this crate has not seen still goes out, with the venue's own
-    /// spelling, and is held to the weakest rule rather than rejected.
-    #[test]
-    fn an_unknown_strategy_is_still_expressible() {
-        let request = ComplexOrderRequest::new(
-            ComplexOrderType::from("SOMETHING NEW".to_string()),
-            vec![component()],
-        );
-
-        assert!(request.validate().is_ok());
-        let body = serde_json::to_value(&request).expect("serialises");
-        assert_eq!(body["type"], "SOMETHING NEW");
-    }
-
     /// The threshold fields are omitted when unset rather than sent as null: a
     /// non-PAIRS container has no threshold, and `null` is a different request
     /// from no field.
@@ -521,4 +523,72 @@ mod tests {
                 .expect("the container must decode");
         assert!(!done.has_working_components());
     }
+
+    /// Tolerance on the way in, a closed set on the way out.
+    ///
+    /// `Unknown` has to survive a decode, because `Items<T>` drops what it
+    /// cannot parse and that would lose a live contingent order the caller has
+    /// money in. Sending one is the opposite problem: this crate would route a
+    /// real order under a strategy whose rules it cannot check, and
+    /// `minimum_components` would apply the weakest rule it has.
+    #[test]
+    fn an_unmodelled_strategy_decodes_but_cannot_be_placed() {
+        let decoded: ComplexOrder = serde_json::from_str(
+            r#"{"id": "abc", "type": "TRIPLE-WITCH", "orders": [{"id": "1"}]}"#,
+        )
+        .expect("a live order must not vanish because of its strategy");
+        assert_eq!(
+            decoded.complex_order_type,
+            Some(ComplexOrderType::Unknown("TRIPLE-WITCH".to_string()))
+        );
+
+        let outgoing = ComplexOrderRequest::new(
+            ComplexOrderType::Unknown("TRIPLE-WITCH".to_string()),
+            vec![component()],
+        );
+        let error = outgoing
+            .validate()
+            .expect_err("an unmodelled strategy must not be placed");
+        assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
+        assert!(!error.is_retryable(), "nothing was sent");
+
+        // A modelled one still goes.
+        ComplexOrderRequest::new(ComplexOrderType::Oco, vec![component(), component()])
+            .validate()
+            .expect("OCO with two components is well formed");
+    }
+
+    /// Neither the container nor its components render an account number.
+    #[test]
+    fn a_complex_order_renders_without_the_account_number() {
+        const ACCOUNT: &str = "SENTINEL-5WX00042";
+
+        let order: ComplexOrder = serde_json::from_str(&format!(
+            r#"{{"id": "abc", "account-number": "{ACCOUNT}", "type": "OCO",
+                 "orders": [{{"id": "1", "account-number": "{ACCOUNT}",
+                              "underlying-symbol": "AAPL"}}]}}"#
+        ))
+        .expect("the container must decode");
+
+        let rendered = format!("{order:?} {order} {}", format_args!("{order:#?}"));
+        assert!(!rendered.contains(ACCOUNT), "rendered: {rendered}");
+        // Twice: the container and the nested component. This is the case a
+        // per-field redaction on the outer type would have missed.
+        assert_eq!(rendered.matches("{account}").count() % 2, 0, "{rendered}");
+        assert!(rendered.contains("AAPL"), "{rendered}");
+
+        let component = &order.orders[0];
+        let rendered = format!("{component:?} {component}");
+        assert!(!rendered.contains(ACCOUNT), "rendered: {rendered}");
+
+        let written = serde_json::to_string(&order).expect("must serialize");
+        assert!(written.contains(ACCOUNT), "serialization lost the number");
+    }
 }
+
+// Both records carry an account number, and the component nests inside the
+// container, so the derives printed it twice on any `{order:?}`. The helper
+// walks the whole serialized value, so the nested copy is covered by the same
+// pass rather than by remembering to redact it.
+crate::types::wire::redacted_account_render!(ComplexOrder);
+crate::types::wire::redacted_account_render!(ComplexOrderComponent);

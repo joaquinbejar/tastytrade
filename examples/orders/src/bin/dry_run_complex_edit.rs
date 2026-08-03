@@ -37,17 +37,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {} (CERTIFICATION)", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     let live = account.live_complex_orders().await?;
     let Some(pairs) = live
         .iter()
         .find(|container| container.complex_order_type.as_ref() == Some(&ComplexOrderType::Pairs))
     else {
-        info!("No PAIRS trade to preview a threshold change against.");
+        println!("No PAIRS trade to preview a threshold change against.");
         return Ok(());
     };
     let Some(id) = pairs.id.clone() else {
-        info!("The venue returned a PAIRS trade with no id.");
+        println!("The venue returned a PAIRS trade with no id.");
         return Ok(());
     };
 
@@ -59,9 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receipt = account.review_pairs_threshold(&id, &edit).await?;
 
     for warning in receipt.warnings() {
-        info!("warning: {warning}");
+        println!("warning: {warning}");
     }
-    info!(
+    println!(
         "Clean: {} — the receipt is what `place_reviewed_pairs_threshold` needs, \
          and this example stops here.",
         receipt.is_clean()

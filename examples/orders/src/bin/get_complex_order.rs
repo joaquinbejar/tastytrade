@@ -28,19 +28,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     let page = account
         .complex_orders(&PageRequest::first().with_per_page(1))
         .await?;
     let Some(id) = page.items.first().and_then(|c| c.id.clone()) else {
-        info!("This account has no complex orders yet.");
+        println!("This account has no complex orders yet.");
         return Ok(());
     };
 
     let container = account.complex_order(&id).await?;
 
-    info!("Complex order {}", id.0);
-    info!(
+    println!("Complex order {}", id.0);
+    println!(
         "  type: {}",
         container
             .complex_order_type
@@ -50,12 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // The PAIRS threshold, when there is one. `None` means the venue sent
     // nothing, not a threshold of zero.
-    info!(
+    println!(
         "  ratio threshold: {:?} {:?}",
         container.ratio_price_threshold, container.ratio_price_comparator
     );
-    info!("  components: {}", container.orders.len());
-    info!("  related: {}", container.related_orders.len());
+    println!("  components: {}", container.orders.len());
+    println!("  related: {}", container.related_orders.len());
 
     Ok(())
 }

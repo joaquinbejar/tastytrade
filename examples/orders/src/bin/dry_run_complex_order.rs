@@ -36,6 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {} (CERTIFICATION)", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     // OCO: take profit or stop out, whichever comes first. Two components,
     // which is what makes it an OCO — one would be refused locally.
@@ -49,16 +53,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let receipt = account.review_complex_order(&request).await?;
 
-    info!(
+    println!(
         "Buying power effect: {:?}",
         receipt.result().buying_power_effect
     );
     for warning in receipt.warnings() {
         // Venue prose written for a person: it can name the account or the
         // buying power, so it goes on screen rather than into a log.
-        info!("  warning: {warning}");
+        println!("  warning: {warning}");
     }
-    info!("Clean: {} — nothing was placed.", receipt.is_clean());
+    println!("Clean: {} — nothing was placed.", receipt.is_clean());
 
     // A one-sided OCO never reaches the venue.
     let one_sided = ComplexOrderRequest::new(
@@ -66,8 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![limit_order(Action::SellToClose, "200.00")?],
     );
     match account.review_complex_order(&one_sided).await {
-        Ok(_) => info!("a one-sided OCO was accepted, which is a bug"),
-        Err(error) => info!(
+        Ok(_) => println!("a one-sided OCO was accepted, which is a bug"),
+        Err(error) => println!(
             "one-sided OCO refused locally, retryable: {} — {error}",
             error.is_retryable()
         ),

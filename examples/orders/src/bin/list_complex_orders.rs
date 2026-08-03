@@ -28,19 +28,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     info!("Account {}", account.number().redacted());
+    // Component symbols, buying-power effects, order identifiers and the
+    // venue's warning prose go to stdout. A warning can name the account or
+    // the buying power it is about, and INFO is the default level that reaches
+    // whatever aggregator the consuming application configured.
 
     let page = account
         .complex_orders(&PageRequest::first().with_per_page(25))
         .await?;
 
-    info!(
+    println!(
         "{} complex order(s) on page {} of {}",
         page.len(),
         page.pagination.page_offset,
         page.pagination.total_pages
     );
     for container in &page {
-        info!(
+        println!(
             "  {} {} — {} component(s), {}",
             container
                 .id
