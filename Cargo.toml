@@ -18,6 +18,8 @@ include = [
     "Doc/frames/**/*.json",
     "Doc/transactions_listing.json",
     "Doc/trading_status.json",
+    "Doc/margin_requirements.json",
+    "Doc/margin_dry_run.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",

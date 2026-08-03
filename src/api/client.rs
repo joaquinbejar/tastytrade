@@ -9,12 +9,15 @@ use crate::api::base::Response;
 use crate::api::base::TastyApiResponse;
 use crate::api::base::TastyResult;
 use crate::api::oauth::{OAuthSession, authorization_code_grant, default_headers, refresh_grant};
+use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
 use crate::error::{ApiError, InnerApiError};
 use crate::streaming::quote_streamer::QuoteStreamer;
 use crate::types::customer::Customer;
+use crate::types::margin::{MarginConfiguration, SpanRow};
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::utils::config::TastyTradeConfig;
+use chrono::NaiveDate;
 use reqwest::ClientBuilder;
 use reqwest::header;
 use reqwest::header::HeaderValue;
@@ -851,6 +854,44 @@ impl TastyTrade {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// The venue's public margin configuration.
+    ///
+    /// Public and read-only, but it goes through the authenticated client like
+    /// everything else: one transport, one error shape, one place the status is
+    /// checked.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn margin_requirements_configuration(&self) -> TastyResult<MarginConfiguration> {
+        self.get("/margin-requirements-public-configuration").await
+    }
+
+    /// One page of SPAN risk rows for a date and exchange.
+    ///
+    /// Both parameters are required by the venue, so both are arguments rather
+    /// than optional fields — a required query parameter should be impossible
+    /// to omit, not a runtime `400`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the endpoint answers without a pagination block, and
+    /// propagates the venue's error otherwise.
+    pub async fn span_rows(
+        &self,
+        date: NaiveDate,
+        exchange: &str,
+        page: &PageRequest,
+    ) -> TastyResult<Paginated<SpanRow>> {
+        let mut query = QueryBuilder::new();
+        query.push("date", date);
+        query.push("exchange", exchange);
+        page.write_into(&mut query);
+
+        self.get_with_query::<Items<SpanRow>, _, _>("/span/rows", &query.pairs())
+            .await
     }
 
     /// The full customer resource for this session.

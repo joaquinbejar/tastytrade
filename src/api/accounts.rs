@@ -4,6 +4,10 @@ use crate::api::query::{PageRequest, QueryBuilder};
 use crate::api::url::encode_path_segment;
 use crate::types::account_filter::{BalanceSnapshotFilter, PositionFilter, SnapshotRange};
 use crate::types::balance::{Balance, BalanceSnapshot, SnapshotTimeOfDay};
+use crate::types::margin::{
+    EffectiveMarginRequirement, MarginEstimate, MarginOrderRequest, MarginRequirementsReport,
+    PositionLimit,
+};
 use crate::types::order::{DryRunResult, Order, OrderId, OrderPlacedResult, Warning};
 use crate::types::trading_status::TradingStatus;
 use crate::types::transaction::{TotalFees, Transaction, TransactionFilter};
@@ -520,6 +524,82 @@ impl Account<'_> {
     /// Propagates the venue's error.
     pub async fn trading_status(&self) -> TastyResult<TradingStatus> {
         self.tasty.get(&self.path("/trading-status")).await
+    }
+
+    /// The account's current margin and capital requirements, by underlying.
+    ///
+    /// The standing requirement, as opposed to the effect of one order. Nested
+    /// three levels — total, per underlying, per margin strategy — because the
+    /// per-strategy figures are what explain the total.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn margin_requirements(&self) -> TastyResult<MarginRequirementsReport> {
+        self.tasty
+            .get(&format!(
+                "/margin/accounts/{}/requirements",
+                encode_path_segment(&self.inner.account.account_number.0)
+            ))
+            .await
+    }
+
+    /// Estimates the margin one order would consume.
+    ///
+    /// **Routes nothing.** Named to keep it apart from
+    /// [`Account::dry_run`], which is the order preflight against
+    /// `/accounts/{n}/orders/dry-run`: this one answers "how much buying power
+    /// would that take", that one answers "would the venue accept it". There is
+    /// no path from here to a placement.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the request names a
+    /// different account, has a blank underlying or symbol, carries no legs or
+    /// more than [`crate::prelude::MAX_MARGIN_LEGS`], or repeats a leg.
+    /// Propagates the venue's error otherwise.
+    pub async fn estimate_margin(
+        &self,
+        request: &MarginOrderRequest,
+    ) -> TastyResult<MarginEstimate> {
+        request.validate(&self.inner.account.account_number.0)?;
+
+        self.tasty
+            .post(
+                &format!(
+                    "/margin/accounts/{}/dry-run",
+                    encode_path_segment(&self.inner.account.account_number.0)
+                ),
+                request,
+            )
+            .await
+    }
+
+    /// The standing margin requirement for one underlying.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn effective_margin_requirement(
+        &self,
+        underlying_symbol: &str,
+    ) -> TastyResult<EffectiveMarginRequirement> {
+        self.tasty
+            .get(&self.path(&format!(
+                "/margin-requirements/{}/effective",
+                encode_path_segment(underlying_symbol)
+            )))
+            .await
+    }
+
+    /// How much of each instrument type this account may order and hold.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub async fn position_limit(&self) -> TastyResult<PositionLimit> {
+        self.tasty.get(&self.path("/position-limit")).await
     }
 
     /// Orders that are still working.

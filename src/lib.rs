@@ -187,6 +187,39 @@
 //! # }
 //! ```
 //!
+//! ### Margin and risk
+//!
+//! What an order will consume, and what the account may hold.
+//! [`accounts::Account::margin_requirements`] is the standing requirement,
+//! nested total → underlying → strategy, because the per-strategy figures are
+//! what explain the total.
+//!
+//! ```rust,no_run
+//! # use tastytrade::prelude::*;
+//! # async fn risk(account: &Account<'_>) -> Result<(), Box<dyn std::error::Error>> {
+//! let report = account.margin_requirements().await?;
+//! for group in &report.groups {
+//!     println!("{:?}: {:?}", group.underlying_symbol, group.margin_requirement);
+//! }
+//!
+//! let limit = account.position_limit().await?;
+//! println!("largest equity order: {:?}", limit.equity_order_size);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! [`accounts::Account::estimate_margin`] is **not** the order preflight.
+//! [`accounts::Account::dry_run`] asks whether the venue would accept an order;
+//! this asks how much buying power it would take. Neither routes anything, and
+//! there is no path from this one to a placement — it takes
+//! [`prelude::MarginOrderRequest`], which carries the account number and
+//! underlying symbol an [`prelude::Order`] does not, so an order cannot be
+//! handed to it by accident.
+//!
+//! One to [`prelude::MAX_MARGIN_LEGS`] unique legs, checked locally: a repeated
+//! leg is almost always one leg written twice, and a doubled requirement is the
+//! kind of wrong that looks plausible.
+//!
 //! ### Transactions
 //!
 //! The ledger: fills, fees, dividends, assignments, cash movements. It is the
