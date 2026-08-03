@@ -9,7 +9,7 @@ use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
@@ -58,6 +58,11 @@ pub struct QuoteSubscription {
     ///
     /// A set, so asking twice subscribes once.
     targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
+    /// How many events this subscription has lost by not keeping up.
+    ///
+    /// Shared with the sink the forwarder delivers into, so it counts what
+    /// actually happened to *this* consumer.
+    lagged: Arc<AtomicU64>,
 }
 
 impl QuoteSubscription {
@@ -159,6 +164,20 @@ impl QuoteSubscription {
             .collect();
 
         self.subscribe_targets(requested).await
+    }
+
+    /// How many events this subscription has lost by not keeping up.
+    ///
+    /// Zero means the stream is complete as far as this subscription is
+    /// concerned — which is the question a caller assembling a price series
+    /// actually needs answered, and had no way to ask. A non-zero count is not
+    /// recoverable by reading faster: those events are gone.
+    ///
+    /// Candles are the exception, and only across a reconnect: a bar that was
+    /// dropped stops the resume point advancing, so the next connection asks
+    /// for it again. Within one connection a dropped bar stays dropped.
+    pub fn lagged(&self) -> u64 {
+        self.lagged.load(Ordering::Relaxed)
     }
 
     /// Every streamer symbol this subscription is subscribed to, with its
@@ -527,7 +546,36 @@ fn answer(ack: Option<oneshot::Sender<TastyResult<()>>>, outcome: TastyResult<()
 /// meant a caller reading a series lost most of it before it ever looked.
 /// Large enough to absorb a documented history, still bounded — an unbounded
 /// channel turns a slow consumer into unbounded memory.
-const EVENT_CHANNEL_CAPACITY: usize = 4096;
+///
+/// A default rather than a rule: a caller who knows their own history size
+/// chooses with [`QuoteStreamer::create_sub_with_capacity`].
+pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 4096;
+
+/// One consumer of a subscription's events, and what it has lost.
+///
+/// The counter travels with the sender so the forwarder can charge a drop to
+/// the consumer it actually happened to, rather than to a symbol or a
+/// subscription that has several.
+#[derive(Clone)]
+struct Subscriber {
+    events: mpsc::Sender<MarketEvent>,
+    lagged: Arc<AtomicU64>,
+}
+
+/// Where a candle subscription should resume, per subscription and symbol.
+///
+/// `through` is the last bar **delivered contiguously** — not the highest one
+/// seen. The difference is the whole point: a maximum steps over a gap, and a
+/// gap in a price series is invisible to everything downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CandleResume {
+    /// The last bar handed to the consumer with nothing missing before it.
+    through: i64,
+    /// Whether a bar has been dropped since. While this is set, `through`
+    /// stops advancing, so the reconnect asks for everything from the last
+    /// known-good bar and the gap is refilled.
+    gap: bool,
+}
 
 /// One thing a subscription is subscribed to.
 ///
@@ -599,7 +647,7 @@ enum DXLinkCommand {
         u32,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
-    AddEventSender(u32, mpsc::Sender<MarketEvent>),
+    AddEventSender(u32, Subscriber),
     RemoveEventSender(u32),
 }
 
@@ -607,7 +655,7 @@ enum DXLinkCommand {
 // forwarding task, so senders registered at any time are always visible.
 #[derive(Default)]
 struct EventRouting {
-    senders: HashMap<u32, Vec<mpsc::Sender<MarketEvent>>>,
+    senders: HashMap<u32, Vec<Subscriber>>,
     /// Which subscriptions want which `(streamer symbol, event type)`.
     ///
     /// Keyed by both halves, not by the symbol alone. The symbol carries a
@@ -618,12 +666,15 @@ struct EventRouting {
     routes: HashMap<(String, EventKind), HashSet<u32>>,
 }
 
-/// The last candle time delivered per streamer symbol.
+/// Where each subscription's candle series should resume.
 ///
-/// What a reconnect resumes from, so a consumer is not re-sent a day of bars
-/// it already has. Keyed by the symbol including its period, which is what
-/// keeps `AAPL{=5m}` and `AAPL{=1h}` on separate counters.
-type CandleProgress = Arc<Mutex<HashMap<String, i64>>>;
+/// Keyed by **subscription and symbol**, not by symbol alone. Two
+/// subscriptions can watch the same bars and fall behind by different amounts,
+/// and a replay is per subscription — so a shared counter would let a
+/// subscription that kept up decide where a subscription that did not resumes
+/// from. The symbol carries its period, which keeps `AAPL{=5m}` and
+/// `AAPL{=1h}` apart within one subscription.
+type CandleProgress = Arc<Mutex<HashMap<(u32, String), CandleResume>>>;
 
 /// Owns the DXLink connection and the subscriptions on it.
 ///
@@ -783,16 +834,46 @@ impl QuoteStreamer {
         &mut self,
         kinds: impl IntoIterator<Item = EventKind>,
     ) -> TastyResult<Box<QuoteSubscription>> {
+        self.create_sub_with_capacity(kinds, DEFAULT_EVENT_CHANNEL_CAPACITY)
+            .await
+    }
+
+    /// The same, with a chosen buffer size.
+    ///
+    /// The default absorbs a documented candle history — about 1440 events for
+    /// a day of one-minute bars, arriving together — and a caller who knows
+    /// their own history is larger, or who is reading a firehose of
+    /// `TimeAndSale` slowly, should say so rather than discovering the number
+    /// through [`QuoteSubscription::lagged`].
+    ///
+    /// Bounded either way. An unbounded channel does not remove the problem,
+    /// it converts a slow consumer into unbounded memory.
+    ///
+    /// # Errors
+    ///
+    /// As [`QuoteStreamer::create_sub`], plus
+    /// [`TastyTradeError::Precondition`] for a capacity of zero, which is a
+    /// subscription that can never deliver anything.
+    pub async fn create_sub_with_capacity(
+        &mut self,
+        kinds: impl IntoIterator<Item = EventKind>,
+        capacity: usize,
+    ) -> TastyResult<Box<QuoteSubscription>> {
+        if capacity == 0 {
+            return Err(TastyTradeError::Precondition(
+                "a subscription with no buffer cannot deliver anything; it would drop every \
+                 event and report itself as lagging"
+                    .to_string(),
+            ));
+        }
+
         let kinds: BTreeSet<EventKind> = kinds.into_iter().collect();
         let id = SubscriptionId(self.next_sub_id);
         self.next_sub_id += 1;
         let sub_id = id.0 as u32;
 
-        // Two channels, because the streamer keeps a copy of the subscription
-        // and the caller gets one. Both are registered here, awaited, before
-        // anything can subscribe.
-        let (kept_tx, kept_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let (caller_tx, caller_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (caller_tx, caller_rx) = mpsc::channel(capacity);
+        let lagged = Arc::new(AtomicU64::new(0));
         let (_event_sender, event_receiver) = flume::unbounded();
 
         let Some(commands) = &self.dxlink_command_tx else {
@@ -802,18 +883,27 @@ impl QuoteStreamer {
             ));
         };
 
-        for sender in [kept_tx, caller_tx] {
-            commands
-                .send(DXLinkCommand::AddEventSender(sub_id, sender))
-                .await
-                .map_err(|_| {
-                    TastyTradeError::Streaming(
-                        "the quote streamer is closed; it cannot route events to a new \
-                         subscription"
-                            .to_string(),
-                    )
-                })?;
-        }
+        // **One** registered consumer, the caller's. The streamer used to
+        // register a second for the copy it keeps, and nothing could ever read
+        // that one: `get_sub` hands out a `&QuoteSubscription` and `get_event`
+        // needs `&mut`. So it filled to capacity and then charged a drop for
+        // every event afterwards — manufacturing exactly the lag this change
+        // exists to measure.
+        commands
+            .send(DXLinkCommand::AddEventSender(
+                sub_id,
+                Subscriber {
+                    events: caller_tx,
+                    lagged: lagged.clone(),
+                },
+            ))
+            .await
+            .map_err(|_| {
+                TastyTradeError::Streaming(
+                    "the quote streamer is closed; it cannot route events to a new subscription"
+                        .to_string(),
+                )
+            })?;
 
         // Create subscription
         let targets = Arc::new(Mutex::new(BTreeSet::new()));
@@ -832,6 +922,11 @@ impl QuoteStreamer {
                 },
             );
 
+        // The streamer's own copy exists for `close_sub` and `get_sub`, which
+        // read its targets and its identity. Its event channel is closed from
+        // the start rather than being fed into a void: a receiver nobody can
+        // reach should say so if anybody ever asks it.
+        let (_closed, closed_rx) = mpsc::channel(1);
         self.subscription_map.insert(
             id,
             QuoteSubscription {
@@ -839,8 +934,9 @@ impl QuoteStreamer {
                 streamer: self.handle(),
                 kinds: kinds.clone(),
                 event_receiver: event_receiver.clone(),
-                dxlink_receiver: kept_rx,
+                dxlink_receiver: closed_rx,
                 targets: targets.clone(),
+                lagged: Arc::new(AtomicU64::new(0)),
             },
         );
 
@@ -851,6 +947,7 @@ impl QuoteStreamer {
             event_receiver,
             dxlink_receiver: caller_rx,
             targets,
+            lagged,
         }))
     }
 
@@ -1083,42 +1180,76 @@ async fn forward_events(
             continue;
         };
 
-        let mut delivered = false;
-        let mut dropped = 0usize;
+        // Delivery is charged per subscription: one consumer falling behind
+        // must not decide where another one resumes from.
         for sub_id in sub_ids {
-            if let Some(sender_list) = routing.senders.get(sub_id) {
-                for sender in sender_list {
-                    // A consumer that is not keeping up loses events rather
-                    // than stalling everyone else's.
-                    match sender.try_send(event.clone()) {
-                        Ok(()) => delivered = true,
-                        Err(_) => dropped += 1,
+            let Some(subscribers) = routing.senders.get(sub_id) else {
+                continue;
+            };
+
+            let mut delivered = false;
+            let mut dropped = 0usize;
+            for subscriber in subscribers {
+                // A consumer that is not keeping up loses events rather than
+                // stalling everyone else's. What changed is that losing them
+                // is now countable and, for candles, recoverable.
+                match subscriber.events.try_send(event.clone()) {
+                    Ok(()) => delivered = true,
+                    Err(_) => {
+                        subscriber.lagged.fetch_add(1, Ordering::Relaxed);
+                        dropped += 1;
                     }
                 }
             }
-        }
 
-        if dropped > 0 {
-            // Loud, because for a candle series a dropped event is a hole, and
-            // a hole is worse than a duplicate: nothing downstream can see it.
-            // The symbol and the type only — market data never travels with
-            // the warning.
-            warn!(
-                "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
-                 subscription channel(s)"
-            );
-        }
+            if dropped > 0 {
+                // The symbol and the type only — market data never travels
+                // with the warning.
+                warn!(
+                    "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
+                     channel(s) of subscription {sub_id}"
+                );
+            }
 
-        // A bar is recorded as seen only once it has actually been handed to
-        // somebody. Recording before delivery meant a bar dropped for a slow
-        // consumer still advanced the resume point, so the reconnect skipped
-        // it permanently — the crate deciding, silently, that a gap in a price
-        // series was acceptable.
-        if delivered && let MarketEvent::Candle(candle) = &event {
-            let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
-            let latest = seen.entry(symbol.clone()).or_insert(candle.time);
-            *latest = (*latest).max(candle.time);
+            if let MarketEvent::Candle(candle) = &event {
+                record_bar(
+                    &progress,
+                    *sub_id,
+                    &symbol,
+                    candle.time,
+                    delivered && dropped == 0,
+                );
+            }
         }
+    }
+}
+
+/// Moves a subscription's resume point, or marks that it cannot move.
+///
+/// The rule in one place because it is the subtle part. A bar that reached the
+/// consumer with nothing missing before it advances `through`. A bar that was
+/// dropped — for this consumer, on any of its channels — sets `gap`, and from
+/// then on nothing advances until a replay clears it.
+///
+/// The alternative, taking the maximum of what was delivered, reads correctly
+/// and is wrong: bar *n* dropped and bar *n+1* delivered moves the resume point
+/// past *n*, so the reconnect never asks for it again and the series has a hole
+/// nothing downstream can see.
+fn record_bar(progress: &CandleProgress, sub_id: u32, symbol: &str, time: i64, complete: bool) {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    let resume = seen
+        .entry((sub_id, symbol.to_string()))
+        .or_insert(CandleResume {
+            through: time,
+            gap: false,
+        });
+
+    if !complete {
+        resume.gap = true;
+        return;
+    }
+    if !resume.gap {
+        resume.through = resume.through.max(time);
     }
 }
 
@@ -1158,6 +1289,17 @@ async fn replay(
         "Restoring {} subscription(s) after a reconnect",
         pending.len()
     );
+
+    // The replay is what refills a gap, so the flag that stopped a resume
+    // point advancing is cleared as the request goes out. Leaving it set would
+    // freeze every future reconnect at the same bar.
+    {
+        let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+        for resume in seen.values_mut() {
+            resume.gap = false;
+        }
+    }
+
     for (sub_id, requests) in pending {
         if let Err(e) = client.subscribe(channel_id, requests).await {
             warn!("Could not restore subscription {sub_id}: {e}");
@@ -1187,7 +1329,7 @@ fn pending_replay(
             let targets: Vec<FeedTarget> = targets_of(&record.targets)
                 .iter()
                 .cloned()
-                .map(|target| resume_from(target, &seen))
+                .map(|target| resume_from(*sub_id, target, &seen))
                 .collect();
             (*sub_id, feed_subscriptions(&targets))
         })
@@ -1201,19 +1343,29 @@ fn pending_replay(
 /// already been given — for one-minute candles over a day that is about 1440
 /// events per symbol, duplicated on every reconnect, and a reconnect loop
 /// multiplies it. So the replay starts from one millisecond past the last bar
-/// actually delivered, and falls back to the original start when none has been.
+/// delivered **contiguously**, and falls back to the original start when none
+/// has been.
 ///
-/// Deliberately not "now": a drop that lasted a minute would leave a hole, and
-/// a hole in a price series is worse than a duplicate bar because nothing
-/// downstream can see it.
-fn resume_from(mut target: FeedTarget, seen: &HashMap<String, i64>) -> FeedTarget {
+/// Contiguously is the word that matters. A subscription that dropped a bar
+/// stops advancing its resume point, so the replay comes back from before the
+/// gap and refills it — at the cost of duplicates after that point, which is
+/// the safe direction: a duplicate bar is visible to a consumer and a missing
+/// one is not.
+///
+/// Deliberately not "now": a drop that lasted a minute would leave a hole for
+/// exactly the same reason.
+fn resume_from(
+    sub_id: u32,
+    mut target: FeedTarget,
+    seen: &HashMap<(u32, String), CandleResume>,
+) -> FeedTarget {
     if target.kind != EventKind::Candle {
         return target;
     }
-    if let Some(last) = seen.get(&target.symbol) {
+    if let Some(resume) = seen.get(&(sub_id, target.symbol.clone())) {
         target.from_time = Some(match target.from_time {
-            Some(original) => original.max(last.saturating_add(1)),
-            None => last.saturating_add(1),
+            Some(original) => original.max(resume.through.saturating_add(1)),
+            None => resume.through.saturating_add(1),
         });
     }
     target
@@ -1958,6 +2110,14 @@ mod reconnect_tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
+    /// A consumer sink with its own loss counter.
+    fn sink(events: mpsc::Sender<MarketEvent>) -> Subscriber {
+        Subscriber {
+            events,
+            lagged: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
     /// One candle for `symbol` at `time`.
     fn candle(symbol: &str, time: i64) -> MarketEvent {
         let MarketEvent::Candle(mut candle) = every_event_type(symbol)
@@ -2233,7 +2393,7 @@ mod reconnect_tests {
         let (sub_tx, mut sub_rx) = mpsc::channel::<MarketEvent>(4);
         {
             let mut routing = routing.write().await;
-            routing.senders.insert(1, vec![sub_tx]);
+            routing.senders.insert(1, vec![sink(sub_tx)]);
             routing
                 .routes
                 .insert(("AAPL".to_string(), EventKind::Quote), HashSet::from([1]));
@@ -2452,6 +2612,7 @@ mod reconnect_tests {
             event_receiver,
             dxlink_receiver: rx,
             targets: Arc::new(Mutex::new(BTreeSet::new())),
+            lagged: Arc::new(AtomicU64::new(0)),
         };
 
         for event in &events {
@@ -2501,8 +2662,8 @@ mod reconnect_tests {
         let (hour_tx, mut hour_rx) = mpsc::channel::<MarketEvent>(4);
         {
             let mut routing = routing.write().await;
-            routing.senders.insert(1, vec![five_tx]);
-            routing.senders.insert(2, vec![hour_tx]);
+            routing.senders.insert(1, vec![sink(five_tx)]);
+            routing.senders.insert(2, vec![sink(hour_tx)]);
         }
 
         record_routes(
@@ -2553,8 +2714,9 @@ mod reconnect_tests {
         // And the bar was recorded, which is what a reconnect resumes from.
         let seen = progress.lock().expect("not poisoned in tests").clone();
         assert_eq!(
-            seen.get(&five.streamer_symbol("AAPL")),
-            Some(&1_700_000_000_000)
+            seen.get(&(1, five.streamer_symbol("AAPL")))
+                .map(|r| r.through),
+            Some(1_700_000_000_000)
         );
 
         forwarder.abort();
@@ -2567,7 +2729,11 @@ mod reconnect_tests {
     async fn a_subscription_only_receives_the_event_types_it_asked_for() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
         let (quotes_tx, mut quotes_rx) = mpsc::channel::<MarketEvent>(4);
-        routing.write().await.senders.insert(1, vec![quotes_tx]);
+        routing
+            .write()
+            .await
+            .senders
+            .insert(1, vec![sink(quotes_tx)]);
 
         record_routes(
             &routing,
@@ -2608,37 +2774,49 @@ mod reconnect_tests {
     /// A reconnect must not re-send a day of bars the consumer already has,
     /// and must not skip the ones it missed either.
     #[test]
-    fn a_candle_replay_resumes_after_the_last_bar_delivered() {
+    fn a_candle_replay_resumes_after_the_last_contiguous_bar() {
         let original = FeedTarget {
             kind: EventKind::Candle,
             symbol: "AAPL{=5m}".to_string(),
             from_time: Some(1_000),
         };
-        let seen = HashMap::from([("AAPL{=5m}".to_string(), 5_000)]);
+        let seen = HashMap::from([(
+            (1u32, "AAPL{=5m}".to_string()),
+            CandleResume {
+                through: 5_000,
+                gap: false,
+            },
+        )]);
 
-        let resumed = resume_from(original.clone(), &seen);
         assert_eq!(
-            resumed.from_time,
+            resume_from(1, original.clone(), &seen).from_time,
             Some(5_001),
             "the replay picks up one millisecond past the last bar delivered"
         );
 
         // Nothing delivered yet: the caller's own start still stands.
         assert_eq!(
-            resume_from(original.clone(), &HashMap::new()).from_time,
+            resume_from(1, original.clone(), &HashMap::new()).from_time,
             Some(1_000)
         );
 
-        // A different period is a different counter.
+        // Another subscription's progress is not this one's. A consumer that
+        // kept up must not decide where a consumer that did not resumes from.
+        assert_eq!(
+            resume_from(2, original.clone(), &seen).from_time,
+            Some(1_000)
+        );
+
+        // A different period is a different series.
         let other = FeedTarget {
             symbol: "AAPL{=1h}".to_string(),
             ..original.clone()
         };
-        assert_eq!(resume_from(other, &seen).from_time, Some(1_000));
+        assert_eq!(resume_from(1, other, &seen).from_time, Some(1_000));
 
         // Only candles carry one at all.
         assert_eq!(
-            resume_from(target(EventKind::Quote, "AAPL"), &seen).from_time,
+            resume_from(1, target(EventKind::Quote, "AAPL"), &seen).from_time,
             None
         );
     }
@@ -2752,17 +2930,18 @@ mod reconnect_tests {
             .await
             .expect("the streamer is open");
 
-        // Both senders are already queued — nothing was left to a task that
-        // may or may not have run.
+        // Already queued — nothing was left to a task that may or may not have
+        // run.
         let mut registrations = 0;
         while let Ok(DXLinkCommand::AddEventSender(id, _)) = rx.try_recv() {
             assert_eq!(id, sub.id.0 as u32);
             registrations += 1;
         }
         assert_eq!(
-            registrations, 2,
-            "the streamer's copy and the caller's must both be routable before \
-             create_sub returns"
+            registrations, 1,
+            "exactly one consumer is registered: the caller's. The streamer's own \
+             copy used to register a second that nothing could ever read, so it \
+             filled up and then charged a drop for every event afterwards"
         );
     }
 
@@ -2785,12 +2964,24 @@ mod reconnect_tests {
     /// A bar that was dropped for a slow consumer must not advance the resume
     /// point: the reconnect would skip it permanently, and a hole in a price
     /// series is worse than a duplicate because nothing downstream can see it.
+    ///
+    /// The subtle half is *contiguity*. Taking the maximum of what was
+    /// delivered reads correctly and is wrong: bar 1000 dropped and bar 3000
+    /// delivered would move the resume point to 3000 and lose 2000 forever.
     #[tokio::test]
-    async fn a_dropped_bar_does_not_advance_the_resume_point() {
+    async fn a_dropped_bar_freezes_the_resume_point_rather_than_being_stepped_over() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        // Capacity one, and nothing ever reads it: the second bar is dropped.
+        // Capacity one and nothing ever reads it: the first bar fits, the rest
+        // are dropped.
         let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
-        routing.write().await.senders.insert(1, vec![full_tx]);
+        let lagged = Arc::new(AtomicU64::new(0));
+        routing.write().await.senders.insert(
+            1,
+            vec![Subscriber {
+                events: full_tx,
+                lagged: lagged.clone(),
+            }],
+        );
         record_routes(
             &routing,
             1,
@@ -2817,22 +3008,75 @@ mod reconnect_tests {
                 .await
                 .expect("the feed accepts");
         }
-
-        // Give the forwarder time to process all three.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let seen = progress
+        let resume = progress
             .lock()
             .expect("not poisoned in tests")
-            .get("AAPL{=5m}")
-            .copied();
+            .get(&(1, "AAPL{=5m}".to_string()))
+            .copied()
+            .expect("the series was seen");
+
         assert_eq!(
-            seen,
-            Some(1_000),
+            resume.through, 1_000,
             "only the bar that was actually delivered may be resumed past"
         );
+        assert!(
+            resume.gap,
+            "a drop has to be remembered, or the next delivery steps over it"
+        );
+
+        // And the consumer can find out, which is the whole point: two of the
+        // three bars never reached it.
+        assert_eq!(lagged.load(Ordering::Relaxed), 2);
 
         forwarder.abort();
+    }
+
+    /// A gap is refilled by the replay, so the flag that froze the resume
+    /// point has to be cleared when the request goes out — otherwise every
+    /// future reconnect asks from the same bar forever.
+    #[test]
+    fn a_replay_resumes_from_before_the_gap() {
+        let seen = HashMap::from([(
+            (1u32, "AAPL{=5m}".to_string()),
+            CandleResume {
+                through: 1_000,
+                gap: true,
+            },
+        )]);
+
+        let target = FeedTarget {
+            kind: EventKind::Candle,
+            symbol: "AAPL{=5m}".to_string(),
+            from_time: Some(0),
+        };
+
+        assert_eq!(
+            resume_from(1, target, &seen).from_time,
+            Some(1_001),
+            "the replay comes back from before the gap and refills it"
+        );
+    }
+
+    /// A subscription with no buffer would drop every event and then report
+    /// itself as lagging, which is a worse way to learn about it.
+    #[tokio::test]
+    async fn a_subscription_with_no_buffer_is_refused() {
+        let (tx, _rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let mut streamer = streamer_with(tx, shutdown_tx);
+
+        let Err(error) = streamer
+            .create_sub_with_capacity([EventKind::Quote], 0)
+            .await
+        else {
+            panic!("a zero-capacity subscription cannot deliver anything");
+        };
+        assert!(
+            matches!(error, TastyTradeError::Precondition(_)),
+            "{error:?}"
+        );
     }
 
     /// The budget is bounded, and running out is reported rather than
