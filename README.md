@@ -32,8 +32,8 @@ password authentication, session tokens and remember tokens are gone from
 the venue, and gone from this crate with it; OAuth2 is the only flow that
 works.
 
-Create an OAuth application and a personal grant under Manage > My Profile
-> API on [my.tastytrade.com](https://my.tastytrade.com). That gives you a
+Create an OAuth application and a personal grant under Manage → My Profile
+→ API on [my.tastytrade.com](https://my.tastytrade.com). That gives you a
 **client secret** and a **refresh token**, which are what
 [`utils::config::TastyTradeConfig`] reads from
 `TASTYTRADE_CLIENT_SECRET` and `TASTYTRADE_REFRESH_TOKEN`.
