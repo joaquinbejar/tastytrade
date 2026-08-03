@@ -22,6 +22,7 @@ use crate::types::market_metrics::{
 use crate::types::oauth::{AccessToken, AuthorizationCode, RefreshToken};
 use crate::types::order::LiveOrderRecord;
 use crate::types::order_filter::{CustomerLiveOrderFilter, CustomerOrderFilter};
+use crate::types::quote_alert::{NewQuoteAlert, QuoteAlert};
 use crate::utils::config::TastyTradeConfig;
 use chrono::NaiveDate;
 use reqwest::ClientBuilder;
@@ -909,6 +910,56 @@ impl TastyTrade {
         decode_response::<R, R>(&report, response).await
     }
 
+    /// `DELETE` an endpoint that answers `204 No Content`.
+    ///
+    /// Separate from [`TastyTrade::delete`] because the difference is not
+    /// cosmetic: asking the generic verb for a payload makes it try to decode
+    /// an empty body, so the mutation succeeds and the caller is handed a
+    /// decode error for it. The only honest reading of that error is "it may
+    /// or may not have happened", which is the worst answer available about a
+    /// state change.
+    ///
+    /// A failure status still goes through the shared decoder, so the broker's
+    /// error document is reported the same way it is everywhere else.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error.
+    pub(crate) async fn delete_no_content<U: AsRef<str>>(&self, url: U) -> TastyResult<()> {
+        let full_url = self.request_url(url.as_ref())?;
+        let report = RequestReport::new(
+            "DELETE",
+            redact_account_path(&full_url),
+            self.config.environment(),
+        );
+
+        let authorization = self.authorization().await?;
+        let response = self
+            .client
+            .delete(&full_url)
+            .header(header::AUTHORIZATION, authorization)
+            .send()
+            .await
+            .map_err(|e| transport_failure(&report, e))?;
+
+        if response.status().is_success() {
+            debug!(
+                "{} {} -> {} in {:?}",
+                report.method,
+                report.operation,
+                response.status().as_u16(),
+                report.started.elapsed()
+            );
+            return Ok(());
+        }
+
+        // Reuses the failure half of the shared decoder, which sanitises the
+        // broker's error document and never logs the body.
+        decode_response::<serde_json::Value, serde_json::Value>(&report, response)
+            .await
+            .map(|_| ())
+    }
+
     /// Every account on this session.
     ///
     /// # Errors
@@ -1081,6 +1132,60 @@ impl TastyTrade {
             )
             .await?;
         resp.into_items()
+    }
+
+    /// Every quote alert this **user** has set.
+    ///
+    /// Alerts are per user, not per account, which is why this hangs off the
+    /// client rather than off [`crate::accounts::Account`] — putting it there
+    /// would imply a scoping the venue does not have.
+    ///
+    /// # Errors
+    ///
+    /// Fails when alerts arrive but none can be decoded; a user with no alerts
+    /// is `Ok` with an empty vector.
+    pub async fn quote_alerts(&self) -> TastyResult<Vec<QuoteAlert>> {
+        let resp: Items<QuoteAlert> = self.get("/quote-alerts").await?;
+        resp.into_items()
+    }
+
+    /// Sets a quote alert.
+    ///
+    /// The alert fires over the **account websocket**, to a caller subscribed
+    /// with [`crate::prelude::SubRequestAction::QuoteAlertsSubscribe`] — and it
+    /// arrives as the same [`QuoteAlert`] type this returns, so the two halves
+    /// cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// Fails **before sending anything** with
+    /// [`crate::TastyTradeError::Precondition`] when the symbol or threshold is
+    /// blank, or the threshold is zero. Propagates the venue's error otherwise.
+    pub async fn create_quote_alert(&self, alert: &NewQuoteAlert) -> TastyResult<QuoteAlert> {
+        alert.validate()?;
+
+        self.post("/quote-alerts", alert).await
+    }
+
+    /// Cancels a quote alert.
+    ///
+    /// **Mutates user state.**
+    ///
+    /// Returns nothing, because the venue returns nothing: the published
+    /// contract answers `204 No Content`. Asking for a [`QuoteAlert`] back
+    /// made the call cancel the alert and then fail decoding the empty body,
+    /// so a successful cancellation was reported as an error.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the venue's error, including a `404` for an alert that is
+    /// already gone.
+    pub async fn cancel_quote_alert(&self, alert_external_id: &str) -> TastyResult<()> {
+        self.delete_no_content(format!(
+            "/quote-alerts/{}",
+            encode_path_segment(alert_external_id)
+        ))
+        .await
     }
 
     /// One page of SPAN risk rows for a date and exchange.

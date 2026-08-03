@@ -71,7 +71,9 @@ pub use crate::types::order_filter::{
 pub use crate::types::position::{BriefPosition, FullPosition, QuantityDirection};
 
 // Re-export the payload types the account streamer shares with REST
-pub use crate::types::quote_alert::QuoteAlert;
+pub use crate::types::quote_alert::{
+    NewQuoteAlert, QuoteAlert, QuoteAlertField, QuoteAlertOperator,
+};
 pub use crate::types::watchlist::{Watchlist, WatchlistEntry};
 
 // Re-export balance types

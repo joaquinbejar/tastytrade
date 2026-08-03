@@ -23,6 +23,7 @@ mod market_metrics;
 mod market_time;
 mod orders;
 mod paths;
+mod quote_alerts;
 mod rest;
 mod search;
 mod transactions;
