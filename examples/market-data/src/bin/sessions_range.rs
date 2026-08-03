@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let today = Utc::now().date_naive();
     let range = SessionRange::between(today, today + Duration::days(14))
-        .with_instrument_collection(InstrumentCollection::Equity);
+        .with_instrument_collection(SessionCollection::Equity);
 
     for session in tasty.market_sessions(&range).await?.iter().take(10) {
         info!(

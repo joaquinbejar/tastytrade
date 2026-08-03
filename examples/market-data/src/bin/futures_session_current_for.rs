@@ -21,8 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    for collection in [InstrumentCollection::Cme, InstrumentCollection::Cfe] {
-        match tasty.current_futures_session(&collection).await {
+    for collection in [FuturesExchange::Cme, FuturesExchange::Cfe] {
+        match tasty.current_futures_session(collection).await {
             Ok(session) => info!(
                 "{}: {} — open now {:?}",
                 collection.as_wire(),

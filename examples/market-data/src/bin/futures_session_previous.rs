@@ -22,13 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tasty = TastyTrade::connect(&config).await?;
 
     let previous = tasty
-        .previous_futures_session(&InstrumentCollection::Cme, None)
+        .previous_futures_session(FuturesExchange::Cme, None)
         .await?;
     info!("Previous CME session: {:?}", previous.session_date);
 
     let earlier = tasty
         .previous_futures_session(
-            &InstrumentCollection::Cme,
+            FuturesExchange::Cme,
             Some((Utc::now() - Duration::days(7)).date_naive()),
         )
         .await?;

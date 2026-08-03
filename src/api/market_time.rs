@@ -12,8 +12,8 @@ use crate::api::base::{Items, TastyResult};
 use crate::api::query::QueryBuilder;
 use crate::api::url::encode_path_segment;
 use crate::types::market_time::{
-    CurrentMarketSession, InstrumentCollection, MarketCalendar, MarketSession, SessionRange,
-    collections_query,
+    CurrentMarketSession, FuturesExchange, MarketCalendar, MarketSession, SessionCollection,
+    SessionRange, collections_query,
 };
 
 impl TastyTrade {
@@ -46,8 +46,8 @@ impl TastyTrade {
     /// Propagates the venue's error.
     pub async fn current_market_session(
         &self,
-        first: InstrumentCollection,
-        rest: &[InstrumentCollection],
+        first: SessionCollection,
+        rest: &[SessionCollection],
     ) -> TastyResult<CurrentMarketSession> {
         let query = collections_query(&first, rest);
         self.get_with_query::<CurrentMarketSession, CurrentMarketSession, _>(
@@ -105,13 +105,20 @@ impl TastyTrade {
             .await
     }
 
-    /// The equities holiday calendar.
+    /// The equities holiday calendars.
+    ///
+    /// A **list**: the published contract declares this operation, and the
+    /// futures one beside it, as an array of calendars rather than a single
+    /// object. Decoding one calendar happened to work against a mock that
+    /// invented a singleton and would have failed on the first real response.
     ///
     /// # Errors
     ///
-    /// Propagates the venue's error.
-    pub async fn equities_holidays(&self) -> TastyResult<MarketCalendar> {
-        self.get("/market-time/equities/holidays").await
+    /// Fails when calendars arrive but none can be decoded; a genuinely empty
+    /// list is `Ok`.
+    pub async fn equities_holidays(&self) -> TastyResult<Vec<MarketCalendar>> {
+        let resp: Items<MarketCalendar> = self.get("/market-time/equities/holidays").await?;
+        resp.into_items()
     }
 
     /// The current session for every futures collection.
@@ -132,7 +139,7 @@ impl TastyTrade {
     /// Propagates the venue's error.
     pub async fn current_futures_session(
         &self,
-        collection: &InstrumentCollection,
+        collection: FuturesExchange,
     ) -> TastyResult<CurrentMarketSession> {
         self.get(format!(
             "/market-time/futures/sessions/current/{}",
@@ -148,7 +155,7 @@ impl TastyTrade {
     /// Propagates the venue's error.
     pub async fn next_futures_session(
         &self,
-        collection: &InstrumentCollection,
+        collection: FuturesExchange,
         date: Option<NaiveDate>,
     ) -> TastyResult<MarketSession> {
         self.session_at(
@@ -168,7 +175,7 @@ impl TastyTrade {
     /// Propagates the venue's error.
     pub async fn previous_futures_session(
         &self,
-        collection: &InstrumentCollection,
+        collection: FuturesExchange,
         date: Option<NaiveDate>,
     ) -> TastyResult<MarketSession> {
         self.session_at(
@@ -181,20 +188,24 @@ impl TastyTrade {
         .await
     }
 
-    /// The holiday calendar for one futures collection.
+    /// The holiday calendars for one futures exchange.
+    ///
+    /// A **list**, as [`TastyTrade::equities_holidays`].
     ///
     /// # Errors
     ///
-    /// Propagates the venue's error.
+    /// As [`TastyTrade::equities_holidays`].
     pub async fn futures_holidays(
         &self,
-        collection: &InstrumentCollection,
-    ) -> TastyResult<MarketCalendar> {
-        self.get(format!(
-            "/market-time/futures/holidays/{}",
-            encode_path_segment(collection.as_wire())
-        ))
-        .await
+        collection: FuturesExchange,
+    ) -> TastyResult<Vec<MarketCalendar>> {
+        let resp: Items<MarketCalendar> = self
+            .get(format!(
+                "/market-time/futures/holidays/{}",
+                encode_path_segment(collection.as_wire())
+            ))
+            .await?;
+        resp.into_items()
     }
 
     /// The four next/previous lookups differ only in their path.

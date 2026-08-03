@@ -572,7 +572,7 @@
 //! # use tastytrade::prelude::*;
 //! # async fn clock(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
 //! let session = tasty
-//!     .current_market_session(InstrumentCollection::Equity, &[])
+//!     .current_market_session(SessionCollection::Equity, &[])
 //!     .await?;
 //!
 //! // Derived from the session the venue sent, never from a local assumption

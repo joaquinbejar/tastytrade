@@ -24,23 +24,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    let calendar = tasty.equities_holidays().await?;
-
-    info!("{} holiday(s)", calendar.market_holidays.len());
-    for holiday in calendar.market_holidays.iter().take(20) {
-        info!("  closed: {holiday}");
-    }
-    info!("{} half day(s)", calendar.market_half_days.len());
-    for half in calendar.market_half_days.iter().take(20) {
-        info!("  early close: {half}");
-    }
+    // A list: the published contract declares this operation as an array of
+    // calendars, not one calendar.
+    let calendars = tasty.equities_holidays().await?;
+    info!("{} calendar(s)", calendars.len());
 
     let today = Utc::now().date_naive();
-    info!(
-        "Today {today}: holiday {}, half day {}",
-        calendar.is_holiday(today),
-        calendar.is_half_day(today)
-    );
+    for calendar in &calendars {
+        info!("{} holiday(s)", calendar.market_holidays.len());
+        for holiday in calendar.market_holidays.iter().take(20) {
+            info!("  closed: {holiday}");
+        }
+        info!("{} half day(s)", calendar.market_half_days.len());
+        for half in calendar.market_half_days.iter().take(20) {
+            info!("  early close: {half}");
+        }
+        info!(
+            "Today {today}: holiday {}, half day {}",
+            calendar.is_holiday(today),
+            calendar.is_half_day(today)
+        );
+    }
 
     Ok(())
 }

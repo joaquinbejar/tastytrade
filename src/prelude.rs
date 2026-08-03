@@ -84,8 +84,8 @@ pub use crate::types::market_metrics::{
 
 // Re-export market sessions and holidays
 pub use crate::types::market_time::{
-    CurrentMarketSession, InstrumentCollection, MAX_SESSION_RANGE_DAYS, MarketCalendar,
-    MarketSession, SessionRange,
+    CurrentMarketSession, FuturesExchange, InstrumentCollection, MAX_SESSION_RANGE_MONTHS,
+    MarketCalendar, MarketSession, SessionCollection, SessionRange,
 };
 
 // Re-export the REST market-data snapshot

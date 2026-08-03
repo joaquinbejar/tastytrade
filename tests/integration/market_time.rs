@@ -70,7 +70,7 @@ async fn the_current_session_sends_repeated_collections() {
         .expect("authentication must succeed");
 
     let session = client
-        .current_market_session(InstrumentCollection::Equity, &[InstrumentCollection::Cme])
+        .current_market_session(SessionCollection::Equity, &[SessionCollection::Cme])
         .await
         .expect("the session must decode");
 
@@ -135,7 +135,7 @@ async fn a_range_sends_what_it_was_given() {
     let sessions = client
         .market_sessions(
             &SessionRange::between(day(2026, 8, 1), day(2026, 8, 31))
-                .with_instrument_collection(InstrumentCollection::Equity),
+                .with_instrument_collection(SessionCollection::Equity),
         )
         .await
         .expect("the sessions must decode");
@@ -163,8 +163,11 @@ async fn the_futures_family_puts_its_collection_in_the_path() {
     let venue = venue_with(vec![(
         "GET /market-time/futures/holidays/CME",
         Route::ok(
-            r#"{"data": {"market-holidays": ["2026-01-01"],
-                         "market-half-days": ["2026-11-27"]},
+            // A **list** of calendars, which is what the published contract
+            // declares. The singleton this used to invent decoded fine and
+            // would have failed on the first real response.
+            r#"{"data": {"items": [{"market-holidays": ["2026-01-01"],
+                                    "market-half-days": ["2026-11-27"]}]},
                 "context": "/market-time/futures/holidays/CME"}"#,
         ),
     )])
@@ -173,14 +176,15 @@ async fn the_futures_family_puts_its_collection_in_the_path() {
         .await
         .expect("authentication must succeed");
 
-    let calendar = client
-        .futures_holidays(&InstrumentCollection::Cme)
+    let calendars = client
+        .futures_holidays(FuturesExchange::Cme)
         .await
-        .expect("the calendar must decode");
+        .expect("the calendars must decode");
 
     assert_eq!(last_target(&venue), "/market-time/futures/holidays/CME");
-    assert!(calendar.is_holiday(day(2026, 1, 1)));
-    assert!(calendar.is_half_day(day(2026, 11, 27)));
+    assert_eq!(calendars.len(), 1);
+    assert!(calendars[0].is_holiday(day(2026, 1, 1)));
+    assert!(calendars[0].is_half_day(day(2026, 11, 27)));
 }
 
 /// Omitting `date` omits the key, which leaves the venue's "relative to now"

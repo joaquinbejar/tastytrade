@@ -26,8 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = tasty
         .current_market_session(
-            InstrumentCollection::Equity,
-            &[InstrumentCollection::Cme, InstrumentCollection::Cfe],
+            SessionCollection::Equity,
+            &[SessionCollection::Cme, SessionCollection::Cfe],
         )
         .await?;
 

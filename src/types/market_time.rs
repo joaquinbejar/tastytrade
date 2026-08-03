@@ -8,7 +8,9 @@
 //! is one-way, and a caller showing a market open in local exchange time needs
 //! what the venue sent. Holidays are calendar days, so [`chrono::NaiveDate`].
 
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate};
+use std::fmt;
+
+use chrono::{DateTime, FixedOffset, Months, NaiveDate};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -16,15 +18,91 @@ use crate::api::query::QueryBuilder;
 use crate::types::wire::wire_enum;
 
 wire_enum! {
-    /// Which set of instruments a session covers.
+    /// Which set of instruments a session covers, **as the venue reports it**.
     ///
-    /// The three values the venue enumerates for `instrument-collections`.
-    /// Modelled as a type rather than passed around as a bare string, because
-    /// eleven endpoints take one and a typo in any of them is a 404.
+    /// A response value, so it keeps the `Unknown` arm: `Items<T>` drops a row
+    /// it cannot decode, and a collection the venue adds later would make
+    /// sessions disappear rather than arrive with an unfamiliar name.
+    ///
+    /// It is deliberately *not* what the request types take. Tolerance on the
+    /// way out would let a typo through to a 404, and the published contract
+    /// closes every one of these parameters — see [`SessionCollection`] and
+    /// [`FuturesExchange`].
     InstrumentCollection {
         Cfe => "CFE",
         Cme => "CME",
         Equity => "Equity",
+    }
+}
+
+/// A collection to **ask** about, closed to what the contract admits.
+///
+/// `instrument-collections[]` on `GET /market-time/sessions/current` enumerates
+/// exactly these three. A tolerant value here would be a typo travelling to a
+/// 404, which is the failure the type exists to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SessionCollection {
+    /// Cboe Futures Exchange.
+    Cfe,
+    /// CME Group.
+    Cme,
+    /// Equities.
+    Equity,
+}
+
+impl SessionCollection {
+    /// The spelling the venue expects.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            SessionCollection::Cfe => "CFE",
+            SessionCollection::Cme => "CME",
+            SessionCollection::Equity => "Equity",
+        }
+    }
+}
+
+impl fmt::Display for SessionCollection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_wire())
+    }
+}
+
+impl From<FuturesExchange> for SessionCollection {
+    fn from(exchange: FuturesExchange) -> Self {
+        match exchange {
+            FuturesExchange::Cfe => SessionCollection::Cfe,
+            FuturesExchange::Cme => SessionCollection::Cme,
+        }
+    }
+}
+
+/// A futures exchange, which is the subset the futures routes admit.
+///
+/// The four `/market-time/futures/…/{instrument_collection}` operations
+/// document their path parameter as "one of: CFE, CME". Passing `Equity` to one
+/// of them was representable and produced a 404 after an authenticated round
+/// trip; there is no value of this type that can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FuturesExchange {
+    /// Cboe Futures Exchange.
+    Cfe,
+    /// CME Group.
+    Cme,
+}
+
+impl FuturesExchange {
+    /// The spelling the venue expects.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            FuturesExchange::Cfe => "CFE",
+            FuturesExchange::Cme => "CME",
+        }
+    }
+}
+
+impl fmt::Display for FuturesExchange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_wire())
     }
 }
 
@@ -33,7 +111,13 @@ wire_enum! {
 /// Nine months, per the venue. Enforced locally so an over-long request fails
 /// in the caller's process rather than after a round trip — and the error names
 /// the limit, so the refusal is obviously this crate's rule.
-pub const MAX_SESSION_RANGE_DAYS: i64 = 9 * 31;
+///
+/// **Calendar months**, counted from the start of the range rather than
+/// approximated in days. `9 * 31` accepted January 1 to October 5, which is
+/// longer than nine months by any reading, and rejected ranges the venue would
+/// have served. Nine months from a day is what
+/// [`chrono::Months`] says it is.
+pub const MAX_SESSION_RANGE_MONTHS: u32 = 9;
 
 /// One trading session's boundaries.
 ///
@@ -157,7 +241,7 @@ impl MarketCalendar {
 pub struct SessionRange {
     to_date: NaiveDate,
     from_date: Option<NaiveDate>,
-    instrument_collection: Option<InstrumentCollection>,
+    instrument_collection: Option<SessionCollection>,
 }
 
 impl SessionRange {
@@ -181,7 +265,7 @@ impl SessionRange {
 
     /// Restricts to one instrument collection.
     #[must_use]
-    pub fn with_instrument_collection(mut self, collection: InstrumentCollection) -> Self {
+    pub fn with_instrument_collection(mut self, collection: SessionCollection) -> Self {
         self.instrument_collection = Some(collection);
         self
     }
@@ -210,10 +294,22 @@ impl SessionRange {
             )));
         }
 
-        if self.to_date - from_date > Duration::days(MAX_SESSION_RANGE_DAYS) {
+        // `checked_add_months` clamps to the last day of the target month, so
+        // the boundary from January 31 is October 31 rather than a day that
+        // does not exist. `None` means the date is at the end of chrono's
+        // range, where nothing can be nine months later.
+        let limit = from_date
+            .checked_add_months(Months::new(MAX_SESSION_RANGE_MONTHS))
+            .ok_or_else(|| {
+                crate::TastyTradeError::Precondition(format!(
+                    "{from_date} is too far in the future to add nine months to"
+                ))
+            })?;
+        if self.to_date > limit {
             return Err(crate::TastyTradeError::Precondition(format!(
-                "the venue answers at most nine months of sessions, and {from_date} to {} \
-                 is longer; split it into shorter ranges",
+                "the venue answers at most {MAX_SESSION_RANGE_MONTHS} months of sessions, \
+                 so from {from_date} the last day it will serve is {limit} and this range \
+                 ends {}; split it into shorter ranges",
                 self.to_date
             )));
         }
@@ -229,7 +325,7 @@ impl SessionRange {
             "instrument-collection",
             self.instrument_collection
                 .as_ref()
-                .map(InstrumentCollection::as_wire),
+                .map(SessionCollection::as_wire),
         );
         query
     }
@@ -241,8 +337,8 @@ impl SessionRange {
 /// others separately: an empty selection is unrepresentable rather than a
 /// runtime `400`.
 pub(crate) fn collections_query(
-    first: &InstrumentCollection,
-    rest: &[InstrumentCollection],
+    first: &SessionCollection,
+    rest: &[SessionCollection],
 ) -> QueryBuilder {
     let mut query = QueryBuilder::new();
     query.push_each(
@@ -381,7 +477,7 @@ mod tests {
         assert_eq!(open.to_query().pairs(), vec![("to-date", "2026-08-31")]);
 
         let closed = SessionRange::between(day(2026, 8, 1), day(2026, 8, 31))
-            .with_instrument_collection(InstrumentCollection::Cme);
+            .with_instrument_collection(SessionCollection::Cme);
         assert_eq!(
             closed.to_query().pairs(),
             vec![
@@ -400,7 +496,7 @@ mod tests {
 
         assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
         assert!(!error.is_retryable());
-        assert!(format!("{error}").contains("nine months"), "{error}");
+        assert!(format!("{error}").contains("months of sessions"), "{error}");
 
         assert!(
             SessionRange::between(day(2026, 1, 1), day(2026, 9, 1))
@@ -431,8 +527,8 @@ mod tests {
     #[test]
     fn collections_are_repeated_keys() {
         let query = collections_query(
-            &InstrumentCollection::Equity,
-            &[InstrumentCollection::Cme, InstrumentCollection::Cfe],
+            &SessionCollection::Equity,
+            &[SessionCollection::Cme, SessionCollection::Cfe],
         );
 
         assert_eq!(
@@ -445,11 +541,59 @@ mod tests {
         );
     }
 
-    /// A collection the venue adds later still round-trips.
+    /// Tolerance on the way in, a closed set on the way out.
+    ///
+    /// A collection the venue adds later still decodes, because `Items<T>`
+    /// drops what it cannot parse and a session that vanishes is worse than
+    /// one with an unfamiliar name. It cannot be *asked for*: the request
+    /// types enumerate what the contract admits, so a typo is a compile error
+    /// rather than a 404 after an authenticated round trip.
     #[test]
-    fn an_unknown_collection_is_still_expressible() {
-        let query = collections_query(&InstrumentCollection::from("SMALLS".to_string()), &[]);
+    fn an_unmodelled_collection_decodes_but_cannot_be_requested() {
+        let session: MarketSession = serde_json::from_str(r#"{"instrument-collection": "SMALLS"}"#)
+            .expect("a session must not vanish because of its collection");
+        assert_eq!(
+            session.instrument_collection,
+            Some(InstrumentCollection::Unknown("SMALLS".to_string()))
+        );
 
-        assert_eq!(query.pairs(), vec![("instrument-collections[]", "SMALLS")]);
+        // And the request side spells only what the contract admits.
+        assert_eq!(SessionCollection::Equity.as_wire(), "Equity");
+        assert_eq!(FuturesExchange::Cfe.as_wire(), "CFE");
+        assert_eq!(
+            SessionCollection::from(FuturesExchange::Cme),
+            SessionCollection::Cme
+        );
+    }
+
+    /// Nine calendar months, not two hundred and seventy-nine days.
+    ///
+    /// `9 * 31` accepted January 1 to October 5, which is longer than nine
+    /// months by any reading, and refused ranges the venue would have served.
+    #[test]
+    fn the_session_range_limit_is_nine_calendar_months() {
+        // Exactly nine months is served.
+        SessionRange::between(day(2026, 1, 1), day(2026, 10, 1))
+            .validate()
+            .expect("nine months to the day");
+
+        // One day past it is not, and the old day count accepted it.
+        let error = SessionRange::between(day(2026, 1, 1), day(2026, 10, 2))
+            .validate()
+            .expect_err("nine months and a day");
+        assert!(matches!(error, crate::TastyTradeError::Precondition(_)));
+        assert!(format!("{error}").contains("2026-10-01"), "{error}");
+
+        // Month lengths do not shift the boundary: adding nine months to the
+        // 31st clamps to the last day of the target month rather than
+        // overflowing into the next one.
+        SessionRange::between(day(2026, 1, 31), day(2026, 10, 31))
+            .validate()
+            .expect("January 31 to October 31 is nine months");
+        assert!(
+            SessionRange::between(day(2026, 1, 31), day(2026, 11, 1))
+                .validate()
+                .is_err()
+        );
     }
 }

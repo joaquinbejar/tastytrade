@@ -20,13 +20,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let tasty = TastyTrade::connect(&config).await?;
 
-    for collection in [InstrumentCollection::Cme, InstrumentCollection::Cfe] {
-        match tasty.futures_holidays(&collection).await {
-            Ok(calendar) => info!(
-                "{}: {} holiday(s), {} half day(s)",
+    for collection in [FuturesExchange::Cme, FuturesExchange::Cfe] {
+        match tasty.futures_holidays(collection).await {
+            Ok(calendars) => info!(
+                "{}: {} calendar(s), {} holiday(s), {} half day(s)",
                 collection.as_wire(),
-                calendar.market_holidays.len(),
-                calendar.market_half_days.len()
+                calendars.len(),
+                calendars
+                    .iter()
+                    .map(|calendar| calendar.market_holidays.len())
+                    .sum::<usize>(),
+                calendars
+                    .iter()
+                    .map(|calendar| calendar.market_half_days.len())
+                    .sum::<usize>()
             ),
             Err(error) => info!("{}: {error}", collection.as_wire()),
         }
