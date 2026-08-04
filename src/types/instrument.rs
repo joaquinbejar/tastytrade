@@ -1,6 +1,6 @@
 use super::order::Symbol;
 use crate::api::quote_streaming::DxFeedSymbol;
-use crate::types::wire::{ExerciseStyle, ExpirationType, SettlementType};
+use crate::types::wire::{ExerciseStyle, ExpirationType, ProductType, SettlementType};
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use rust_decimal::Decimal;
@@ -572,8 +572,8 @@ pub struct FutureProduct {
     pub exchange: String,
     /// The legacy exchange code of the future product.
     pub legacy_exchange_code: Option<String>,
-    /// The type of the future product.
-    pub product_type: String,
+    /// Whether the product settles in cash or in the underlying.
+    pub product_type: ProductType,
     /// A list of strings representing the listed months for the future product.
     pub listed_months: Vec<String>,
     /// A list of strings representing the active months for the future product.
@@ -748,8 +748,14 @@ pub struct FutureOptionProduct {
     pub display_factor: Decimal,
     /// The exchange where the future option is traded.
     pub exchange: String,
-    /// The type of the product (e.g., "future option").
-    pub product_type: String,
+    /// Whether the product settles in cash or in the underlying.
+    ///
+    /// The same set as [`FutureProduct::product_type`], measured the same way.
+    /// The example this doc used to give — `"future option"` — appears in no
+    /// record: the census read 305 occurrences of the field across the future
+    /// products listing, nested option products included, and every one was
+    /// `Financial` or `Physical`.
+    pub product_type: ProductType,
     /// The type of expiration for the future option.
     pub expiration_type: ExpirationType,
     /// The number of days for settlement delay.

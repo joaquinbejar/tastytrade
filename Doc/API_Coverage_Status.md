@@ -353,6 +353,55 @@ nothing else — but it is still production, so it is a deliberate act and the
 crate makes it one: anything other than the literal `false` resolves to
 certification.
 
+### What a certification grant can actually read — [#125](https://github.com/joaquinbejar/tastytrade/issues/125)
+
+Whether a fixture can be captured is a property of the **grant**, not of this
+crate, and it differs per route. Measured on 2026-08-04 against certification
+with `examples/instruments/src/bin/probe_entitlements.rs`, read-only:
+
+| Answer | Routes |
+|--------|--------|
+| **200** — capturable today | `/customers/me`, `/customers/me/accounts`, `/instruments/equities`, `/instruments/cryptocurrencies`, `/instruments/warrants`, `/instruments/futures`, `/instruments/future-products`, `/instruments/quantity-decimal-precisions`, `/option-chains/{symbol}/nested`, `/instruments/search`, `/market-time/equities/sessions/current` |
+| **403** — routed, this grant is not entitled | `/instruments/equity-options` |
+| **502** — certification does not run the service | `/symbols/search/{symbol}`, `/market-metrics`, `/market-data/by-type`, `/quote-alerts`, `/watchlists`, `/pairs-watchlists` |
+
+Eleven of eighteen. The `502` group is the one that matters for planning: those
+are not entitlement problems and no scope change fixes them — certification does
+not serve those services at all, which the venue's own sandbox page already says
+about Market Metrics. Their fixtures cannot come from certification.
+
+#### The value sets that were still guesses
+
+Four fields were `String` because no captured payload showed their values.
+Measured with `examples/instruments/src/bin/probe_enum_values.rs`:
+
+| Field | Records read | Values observed | Outcome |
+|-------|-------------:|-----------------|---------|
+| `product-type` | 83 products, 305 occurrences | `Financial` (82), `Physical` (223) | **narrowed** to `ProductType` |
+| `margin-or-cash` | 1 account | `Margin` | still `String` — one record is not a set |
+| `option-chain-type` | 1 chain | `Standard` | still `String` — one observation is not a set |
+| `option-type` | 1 chain | *field absent* | still `String` — carried by the equity options listing, which is `403` |
+
+`FutureOptionProduct::product_type` documented its example value as
+`"future option"`. No record carries that: all 305 occurrences across the
+listing, nested option products included, are `Financial` or `Physical`. The
+doc was wrong and is corrected.
+
+#### Enums that were derived, now confirmed against real payloads
+
+This is what #125 is for. These were tolerant enums whose variants came from
+fixtures written from the same document the types came from — agreeing with
+themselves. The census read them from the venue:
+
+| Enum | Observed |
+|------|----------|
+| `Lendability` | `Easy To Borrow` (235), `Preborrow` (765) over 1,000 equities. `Locate Required` unobserved. |
+| `ExpirationType` | `Regular` (13), `Weekly` (17), `Quarterly` (4) over 34 expirations. |
+| `SettlementType` | `PM` (34). `AM` unobserved. |
+
+No contradiction in any of them. Unobserved variants are not wrong — they are
+unobserved, and the `Unknown` arm is why that costs nothing either way.
+
 ## Margin Requirements
 
 | Endpoint | Method | Status |

@@ -767,6 +767,23 @@ macro_rules! redacted_account_render {
 pub(crate) use redacted_account_render;
 
 wire_enum! {
+    /// Whether a futures product settles in cash or in the underlying.
+    ///
+    /// Observed on 2026-08-04 against certification: 83 future products carried
+    /// 305 occurrences of the field between them and every one was `Financial`
+    /// or `Physical`. That is a measured set rather than a guessed one, which
+    /// is what kept this a `String` until now — see
+    /// [#125](https://github.com/joaquinbejar/tastytrade/issues/125).
+    ///
+    /// It keeps the `Unknown` arm regardless: 83 products is a good sample and
+    /// not a guarantee, and `Items<T>` drops a row it cannot decode.
+    ProductType {
+        Financial => "Financial",
+        Physical => "Physical",
+    }
+}
+
+wire_enum! {
     /// How an option series expires.
     ///
     /// Observed values come from a captured futures option chain.

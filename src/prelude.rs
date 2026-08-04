@@ -146,7 +146,9 @@ pub use crate::types::search::{
 };
 
 // Re-export forward-compatible wire enums
-pub use crate::types::wire::{ExerciseStyle, ExpirationType, Lendability, SettlementType};
+pub use crate::types::wire::{
+    ExerciseStyle, ExpirationType, Lendability, ProductType, SettlementType,
+};
 
 // Re-export DxFeed types
 pub use crate::types::dxfeed::*;
