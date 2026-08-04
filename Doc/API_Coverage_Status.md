@@ -228,8 +228,8 @@ claim they do not.
 
 | Endpoint | State | Determined |
 |----------|-------|------------|
-| `GET /instruments/equity-deliverables` | ❔ not in the current public API document | 2026-08-03 |
-| `GET /instruments/future-spreads` | ❔ not in the current public API document | 2026-08-03 |
+| `GET /instruments/equity-deliverables` | ❔ not in any current public API document | 2026-08-04 |
+| `GET /instruments/future-spreads` | ❔ not in any current public API document | 2026-08-04 |
 
 **Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ not in
 the current public API document, so there is no contract to implement against.
@@ -246,6 +246,34 @@ The Instruments OpenAPI document currently served from
 <https://developer.tastytrade.com/open-api-spec/instruments/> is
 `instruments-api-swagger_20250715.json` — the **same date** — and contains 24
 paths, neither of them among them.
+
+**Nor is any other area.** On 2026-08-04 the sweep was widened from Instruments
+to every OpenAPI document the developer site publishes — sixteen areas, **85
+paths** — on the chance that the routes had moved rather than gone. They are in
+none of them:
+
+| Area | Paths | Area | Paths |
+|------|------:|------|------:|
+| `account-status` | 1 | `market-sessions` | 11 |
+| `accounts-and-customers` | 4 | `net-liquidating-value-history` | 1 |
+| `backtesting` | 6 | `orders` | 12 |
+| `balances-and-positions` | 4 | `quote-alerts` | 2 |
+| `instruments` | 24 | `risk-parameters` | 4 |
+| `margin-requirements` | 2 | `symbol-search` | 1 |
+| `market-data` | 1 | `transactions` | 3 |
+| `market-metrics` | 3 | `watchlists` | 6 |
+
+Reproducible without credentials: each page embeds its document in a
+`__NEXT_DATA__` script tag under `props.pageProps.specData[0].spec`, so fetching
+the sixteen slugs above from `https://developer.tastytrade.com/open-api-spec/`
+and grepping the `paths` keys re-runs this in about a minute.
+
+**And no later release note touches them.** The notes document carries five
+dated entries — `20240501`, `20250715`, `20250813`, `20260211`, `20260629`.
+Three were published *after* the one that names these routes, and none of the
+three mentions instruments, deliverables or spreads at all. So the venue has
+neither retired them in writing nor mentioned them again: the 20250715 note
+remains the only place either route appears in any published material.
 
 #### Why that is not enough to declare them retired
 
@@ -274,9 +302,24 @@ TASTYTRADE_USE_DEMO=true cargo run -p instruments --bin probe_undocumented
 ```
 
 It has **not been run**: this checkout has no OAuth application or grant, the
-same blocker as [#96](https://github.com/joaquinbejar/tastytrade/issues/96). A
-`404` retires the routes; anything else means they exist and the reply itself
-is the contract to model. Record the outcome here with its date either way.
+same blocker as [#96](https://github.com/joaquinbejar/tastytrade/issues/96) and
+[#125](https://github.com/joaquinbejar/tastytrade/issues/125). A `404` retires
+the routes; anything else means they exist and the reply itself is the contract
+to model. Record the outcome here with its date either way.
+
+Run it **twice**, once per host, because the two answers are not
+interchangeable — a route certification does not serve is not a route
+production has retired:
+
+```shell
+TASTYTRADE_USE_DEMO=true  cargo run -p instruments --bin probe_undocumented
+TASTYTRADE_USE_DEMO=false cargo run -p instruments --bin probe_undocumented
+```
+
+The second line reads production. It is read-only — the probe issues `GET` and
+nothing else — but it is still production, so it is a deliberate act and the
+crate makes it one: anything other than the literal `false` resolves to
+certification.
 
 ## Margin Requirements
 

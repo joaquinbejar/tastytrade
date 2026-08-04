@@ -7,11 +7,17 @@
 //! not proof the route is gone — see `Doc/API_Coverage_Status.md` for why both
 //! statements are true here at once.
 //!
-//! Settling it needs the venue, so this is the reproducible half: one read-only
-//! GET per route, reporting what came back.
+//! Settling it needs the venue, so this is the reproducible half: read-only
+//! GETs per route, reporting what came back and whether the pagination the
+//! release note promises is actually honoured.
+//!
+//! Run it against **both** hosts before concluding anything. A route
+//! certification does not serve is not a route production has retired, and the
+//! coverage table has to say which question was answered.
 //!
 //! ```shell
-//! TASTYTRADE_USE_DEMO=true cargo run -p instruments --bin probe_undocumented
+//! TASTYTRADE_USE_DEMO=true  cargo run -p instruments --bin probe_undocumented
+//! TASTYTRADE_USE_DEMO=false cargo run -p instruments --bin probe_undocumented
 //! ```
 //!
 //! Prints **shape, never content**: the status, which envelope decoded, and
@@ -62,6 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
 
+    println!("Run this against the other host too before concluding: a route");
+    println!("certification does not serve is not a route production retired.");
     println!("Record the result in Doc/API_Coverage_Status.md with today's date,");
     println!("and only then design types for anything that answered.");
 
@@ -84,9 +92,10 @@ async fn probe(tasty: &TastyTrade, path: &str) -> String {
         .await
     {
         return format!(
-            "200, paginated: {} item(s) on this page of {} total; first item fields: {}",
+            "200, paginated: {} item(s) on this page of {} total; {}; first item fields: {}",
             page.items.len(),
             page.pagination.total_items,
+            paging_honoured(tasty, path).await,
             field_names(page.items.first())
         );
     }
@@ -115,7 +124,41 @@ async fn probe(tasty: &TastyTrade, path: &str) -> String {
             ),
             None => "no response reached the venue".to_string(),
         },
+        // A local refusal never reached the venue, so it says nothing about
+        // the route — reporting it as an answer would be the probe lying.
+        Err(TastyTradeError::Precondition(why)) => {
+            format!("refused locally, nothing was sent: {why}")
+        }
         Err(other) => format!("failed before a status was known: {other}"),
+    }
+}
+
+/// Whether the route honours the page parameters, or merely tolerates them.
+///
+/// Pagination is the **only** thing the release note claims about these two
+/// routes, so it is the one part of the contract there is anything to check.
+/// Accepting `page-offset` without acting on it is a real outcome and a
+/// different one from supporting it: a caller that pages through a listing
+/// which ignores the offset reads page one forever.
+async fn paging_honoured(tasty: &TastyTrade, path: &str) -> String {
+    let second = [("per-page", "1"), ("page-offset", "1")];
+
+    match tasty
+        .get_with_query::<Items<Value>, Paginated<Value>, _>(path, &second)
+        .await
+    {
+        Ok(page) if page.pagination.page_offset == 1 => {
+            "page-offset honoured (asked for page 1, got page 1)".to_string()
+        }
+        Ok(page) => format!(
+            "page-offset NOT honoured (asked for page 1, got page {})",
+            page.pagination.page_offset
+        ),
+        Err(TastyTradeError::Request { context, .. }) => match context.status {
+            Some(status) => format!("page-offset rejected with {status}"),
+            None => "page-offset: no response".to_string(),
+        },
+        Err(other) => format!("page-offset: {other}"),
     }
 }
 
