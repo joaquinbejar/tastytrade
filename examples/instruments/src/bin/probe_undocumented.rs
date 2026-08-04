@@ -166,24 +166,52 @@ async fn probe(tasty: &TastyTrade, path: &str) -> String {
 /// different one from supporting it: a caller that pages through a listing
 /// which ignores the offset reads page one forever.
 async fn paging_honoured(tasty: &TastyTrade, path: &str) -> String {
+    let first = [("per-page", "1"), ("page-offset", "0")];
     let second = [("per-page", "1"), ("page-offset", "1")];
 
-    match tasty
+    let one = tasty
+        .get_with_query::<Items<Value>, Paginated<Value>, _>(path, &first)
+        .await;
+    let two = tasty
         .get_with_query::<Items<Value>, Paginated<Value>, _>(path, &second)
-        .await
-    {
-        Ok(page) if page.pagination.page_offset == 1 => {
-            "page-offset honoured (asked for page 1, got page 1)".to_string()
+        .await;
+
+    let (one, two) = match (one, two) {
+        (Ok(one), Ok(two)) => (one, two),
+        (_, Err(TastyTradeError::Request { context, .. })) => {
+            return match context.status {
+                Some(status) => format!("page-offset rejected with {status}"),
+                None => "page-offset: no response".to_string(),
+            };
         }
-        Ok(page) => format!(
-            "page-offset NOT honoured (asked for page 1, got page {})",
-            page.pagination.page_offset
-        ),
-        Err(TastyTradeError::Request { context, .. }) => match context.status {
-            Some(status) => format!("page-offset rejected with {status}"),
-            None => "page-offset: no response".to_string(),
-        },
-        Err(other) => format!("page-offset: {other}"),
+        (Err(error), _) | (_, Err(error)) => return format!("page-offset: {error}"),
+    };
+
+    // Echoing the request back is not evidence. A handler can populate
+    // `page-offset` from what it was asked for and still serve page zero,
+    // which is exactly the tolerated-but-ignored behaviour this is looking
+    // for, so the echo is checked and then not believed on its own.
+    if two.pagination.page_offset != 1 {
+        return format!(
+            "page-offset NOT honoured (asked for offset 1, the response says offset {})",
+            two.pagination.page_offset
+        );
+    }
+
+    if two.pagination.total_items <= 1 {
+        return "page-offset: inconclusive, the listing has at most one item".to_string();
+    }
+
+    // Identity, never content: whether the two pages are the same record, not
+    // what either record says.
+    match (one.items.first(), two.items.first()) {
+        (Some(a), Some(b)) if a == b => {
+            "page-offset NOT honoured (offset 1 returned the same record as offset 0)".to_string()
+        }
+        (Some(_), Some(_)) => {
+            "page-offset honoured (offset 1 returned a different record from offset 0)".to_string()
+        }
+        _ => "page-offset: inconclusive, a page came back empty".to_string(),
     }
 }
 

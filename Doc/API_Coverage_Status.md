@@ -231,9 +231,11 @@ claim they do not.
 | `GET /instruments/equity-deliverables` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
 | `GET /instruments/future-spreads` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
 
-**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ not in
-the current public API document, so there is no contract to implement against.
-The third state is the point of this section: it is not a backlog item.
+**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ routed
+by the venue but described in no current public API document, so there is no
+contract to implement against. The third state is the point of this section: it
+is not a backlog item, and it is not an absence either — see the probe result
+below for what distinguishes the two.
 
 #### The evidence
 
@@ -300,7 +302,7 @@ The probe ran. Read-only `GET`s against `api.cert.tastyworks.com`:
 | `/instruments/equity-deliverables` | **403** | under investigation |
 | `/instruments/future-spreads` | **403** | under investigation |
 | `/instruments/equity-options` | **403** | control — absent from the spec, called by this crate |
-| `/instruments/equities` | **200** | positive control — 24,692 items, `page-offset` honoured |
+| `/instruments/equities` | **200** | positive control — 24,692 items; offset 1 returns a different record from offset 0 |
 
 **Both routes exist.** The negative control is what makes that readable: this
 deployment answers `404` for a path it does not route, and neither route under
