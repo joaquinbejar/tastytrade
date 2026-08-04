@@ -1230,9 +1230,10 @@ impl TastyTrade {
                     account,
                     // The single-account endpoint answers with the account
                     // itself rather than the listing's authority decorator, so
-                    // there is no authority level to report. Saying so is
-                    // better than inventing "owner".
-                    authority_level: String::new(),
+                    // there is no authority level to report. `None` says that;
+                    // the empty string this used to synthesise said it in a
+                    // way only this function knew how to read back.
+                    authority_level: None,
                 },
                 tasty: self,
             })),

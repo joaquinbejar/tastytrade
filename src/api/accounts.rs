@@ -135,7 +135,14 @@ pub struct AccountInner {
     /// The account itself.
     pub account: AccountDetails,
     /// What this session may do with it, e.g. `owner`.
-    pub authority_level: String,
+    ///
+    /// `None` when the account came from `GET /customers/me/accounts/{number}`,
+    /// which answers with the account itself rather than the listing's
+    /// authority decorator. A field the venue did not send is unknown, never
+    /// empty — the same rule `is-test-drive` taught in #5, where a flag the
+    /// broker omitted must not read as `false`.
+    #[serde(default)]
+    pub authority_level: Option<String>,
 }
 
 /// Evidence that a specific order was dry-run against a specific account.
@@ -556,14 +563,15 @@ impl Account<'_> {
     /// `None` when the account came from the single-account endpoint, which
     /// answers with the account itself rather than the listing's authority
     /// decorator, so there is no level to report. Not reported is not the same
-    /// as none, and returning `""` made the two indistinguishable — the caller
-    /// would have had to know which call produced the account to read the
-    /// value correctly.
+    /// as none, and the caller should not have to know which call produced the
+    /// account in order to read the value correctly.
     ///
-    /// The listing always sends the field, so an empty string can only come
-    /// from the endpoint that does not send it at all.
+    /// This reports what was decoded. It no longer maps an empty string to
+    /// `None`, because nothing synthesises one any more: a level the venue sent
+    /// as `""` would be a level the venue sent, and reading it as absent would
+    /// be this crate deciding otherwise.
     pub fn authority_level(&self) -> Option<&str> {
-        Some(self.inner.authority_level.as_str()).filter(|level| !level.is_empty())
+        self.inner.authority_level.as_deref()
     }
 
     /// `/accounts/{this account}{suffix}`, with the number percent-encoded.
@@ -1478,7 +1486,38 @@ mod tests {
 
         assert_eq!(items.items.len(), 1, "the sandbox account must survive");
         assert_eq!(items.items[0].account.account_number.0, "5WX12345");
-        assert_eq!(items.items[0].authority_level, "owner");
+        assert_eq!(items.items[0].authority_level.as_deref(), Some("owner"));
+    }
+
+    /// The listing sends the decorator and the single fetch does not, and the
+    /// difference survives decoding rather than being flattened.
+    ///
+    /// Both values are **decoded**, not constructed: a test that built an
+    /// `AccountInner` by hand would assert what this crate writes rather than
+    /// what it reads, and the reading is where the empty string came from.
+    #[test]
+    fn an_absent_authority_level_decodes_as_unknown_rather_than_empty() {
+        let listed: AccountInner = serde_json::from_str(&format!(
+            r#"{{"account":{CERT_ACCOUNT},"authority-level":"owner"}}"#
+        ))
+        .expect("the listing shape decodes");
+        assert_eq!(listed.authority_level.as_deref(), Some("owner"));
+
+        // The single-account endpoint answers with the account itself, so the
+        // key is not there at all. It used to require a value, which is why
+        // the call site synthesised one.
+        let alone: AccountInner = serde_json::from_str(&format!(r#"{{"account":{CERT_ACCOUNT}}}"#))
+            .expect("an account with no decorator must still decode");
+        assert_eq!(alone.authority_level, None);
+
+        // And a level the venue really did send as empty stays empty. That is
+        // a value it sent; reading it as absent would be this crate deciding
+        // otherwise, which is the mistake in the other direction.
+        let blank: AccountInner = serde_json::from_str(&format!(
+            r#"{{"account":{CERT_ACCOUNT},"authority-level":""}}"#
+        ))
+        .expect("an empty level decodes");
+        assert_eq!(blank.authority_level.as_deref(), Some(""));
     }
 }
 
