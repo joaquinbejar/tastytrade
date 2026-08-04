@@ -572,7 +572,10 @@ pub struct FutureProduct {
     pub exchange: String,
     /// The legacy exchange code of the future product.
     pub legacy_exchange_code: Option<String>,
-    /// Whether the product settles in cash or in the underlying.
+    /// The venue's `product-type` classification, `Financial` or `Physical`.
+    ///
+    /// Not settlement: [`FutureProduct::cash_settled`] is that, and is its own
+    /// field.
     pub product_type: ProductType,
     /// A list of strings representing the listed months for the future product.
     pub listed_months: Vec<String>,
@@ -748,9 +751,10 @@ pub struct FutureOptionProduct {
     pub display_factor: Decimal,
     /// The exchange where the future option is traded.
     pub exchange: String,
-    /// Whether the product settles in cash or in the underlying.
+    /// The venue's `product-type` classification, `Financial` or `Physical`.
     ///
-    /// The same set as [`FutureProduct::product_type`], measured the same way.
+    /// The same set as [`FutureProduct::product_type`], measured the same way,
+    /// and not settlement either — this struct has its own `cash_settled`.
     /// The example this doc used to give — `"future option"` — appears in no
     /// record: the census read 305 occurrences of the field across the future
     /// products listing, nested option products included, and every one was

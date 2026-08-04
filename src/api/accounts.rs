@@ -107,7 +107,8 @@ pub struct AccountDetails {
     /// caller's point of view, which is what `false` says.
     #[serde(default)]
     pub is_test_drive: bool,
-    /// Whether the account is margin or cash.    ///
+    /// Whether the account is margin or cash.
+    ///
     /// Still `String`, now for a measured reason rather than an assumed one.
     /// The census on 2026-08-04 (certification) could read exactly **one**
     /// account, and one record is not a value set. See
