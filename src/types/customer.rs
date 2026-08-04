@@ -71,6 +71,50 @@ fn populated(value: &impl Serialize) -> usize {
         .unwrap_or(0)
 }
 
+/// One account type this customer is permitted to open.
+///
+/// **Snake case, alone in this module.** Every other object the customer
+/// resource carries is kebab-case; this one and its margin types are not, which
+/// is why they carry explicit renames instead of a container rule. Observed in
+/// the 2026-08-04 capture — the field was typed `String` before that, which
+/// made the whole customer resource fail to decode against the real venue.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PermittedAccountType {
+    /// The venue's name for the account type.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A longer description of it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Whether the type admits more than one owner.
+    #[serde(default)]
+    pub has_multiple_owners: Option<bool>,
+    /// Whether it is offered publicly.
+    #[serde(default)]
+    pub is_publicly_available: Option<bool>,
+    /// Whether it carries a tax advantage.
+    #[serde(default)]
+    pub is_tax_advantaged: Option<bool>,
+    /// The margin arrangements it supports.
+    #[serde(default)]
+    pub margin_types: Vec<PermittedMarginType>,
+}
+
+redacted_debug!(PermittedAccountType);
+
+/// One margin arrangement a [`PermittedAccountType`] supports.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PermittedMarginType {
+    /// The venue's name for it.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Whether it is a margin arrangement rather than a cash one.
+    #[serde(default)]
+    pub is_margin: Option<bool>,
+}
+
+redacted_debug!(PermittedMarginType);
+
 /// A postal address.
 ///
 /// Every field is `Option<T>`: the venue sends what it holds, and a field it
@@ -86,10 +130,10 @@ pub struct CustomerAddress {
     pub country: Option<String>,
     /// Is domestic.
     #[serde(default)]
-    pub is_domestic: Option<String>,
+    pub is_domestic: Option<bool>,
     /// Is foreign.
     #[serde(default)]
-    pub is_foreign: Option<String>,
+    pub is_foreign: Option<bool>,
     /// Postal code.
     #[serde(default)]
     pub postal_code: Option<String>,
@@ -287,7 +331,7 @@ pub struct EntityOfficer {
     pub home_phone_number: Option<String>,
     /// Is foreign.
     #[serde(default)]
-    pub is_foreign: Option<String>,
+    pub is_foreign: Option<bool>,
     /// Job title.
     #[serde(default)]
     pub job_title: Option<String>,
@@ -431,7 +475,7 @@ pub struct CustomerEntity {
     pub has_foreign_institution_affiliation: Option<String>,
     /// Is domestic.
     #[serde(default)]
-    pub is_domestic: Option<String>,
+    pub is_domestic: Option<bool>,
     /// Is hedge fund.
     #[serde(default)]
     pub is_hedge_fund: Option<String>,
@@ -502,7 +546,7 @@ pub struct Customer {
     pub mailing_address: Option<CustomerAddress>,
     /// Is foreign.
     #[serde(default)]
-    pub is_foreign: Option<String>,
+    pub is_foreign: Option<bool>,
     /// Regulatory domain.
     #[serde(default)]
     pub regulatory_domain: Option<String>,
@@ -613,13 +657,13 @@ pub struct Customer {
     pub has_delayed_quotes: Option<bool>,
     /// Has pending or approved application.
     #[serde(default)]
-    pub has_pending_or_approved_application: Option<String>,
+    pub has_pending_or_approved_application: Option<bool>,
     /// Is professional.
     #[serde(default)]
     pub is_professional: Option<bool>,
     /// Permitted account types.
     #[serde(default)]
-    pub permitted_account_types: Option<String>,
+    pub permitted_account_types: Option<Vec<PermittedAccountType>>,
     /// Created at.
     #[serde(default, with = "crate::types::wire::datetime_option")]
     pub created_at: Option<DateTime<FixedOffset>>,

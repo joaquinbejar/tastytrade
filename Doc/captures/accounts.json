@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "account": {
+        "account-number": "REDACTED",
+        "account-type-name": "Individual",
+        "created-at": "2026-08-01T16:05:36.479+00:00",
+        "day-trader-status": false,
+        "investment-objective": "SPECULATION",
+        "is-closed": false,
+        "is-firm-error": false,
+        "is-firm-proprietary": false,
+        "is-foreign": false,
+        "is-futures-approved": false,
+        "margin-or-cash": "Margin",
+        "nickname": "REDACTED",
+        "opened-at": "2026-08-01T16:05:36.479+00:00",
+        "suitable-options-level": "No Restrictions"
+      },
+      "authority-level": "owner"
+    }
+  ]
+}

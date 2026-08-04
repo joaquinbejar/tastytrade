@@ -30,7 +30,7 @@ pub use crate::error::{ApiError, DxFeedError, Environment, RequestContext, Tasty
 // Re-export the customer resource. Personal data: nothing here renders itself.
 pub use crate::types::customer::{
     Customer, CustomerAddress, CustomerEntity, CustomerPerson, CustomerSuitability, EntityOfficer,
-    EntitySuitability,
+    EntitySuitability, PermittedAccountType, PermittedMarginType,
 };
 
 // Re-export account types

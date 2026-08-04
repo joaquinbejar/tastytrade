@@ -1,0 +1,92 @@
+{
+  "items": [
+    {
+      "active": true,
+      "bypass-manual-review": false,
+      "description": "Aifeex Nexus Acquisition Corporation - Class A Ordinary Shares",
+      "id": 4647481,
+      "instrument-type": "Equity",
+      "is-closing-only": false,
+      "is-etf": false,
+      "is-fraud-risk": false,
+      "is-illiquid": false,
+      "is-index": false,
+      "is-options-closing-only": false,
+      "lendability": "Preborrow",
+      "listed-market": "XNAS",
+      "market-time-instrument-collection": "Equity",
+      "overnight-trading-permitted": false,
+      "short-description": "Aifeex Nexus Acquisition Corporation - Class A Ordinary Shares",
+      "streamer-symbol": "AIFE",
+      "symbol": "AIFE",
+      "tick-sizes": [
+        {
+          "threshold": "1.0",
+          "value": "0.0001"
+        },
+        {
+          "value": "0.01"
+        }
+      ]
+    },
+    {
+      "active": true,
+      "bypass-manual-review": false,
+      "description": "Aifeex Nexus Acquisition Corporation - Right",
+      "id": 4647482,
+      "instrument-type": "Equity",
+      "is-closing-only": false,
+      "is-etf": false,
+      "is-fraud-risk": false,
+      "is-illiquid": false,
+      "is-index": false,
+      "is-options-closing-only": false,
+      "lendability": "Preborrow",
+      "listed-market": "XNAS",
+      "market-time-instrument-collection": "Equity",
+      "overnight-trading-permitted": false,
+      "short-description": "Aifeex Nexus Acquisition Corporation - Right",
+      "streamer-symbol": "AIFER",
+      "symbol": "AIFER",
+      "tick-sizes": [
+        {
+          "threshold": "1.0",
+          "value": "0.0001"
+        },
+        {
+          "value": "0.01"
+        }
+      ]
+    },
+    {
+      "active": true,
+      "bypass-manual-review": false,
+      "cusip": "33744U303",
+      "description": "First Trust Exchange-Traded Fund VIII FT Confluence BDC & Specialty Finance Income ETF",
+      "id": 5837842,
+      "instrument-type": "Equity",
+      "is-closing-only": false,
+      "is-etf": true,
+      "is-fraud-risk": false,
+      "is-illiquid": false,
+      "is-index": false,
+      "is-options-closing-only": false,
+      "lendability": "Preborrow",
+      "listed-market": "ARCX",
+      "market-time-instrument-collection": "Equity",
+      "overnight-trading-permitted": false,
+      "short-description": "First Trust Exchange-Traded Fund VIII FT Confluence BDC & Specialty Finance Income ETF",
+      "streamer-symbol": "FBDC",
+      "symbol": "FBDC",
+      "tick-sizes": [
+        {
+          "threshold": "1.0",
+          "value": "0.0001"
+        },
+        {
+          "value": "0.01"
+        }
+      ]
+    }
+  ]
+}

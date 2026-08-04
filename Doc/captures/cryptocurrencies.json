@@ -1,0 +1,283 @@
+{
+  "items": [
+    {
+      "active": true,
+      "description": "Bitcoin Cash to USD",
+      "destination-venue-symbols": [
+        {
+          "destination-venue": "ZERO_HASH_CLOB",
+          "id": 77,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": true,
+          "symbol": "BCH/USD"
+        },
+        {
+          "destination-venue": "CBOE_DIGITAL_CRYPTOCURRENCY",
+          "id": 10,
+          "max-price-precision": 2,
+          "max-quantity-precision": 6,
+          "routable": false,
+          "symbol": "BCH/USD"
+        },
+        {
+          "destination-venue": "CITADEL_CRYPTOCURRENCY",
+          "id": 11,
+          "max-price-precision": 8,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "BCH"
+        },
+        {
+          "destination-venue": "DV Chain",
+          "id": 12,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "BCHUSD"
+        },
+        {
+          "destination-venue": "Jane Street",
+          "id": 13,
+          "max-price-precision": 7,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "BCH"
+        },
+        {
+          "destination-venue": "Zero Hash",
+          "id": 14,
+          "routable": false,
+          "symbol": "BCH"
+        }
+      ],
+      "id": 4,
+      "instrument-type": "Cryptocurrency",
+      "is-closing-only": false,
+      "short-description": "Bitcoin Cash",
+      "streamer-symbol": "BCH/USD:CXTALP",
+      "symbol": "BCH/USD",
+      "tick-size": "0.01"
+    },
+    {
+      "active": true,
+      "description": "Bitcoin to USD",
+      "destination-venue-symbols": [
+        {
+          "destination-venue": "ZERO_HASH_CLOB",
+          "id": 78,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": true,
+          "symbol": "BTC/USD"
+        },
+        {
+          "destination-venue": "CBOE_DIGITAL_CRYPTOCURRENCY",
+          "id": 15,
+          "max-price-precision": 1,
+          "max-quantity-precision": 6,
+          "routable": false,
+          "symbol": "BTC/USD"
+        },
+        {
+          "destination-venue": "CITADEL_CRYPTOCURRENCY",
+          "id": 16,
+          "max-price-precision": 8,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "BTC"
+        },
+        {
+          "destination-venue": "DV Chain",
+          "id": 17,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "BTCUSD"
+        },
+        {
+          "destination-venue": "Jane Street",
+          "id": 18,
+          "max-price-precision": 7,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "XBT"
+        },
+        {
+          "destination-venue": "Zero Hash",
+          "id": 19,
+          "routable": false,
+          "symbol": "BTC"
+        }
+      ],
+      "id": 5,
+      "instrument-type": "Cryptocurrency",
+      "is-closing-only": false,
+      "short-description": "Bitcoin",
+      "streamer-symbol": "BTC/USD:CXTALP",
+      "symbol": "BTC/USD",
+      "tick-size": "0.01"
+    },
+    {
+      "active": true,
+      "description": "Ethereum to USD",
+      "destination-venue-symbols": [
+        {
+          "destination-venue": "ZERO_HASH_CLOB",
+          "id": 80,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": true,
+          "symbol": "ETH/USD"
+        },
+        {
+          "destination-venue": "CBOE_DIGITAL_CRYPTOCURRENCY",
+          "id": 35,
+          "max-price-precision": 2,
+          "max-quantity-precision": 6,
+          "routable": false,
+          "symbol": "ETH/USD"
+        },
+        {
+          "destination-venue": "CITADEL_CRYPTOCURRENCY",
+          "id": 36,
+          "max-price-precision": 8,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "ETH"
+        },
+        {
+          "destination-venue": "DV Chain",
+          "id": 37,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "ETHUSD"
+        },
+        {
+          "destination-venue": "Jane Street",
+          "id": 38,
+          "max-price-precision": 7,
+          "max-quantity-precision": 6,
+          "routable": false,
+          "symbol": "ETH"
+        },
+        {
+          "destination-venue": "Zero Hash",
+          "id": 39,
+          "routable": false,
+          "symbol": "ETH"
+        }
+      ],
+      "id": 12,
+      "instrument-type": "Cryptocurrency",
+      "is-closing-only": false,
+      "short-description": "Ethereum",
+      "streamer-symbol": "ETH/USD:CXTALP",
+      "symbol": "ETH/USD",
+      "tick-size": "0.01"
+    },
+    {
+      "active": true,
+      "description": "Litecoin to USD",
+      "destination-venue-symbols": [
+        {
+          "destination-venue": "ZERO_HASH_CLOB",
+          "id": 81,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": true,
+          "symbol": "LTC/USD"
+        },
+        {
+          "destination-venue": "CBOE_DIGITAL_CRYPTOCURRENCY",
+          "id": 45,
+          "max-price-precision": 2,
+          "max-quantity-precision": 6,
+          "routable": false,
+          "symbol": "LTC/USD"
+        },
+        {
+          "destination-venue": "CITADEL_CRYPTOCURRENCY",
+          "id": 46,
+          "max-price-precision": 8,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "LTC"
+        },
+        {
+          "destination-venue": "DV Chain",
+          "id": 47,
+          "max-price-precision": 2,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "LTCUSD"
+        },
+        {
+          "destination-venue": "Jane Street",
+          "id": 48,
+          "max-price-precision": 7,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "LTC"
+        },
+        {
+          "destination-venue": "Zero Hash",
+          "id": 49,
+          "routable": false,
+          "symbol": "LTC"
+        }
+      ],
+      "id": 15,
+      "instrument-type": "Cryptocurrency",
+      "is-closing-only": false,
+      "short-description": "Litecoin",
+      "streamer-symbol": "LTC/USD:CXTALP",
+      "symbol": "LTC/USD",
+      "tick-size": "0.01"
+    },
+    {
+      "active": true,
+      "description": "Dogecoin to USD",
+      "destination-venue-symbols": [
+        {
+          "destination-venue": "ZERO_HASH_CLOB",
+          "id": 79,
+          "max-price-precision": 5,
+          "max-quantity-precision": 1,
+          "routable": true,
+          "symbol": "DOGE/USD"
+        },
+        {
+          "destination-venue": "DV Chain",
+          "id": 23,
+          "max-price-precision": 6,
+          "max-quantity-precision": 8,
+          "routable": false,
+          "symbol": "DOGEUSD"
+        },
+        {
+          "destination-venue": "Jane Street",
+          "id": 24,
+          "max-price-precision": 7,
+          "max-quantity-precision": 2,
+          "routable": false,
+          "symbol": "DOGE"
+        },
+        {
+          "destination-venue": "Zero Hash",
+          "id": 25,
+          "routable": false,
+          "symbol": "DOGE"
+        }
+      ],
+      "id": 7,
+      "instrument-type": "Cryptocurrency",
+      "is-closing-only": false,
+      "short-description": "Dogecoin",
+      "streamer-symbol": "DOGE/USD:CXTALP",
+      "symbol": "DOGE/USD",
+      "tick-size": "0.00001"
+    }
+  ]
+}

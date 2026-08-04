@@ -1,0 +1,276 @@
+{
+  "address": {
+    "city": "REDACTED",
+    "country": "REDACTED",
+    "is-domestic": false,
+    "is-foreign": false,
+    "postal-code": "REDACTED",
+    "state-region": "REDACTED",
+    "street-one": "REDACTED"
+  },
+  "agreed-to-margining": false,
+  "birth-date": "2020-01-01",
+  "created-at": "2020-01-01T00:00:00.000+00:00",
+  "email": "REDACTED",
+  "first-name": "REDACTED",
+  "has-delayed-quotes": false,
+  "has-industry-affiliation": false,
+  "has-listed-affiliation": false,
+  "has-pending-or-approved-application": false,
+  "has-political-affiliation": false,
+  "id": "REDACTED",
+  "is-foreign": false,
+  "is-professional": false,
+  "last-name": "REDACTED",
+  "mailing-address": {
+    "city": "REDACTED",
+    "country": "REDACTED",
+    "is-domestic": false,
+    "is-foreign": false,
+    "postal-code": "REDACTED",
+    "state-region": "REDACTED",
+    "street-one": "REDACTED"
+  },
+  "mobile-phone-number": "REDACTED",
+  "permitted-account-types": [
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        },
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    },
+    {
+      "description": "REDACTED",
+      "has_multiple_owners": false,
+      "is_publicly_available": false,
+      "is_tax_advantaged": false,
+      "margin_types": [
+        {
+          "is_margin": false,
+          "name": "REDACTED"
+        }
+      ],
+      "name": "REDACTED"
+    }
+  ],
+  "subject-to-tax-withholding": false,
+  "tax-number-type": "REDACTED",
+  "usa-citizenship-type": "REDACTED"
+}

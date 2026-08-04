@@ -363,12 +363,38 @@ with `examples/instruments/src/bin/probe_entitlements.rs`, read-only:
 |--------|--------|
 | **200** — capturable today | `/customers/me`, `/customers/me/accounts`, `/instruments/equities`, `/instruments/cryptocurrencies`, `/instruments/warrants`, `/instruments/futures`, `/instruments/future-products`, `/instruments/quantity-decimal-precisions`, `/option-chains/{symbol}/nested`, `/instruments/search`, `/market-time/equities/sessions/current` |
 | **403** — routed, this grant is not entitled | `/instruments/equity-options` |
-| **502** — certification does not run the service | `/symbols/search/{symbol}`, `/market-metrics`, `/market-data/by-type`, `/quote-alerts`, `/watchlists`, `/pairs-watchlists` |
+| **502** — **not served by certification** | `/symbols/search/{symbol}`, `/market-metrics`, `/market-data/by-type`, `/quote-alerts`, `/watchlists`, `/pairs-watchlists` |
 
 Eleven of eighteen. The `502` group is the one that matters for planning: those
 are not entitlement problems and no scope change fixes them — certification does
 not serve those services at all, which the venue's own sandbox page already says
 about Market Metrics. Their fixtures cannot come from certification.
+
+#### Captured, 2026-08-04
+
+Ten of the eleven reachable families were captured and the serde tests now read
+them (`tests/integration/captures.rs`). Reproduce with:
+
+```shell
+TASTYTRADE_USE_DEMO=true cargo run -p instruments --bin capture_fixtures
+```
+
+Redaction happens before the bytes reach the disk, in three tiers: instruments,
+chains and sessions are stored as they arrived; the account listing has its
+number and nickname replaced; the customer resource keeps its shape and has
+**every leaf value** replaced, because the whole record is personal and a
+field-by-field rule over 171 fields is a field-by-field chance to miss one.
+
+`/instruments/warrants` was **not** captured: certification holds none, and an
+empty listing pins down no field of the type it is meant to check. Its fixture
+stays hand-written and says so.
+
+**What the captures found, which is the reason for doing this:** the customer
+resource did not decode at all. Six fields were typed `Option<String>` where the
+venue sends booleans, and `permitted-account-types` was typed `String` where the
+venue sends an array of objects — so `TastyTrade::customer()` failed against the
+real API while every hand-written test passed. Two account fields were also
+asserted with values nobody had ever received.
 
 #### The value sets that were still guesses
 

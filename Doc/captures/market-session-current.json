@@ -1,0 +1,24 @@
+{
+  "close-at": "2026-08-04T20:00:00.000+00:00",
+  "close-at-ext": "2026-08-05T00:00:00.000+00:00",
+  "instrument-collection": "Equity",
+  "next-session": {
+    "close-at": "2026-08-04T20:00:00.000+00:00",
+    "close-at-ext": "2026-08-05T00:00:00.000+00:00",
+    "instrument-collection": "Equity",
+    "open-at": "2026-08-04T13:30:00.000+00:00",
+    "session-date": "2026-08-04",
+    "start-at": "2026-08-04T12:15:00.000+00:00"
+  },
+  "open-at": "2026-08-04T13:30:00.000+00:00",
+  "previous-session": {
+    "close-at": "2026-08-03T20:00:00.000+00:00",
+    "close-at-ext": "2026-08-04T00:00:00.000+00:00",
+    "instrument-collection": "Equity",
+    "open-at": "2026-08-03T13:30:00.000+00:00",
+    "session-date": "2026-08-03",
+    "start-at": "2026-08-03T12:15:00.000+00:00"
+  },
+  "start-at": "2026-08-04T12:15:00.000+00:00",
+  "state": "Closed"
+}

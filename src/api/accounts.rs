@@ -1376,25 +1376,27 @@ impl Account<'_> {
 mod tests {
     use super::*;
 
-    /// Exactly the keys `GET /customers/me/accounts` returns against
-    /// `api.cert.tastyworks.com`: no `is-test-drive`, no `external-id`, no
-    /// `funding-date`, plus five keys the struct used to ignore.
-    const CERT_ACCOUNT: &str = r#"{
-        "account-number": "5WX12345",
-        "account-type-name": "Individual",
-        "created-at": "2025-01-14T10:22:41.000+00:00",
-        "day-trader-status": false,
-        "investment-objective": "SPECULATION",
-        "is-closed": false,
-        "is-firm-error": false,
-        "is-firm-proprietary": false,
-        "is-foreign": false,
-        "is-futures-approved": true,
-        "margin-or-cash": "Margin",
-        "nickname": "Individual",
-        "opened-at": "2025-01-14T10:22:41.000+00:00",
-        "suitable-options-level": "Defined Risk Spreads"
-    }"#;
+    /// `GET /customers/me/accounts` exactly as certification answered it.
+    ///
+    /// A **capture**, not a transcription. Written by
+    /// `examples/instruments/src/bin/capture_fixtures.rs` on 2026-08-04 with
+    /// the account number and nickname replaced before the file reached the
+    /// disk; every other key is what the venue sent. The hand-written literal
+    /// this replaces happened to name the right keys, which is worth knowing
+    /// and is exactly what could not be known while it was hand-written.
+    ///
+    /// What it pins down is the absence: no `is-test-drive`, no `external-id`,
+    /// no `funding-date`. That absence is issue #5 — a required
+    /// `is-test-drive` made `Items<T>` skip the account and
+    /// `TastyTrade::account` report it as not on the session.
+    const ACCOUNTS_CAPTURE: &str = include_str!("../../Doc/captures/accounts.json");
+
+    /// The account object out of the captured listing.
+    fn cert_account() -> String {
+        let listing: serde_json::Value =
+            serde_json::from_str(ACCOUNTS_CAPTURE).expect("the capture is valid JSON");
+        listing["items"][0]["account"].to_string()
+    }
 
     /// The production shape: `is-test-drive` present, none of the keys that
     /// only certification was observed to send.
@@ -1416,9 +1418,9 @@ mod tests {
     #[test]
     fn parses_the_certification_payload() {
         let account: AccountDetails =
-            serde_json::from_str(CERT_ACCOUNT).expect("certification accounts must parse");
+            serde_json::from_str(&cert_account()).expect("certification accounts must parse");
 
-        assert_eq!(account.account_number.0, "5WX12345");
+        assert_eq!(account.account_number.0, "REDACTED");
         // Absent in certification, defaulted rather than fatal.
         assert!(!account.is_test_drive);
         assert_eq!(account.external_id, None);
@@ -1428,14 +1430,18 @@ mod tests {
         assert_eq!(account.is_firm_error, Some(false));
         // Present in certification, previously discarded.
         assert_eq!(account.is_closed, Some(false));
-        assert_eq!(account.is_futures_approved, Some(true));
+        // What the venue actually says about this account. The literal this
+        // replaced asserted `Some(true)` and a different options level, both
+        // invented — the kind of thing a fixture can be wrong about
+        // indefinitely while agreeing with the type that reads it.
+        assert_eq!(account.is_futures_approved, Some(false));
         assert_eq!(
             account.suitable_options_level.as_deref(),
-            Some("Defined Risk Spreads")
+            Some("No Restrictions")
         );
         assert_eq!(
             account.created_at.map(|t| t.to_rfc3339()),
-            Some("2025-01-14T10:22:41+00:00".to_string()),
+            Some("2026-08-01T16:05:36.479+00:00".to_string()),
             "the timestamp must be parsed, not carried as text"
         );
     }
@@ -1483,14 +1489,13 @@ mod tests {
     /// session.
     #[test]
     fn certification_accounts_survive_the_items_envelope() {
-        let body =
-            format!(r#"{{"items":[{{"account":{CERT_ACCOUNT},"authority-level":"owner"}}]}}"#);
+        let body = ACCOUNTS_CAPTURE.to_string();
 
         let items: Items<AccountInner> =
             serde_json::from_str(&body).expect("the envelope is well formed");
 
         assert_eq!(items.items.len(), 1, "the sandbox account must survive");
-        assert_eq!(items.items[0].account.account_number.0, "5WX12345");
+        assert_eq!(items.items[0].account.account_number.0, "REDACTED");
         assert_eq!(items.items[0].authority_level.as_deref(), Some("owner"));
     }
 
@@ -1503,7 +1508,8 @@ mod tests {
     #[test]
     fn an_absent_authority_level_decodes_as_unknown_rather_than_empty() {
         let listed: AccountInner = serde_json::from_str(&format!(
-            r#"{{"account":{CERT_ACCOUNT},"authority-level":"owner"}}"#
+            r#"{{"account":{},"authority-level":"owner"}}"#,
+            cert_account()
         ))
         .expect("the listing shape decodes");
         assert_eq!(listed.authority_level.as_deref(), Some("owner"));
@@ -1511,15 +1517,17 @@ mod tests {
         // The single-account endpoint answers with the account itself, so the
         // key is not there at all. It used to require a value, which is why
         // the call site synthesised one.
-        let alone: AccountInner = serde_json::from_str(&format!(r#"{{"account":{CERT_ACCOUNT}}}"#))
-            .expect("an account with no decorator must still decode");
+        let alone: AccountInner =
+            serde_json::from_str(&format!(r#"{{"account":{}}}"#, cert_account()))
+                .expect("an account with no decorator must still decode");
         assert_eq!(alone.authority_level, None);
 
         // And a level the venue really did send as empty stays empty. That is
         // a value it sent; reading it as absent would be this crate deciding
         // otherwise, which is the mistake in the other direction.
         let blank: AccountInner = serde_json::from_str(&format!(
-            r#"{{"account":{CERT_ACCOUNT},"authority-level":""}}"#
+            r#"{{"account":{},"authority-level":""}}"#,
+            cert_account()
         ))
         .expect("an empty level decodes");
         assert_eq!(blank.authority_level.as_deref(), Some(""));

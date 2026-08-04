@@ -1,0 +1,279 @@
+{
+  "items": [
+    {
+      "active": true,
+      "active-month": false,
+      "back-month-first-calendar-symbol": false,
+      "closing-only-date": "2026-08-03",
+      "contract-size": "40000.0",
+      "display-factor": "0.001",
+      "exchange": "CME",
+      "exchange-symbol": "LEQ6",
+      "expiration-date": "2026-08-31",
+      "expires-at": "2026-08-31T18:05:00.000+00:00",
+      "first-notice-date": "2026-08-10",
+      "future-product": {
+        "active-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "back-month-first-calendar-symbol": false,
+        "cash-settled": false,
+        "clearing-code": "48",
+        "clearing-exchange-code": "02",
+        "clearport-code": "48",
+        "code": "LE",
+        "description": "Live Cattle Futures",
+        "display-factor": "0.001",
+        "exchange": "CME",
+        "first-notice": true,
+        "futures-trading-cutoff-times": [
+          {
+            "offset-seconds": 50700,
+            "timezone": "Market Zone",
+            "timing": "Default"
+          }
+        ],
+        "legacy-code": "LC",
+        "legacy-exchange-code": "CME",
+        "listed-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "market-sector": "Agriculture",
+        "notional-multiplier": "400.0",
+        "product-type": "Physical",
+        "roll": {
+          "active-count": 7,
+          "business-days-offset": 5,
+          "cash-settled": false,
+          "first-notice": true,
+          "name": "agricultures"
+        },
+        "root-symbol": "/LE",
+        "security-group": "LE",
+        "small-notional": false,
+        "streamer-exchange-code": "XCME",
+        "supported": true,
+        "tick-size": "0.025"
+      },
+      "is-closing-only": false,
+      "is-tradeable": true,
+      "last-trade-date": "2026-08-31",
+      "main-fraction": "0.0",
+      "next-active-month": false,
+      "notional-multiplier": "400.0",
+      "option-tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ],
+      "product-code": "LE",
+      "product-group": "CME_COMMODITY",
+      "roll-target-symbol": "/LEV6",
+      "security-id": "42171673",
+      "stops-trading-at": "2026-08-31T18:05:00.000+00:00",
+      "streamer-exchange-code": "XCME",
+      "streamer-symbol": "/LEQ26:XCME",
+      "sub-fraction": "0.0",
+      "symbol": "/LEQ6",
+      "tick-size": "0.025",
+      "tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ]
+    },
+    {
+      "active": true,
+      "active-month": true,
+      "back-month-first-calendar-symbol": false,
+      "closing-only-date": "2026-09-28",
+      "contract-size": "40000.0",
+      "display-factor": "0.001",
+      "exchange": "CME",
+      "exchange-symbol": "LEV6",
+      "expiration-date": "2026-10-30",
+      "expires-at": "2026-10-30T18:05:00.000+00:00",
+      "first-notice-date": "2026-10-05",
+      "future-product": {
+        "active-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "back-month-first-calendar-symbol": false,
+        "cash-settled": false,
+        "clearing-code": "48",
+        "clearing-exchange-code": "02",
+        "clearport-code": "48",
+        "code": "LE",
+        "description": "Live Cattle Futures",
+        "display-factor": "0.001",
+        "exchange": "CME",
+        "first-notice": true,
+        "futures-trading-cutoff-times": [
+          {
+            "offset-seconds": 50700,
+            "timezone": "Market Zone",
+            "timing": "Default"
+          }
+        ],
+        "legacy-code": "LC",
+        "legacy-exchange-code": "CME",
+        "listed-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "market-sector": "Agriculture",
+        "notional-multiplier": "400.0",
+        "product-type": "Physical",
+        "roll": {
+          "active-count": 7,
+          "business-days-offset": 5,
+          "cash-settled": false,
+          "first-notice": true,
+          "name": "agricultures"
+        },
+        "root-symbol": "/LE",
+        "security-group": "LE",
+        "small-notional": false,
+        "streamer-exchange-code": "XCME",
+        "supported": true,
+        "tick-size": "0.025"
+      },
+      "is-closing-only": false,
+      "is-tradeable": true,
+      "last-trade-date": "2026-10-30",
+      "main-fraction": "0.0",
+      "next-active-month": false,
+      "notional-multiplier": "400.0",
+      "option-tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ],
+      "product-code": "LE",
+      "product-group": "CME_COMMODITY",
+      "roll-target-symbol": "/LEZ6",
+      "security-id": "42266989",
+      "stops-trading-at": "2026-10-30T18:05:00.000+00:00",
+      "streamer-exchange-code": "XCME",
+      "streamer-symbol": "/LEV26:XCME",
+      "sub-fraction": "0.0",
+      "symbol": "/LEV6",
+      "tick-size": "0.025",
+      "tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ]
+    },
+    {
+      "active": true,
+      "active-month": false,
+      "back-month-first-calendar-symbol": false,
+      "closing-only-date": "2026-11-30",
+      "contract-size": "40000.0",
+      "display-factor": "0.001",
+      "exchange": "CME",
+      "exchange-symbol": "LEZ6",
+      "expiration-date": "2026-12-31",
+      "expires-at": "2026-12-31T19:05:00.000+00:00",
+      "first-notice-date": "2026-12-07",
+      "future-product": {
+        "active-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "back-month-first-calendar-symbol": false,
+        "cash-settled": false,
+        "clearing-code": "48",
+        "clearing-exchange-code": "02",
+        "clearport-code": "48",
+        "code": "LE",
+        "description": "Live Cattle Futures",
+        "display-factor": "0.001",
+        "exchange": "CME",
+        "first-notice": true,
+        "futures-trading-cutoff-times": [
+          {
+            "offset-seconds": 50700,
+            "timezone": "Market Zone",
+            "timing": "Default"
+          }
+        ],
+        "legacy-code": "LC",
+        "legacy-exchange-code": "CME",
+        "listed-months": [
+          "G",
+          "J",
+          "M",
+          "Q",
+          "V",
+          "Z"
+        ],
+        "market-sector": "Agriculture",
+        "notional-multiplier": "400.0",
+        "product-type": "Physical",
+        "roll": {
+          "active-count": 7,
+          "business-days-offset": 5,
+          "cash-settled": false,
+          "first-notice": true,
+          "name": "agricultures"
+        },
+        "root-symbol": "/LE",
+        "security-group": "LE",
+        "small-notional": false,
+        "streamer-exchange-code": "XCME",
+        "supported": true,
+        "tick-size": "0.025"
+      },
+      "is-closing-only": false,
+      "is-tradeable": true,
+      "last-trade-date": "2026-12-31",
+      "main-fraction": "0.0",
+      "next-active-month": true,
+      "notional-multiplier": "400.0",
+      "option-tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ],
+      "product-code": "LE",
+      "product-group": "CME_COMMODITY",
+      "security-id": "42051182",
+      "stops-trading-at": "2026-12-31T19:05:00.000+00:00",
+      "streamer-exchange-code": "XCME",
+      "streamer-symbol": "/LEZ26:XCME",
+      "sub-fraction": "0.0",
+      "symbol": "/LEZ6",
+      "tick-size": "0.025",
+      "tick-sizes": [
+        {
+          "value": "0.025"
+        }
+      ]
+    }
+  ]
+}
