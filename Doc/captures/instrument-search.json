@@ -1,0 +1,179 @@
+{
+  "items": [
+    {
+      "description": "Light Sweet Crude Oil August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-20T18:30:00.000+00:00",
+      "symbol": "/CLQ7"
+    },
+    {
+      "description": "Corn December 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-12-14T19:20:00.000+00:00",
+      "symbol": "/ZCZ7"
+    },
+    {
+      "description": "Natural Gas August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-28T18:30:00.000+00:00",
+      "symbol": "/NGQ7"
+    },
+    {
+      "description": "Soybean August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-08-13T18:20:00.000+00:00",
+      "symbol": "/ZSQ7"
+    },
+    {
+      "description": "Soybean July 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-14T18:20:00.000+00:00",
+      "symbol": "/ZSN7"
+    },
+    {
+      "description": "Gold April 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-04-28T17:30:00.000+00:00",
+      "symbol": "/GCJ7"
+    },
+    {
+      "description": "Micro Crude Oil August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-19T18:30:00.000+00:00",
+      "symbol": "/MCLQ7"
+    },
+    {
+      "description": "Wheat December 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-12-14T19:20:00.000+00:00",
+      "symbol": "/ZWZ7"
+    },
+    {
+      "description": "Australian dollar March 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-03-15T14:16:00.000+00:00",
+      "symbol": "/6AH7"
+    },
+    {
+      "description": "E Micro Gold April 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-04-28T17:30:00.000+00:00",
+      "symbol": "/MGCJ7"
+    },
+    {
+      "description": "E Mini Crude Oil August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-19T18:30:00.000+00:00",
+      "symbol": "/QMQ7"
+    },
+    {
+      "description": "E Mini Natural Gas August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-27T18:30:00.000+00:00",
+      "symbol": "/QGQ7"
+    },
+    {
+      "description": "Micro 10 Yr. August 2026",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2026-08-31T19:00:00.000+00:00",
+      "symbol": "/10YQ6"
+    },
+    {
+      "description": "Mini Soybean August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-08-13T18:20:00.000+00:00",
+      "symbol": "/XKQ7"
+    },
+    {
+      "description": "Mini Soybean July 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-14T18:20:00.000+00:00",
+      "symbol": "/XKN7"
+    },
+    {
+      "description": "Mini Corn December 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-12-14T19:20:00.000+00:00",
+      "symbol": "/XCZ7"
+    },
+    {
+      "description": "Mini Wheat December 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-12-14T19:20:00.000+00:00",
+      "symbol": "/XWZ7"
+    },
+    {
+      "description": "Micro 30 Yr August 2026",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2026-08-31T19:00:00.000+00:00",
+      "symbol": "/30YQ6"
+    },
+    {
+      "description": "Micro 2 Yr. August 2026",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2026-08-31T19:00:00.000+00:00",
+      "symbol": "/2YYQ6"
+    },
+    {
+      "description": "Micro 5 Yr. August 2026",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2026-08-31T19:00:00.000+00:00",
+      "symbol": "/5YYQ6"
+    },
+    {
+      "description": "NY Harbor ULSD Futures August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-30T18:30:00.000+00:00",
+      "symbol": "/HOQ7"
+    },
+    {
+      "description": "Micro Natural Gas August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-27T18:30:00.000+00:00",
+      "symbol": "/MNGQ7"
+    },
+    {
+      "description": "RBOB Gasoline Futures August 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-07-30T18:30:00.000+00:00",
+      "symbol": "/RBQ7"
+    },
+    {
+      "description": "Lean Hog Futures May 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-05-14T18:05:00.000+00:00",
+      "symbol": "/HEK7"
+    },
+    {
+      "description": "Lean Hog Futures June 2027",
+      "exchange": "CME",
+      "instrument-type": "Future",
+      "stops-trading-at": "2027-06-14T18:05:00.000+00:00",
+      "symbol": "/HEM7"
+    }
+  ]
+}

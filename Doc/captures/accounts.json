@@ -1,0 +1,23 @@
+{
+  "items": [
+    {
+      "account": {
+        "account-number": "REDACTED",
+        "account-type-name": "REDACTED",
+        "created-at": "2020-01-01T00:00:00.000+00:00",
+        "day-trader-status": false,
+        "investment-objective": "REDACTED",
+        "is-closed": false,
+        "is-firm-error": false,
+        "is-firm-proprietary": false,
+        "is-foreign": false,
+        "is-futures-approved": false,
+        "margin-or-cash": "REDACTED",
+        "nickname": "REDACTED",
+        "opened-at": "2020-01-01T00:00:00.000+00:00",
+        "suitable-options-level": "REDACTED"
+      },
+      "authority-level": "REDACTED"
+    }
+  ]
+}

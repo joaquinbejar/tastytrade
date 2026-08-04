@@ -22,6 +22,9 @@ include = [
     "Doc/margin_dry_run.json",
     "Doc/order_dry_run.json",
     "Doc/market_data_by_type.json",
+    # Real certification responses, redacted. `tests/integration/captures.rs`
+    # reads them, and they are the only fixtures here the venue actually sent.
+    "Doc/captures/*.json",
     "Cargo.toml",
     "README.md",
     "LICENSE",
@@ -57,7 +60,7 @@ dotenv = { workspace = true }
 pretty-simple-display = { workspace = true }
 
 [dev-dependencies]
-serial_test = "3.2"
+serial_test = "4.0"
 
 
 [[test]]

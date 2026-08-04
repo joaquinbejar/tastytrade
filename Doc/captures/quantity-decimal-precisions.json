@@ -1,0 +1,283 @@
+{
+  "items": [
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 3,
+      "symbol": "AAVE/USD",
+      "value": 3
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 6,
+      "symbol": "ADA/USD",
+      "value": 6
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 3,
+      "symbol": "APT/USD",
+      "value": 3
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "ARB/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 1,
+      "symbol": "ALGO/USD",
+      "value": 1
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "AVAX/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "BAT/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "BCH/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 0,
+      "symbol": "BONK/USD",
+      "value": 0
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "BTC/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 3,
+      "symbol": "COMP/USD",
+      "value": 3
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 1,
+      "symbol": "DOGE/USD",
+      "value": 1
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 3,
+      "symbol": "DOT/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "EGLD/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "ENJ/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 4,
+      "symbol": "EOS/USD",
+      "value": 4
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "ETC/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 6,
+      "symbol": "ETH/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 1,
+      "symbol": "HBAR/USD",
+      "value": 1
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "KNC/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "LINK/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "LTC/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "MKR/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 4,
+      "symbol": "OMG/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "PAXG/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 0,
+      "symbol": "PEPE/USD",
+      "value": 0
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "PNUT/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "POL/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 0,
+      "symbol": "SHIB/USD",
+      "value": 0
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "SOL/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 1,
+      "symbol": "SUI/USD",
+      "value": 1
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "SUSHI/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 6,
+      "symbol": "UNI/USD",
+      "value": 6
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "WIF/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 5,
+      "symbol": "XLM/USD",
+      "value": 5
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 6,
+      "symbol": "XRP/USD",
+      "value": 6
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 2,
+      "symbol": "XTZ/USD",
+      "value": 2
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 8,
+      "symbol": "YFI/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Cryptocurrency",
+      "minimum-increment-precision": 6,
+      "symbol": "ZRX/USD",
+      "value": 8
+    },
+    {
+      "instrument-type": "Bond",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Equity",
+      "minimum-increment-precision": 0,
+      "value": 5
+    },
+    {
+      "instrument-type": "Equity Offering",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Equity Option",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Fixed Income Security",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Future",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Future Option",
+      "minimum-increment-precision": 0,
+      "value": 0
+    },
+    {
+      "instrument-type": "Liquidity Pool",
+      "minimum-increment-precision": 2,
+      "value": 2
+    },
+    {
+      "instrument-type": "Warrant",
+      "minimum-increment-precision": 0,
+      "value": 0
+    }
+  ]
+}

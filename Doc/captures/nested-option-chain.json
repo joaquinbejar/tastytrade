@@ -1,0 +1,116 @@
+{
+  "items": [
+    {
+      "deliverables": [
+        {
+          "amount": "100.0",
+          "deliverable-type": "Shares",
+          "description": "100 shares of SPY",
+          "id": 313656,
+          "instrument-type": "Equity",
+          "percent": "100",
+          "root-symbol": "SPY",
+          "symbol": "SPY"
+        }
+      ],
+      "expirations": [
+        {
+          "days-to-expiration": 0,
+          "expiration-date": "2026-08-04",
+          "expiration-type": "Weekly",
+          "settlement-type": "PM",
+          "strikes": [
+            {
+              "call": "SPY   260804C00500000",
+              "call-streamer-symbol": ".SPY260804C500",
+              "put": "SPY   260804P00500000",
+              "put-streamer-symbol": ".SPY260804P500",
+              "strike-price": "500.0"
+            },
+            {
+              "call": "SPY   260804C00505000",
+              "call-streamer-symbol": ".SPY260804C505",
+              "put": "SPY   260804P00505000",
+              "put-streamer-symbol": ".SPY260804P505",
+              "strike-price": "505.0"
+            },
+            {
+              "call": "SPY   260804C00510000",
+              "call-streamer-symbol": ".SPY260804C510",
+              "put": "SPY   260804P00510000",
+              "put-streamer-symbol": ".SPY260804P510",
+              "strike-price": "510.0"
+            }
+          ]
+        },
+        {
+          "days-to-expiration": 1,
+          "expiration-date": "2026-08-05",
+          "expiration-type": "Weekly",
+          "settlement-type": "PM",
+          "strikes": [
+            {
+              "call": "SPY   260805C00500000",
+              "call-streamer-symbol": ".SPY260805C500",
+              "put": "SPY   260805P00500000",
+              "put-streamer-symbol": ".SPY260805P500",
+              "strike-price": "500.0"
+            },
+            {
+              "call": "SPY   260805C00505000",
+              "call-streamer-symbol": ".SPY260805C505",
+              "put": "SPY   260805P00505000",
+              "put-streamer-symbol": ".SPY260805P505",
+              "strike-price": "505.0"
+            },
+            {
+              "call": "SPY   260805C00510000",
+              "call-streamer-symbol": ".SPY260805C510",
+              "put": "SPY   260805P00510000",
+              "put-streamer-symbol": ".SPY260805P510",
+              "strike-price": "510.0"
+            }
+          ]
+        },
+        {
+          "days-to-expiration": 2,
+          "expiration-date": "2026-08-06",
+          "expiration-type": "Weekly",
+          "settlement-type": "PM",
+          "strikes": [
+            {
+              "call": "SPY   260806C00500000",
+              "call-streamer-symbol": ".SPY260806C500",
+              "put": "SPY   260806P00500000",
+              "put-streamer-symbol": ".SPY260806P500",
+              "strike-price": "500.0"
+            },
+            {
+              "call": "SPY   260806C00505000",
+              "call-streamer-symbol": ".SPY260806C505",
+              "put": "SPY   260806P00505000",
+              "put-streamer-symbol": ".SPY260806P505",
+              "strike-price": "505.0"
+            },
+            {
+              "call": "SPY   260806C00510000",
+              "call-streamer-symbol": ".SPY260806C510",
+              "put": "SPY   260806P00510000",
+              "put-streamer-symbol": ".SPY260806P510",
+              "strike-price": "510.0"
+            }
+          ]
+        }
+      ],
+      "option-chain-type": "Standard",
+      "root-symbol": "SPY",
+      "shares-per-contract": 100,
+      "tick-sizes": [
+        {
+          "value": "0.01"
+        }
+      ],
+      "underlying-symbol": "SPY"
+    }
+  ]
+}
