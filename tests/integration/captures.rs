@@ -56,7 +56,9 @@ fn the_account_listing_decodes_and_omits_is_test_drive() {
     assert!(!account.is_test_drive, "absent in certification");
     assert_eq!(account.external_id, None);
     assert_eq!(account.funding_date, None);
-    assert_eq!(accounts[0].authority_level.as_deref(), Some("owner"));
+    // Present, which is what distinguishes the listing from the single fetch.
+    // The value is a placeholder: this file is packaged and published.
+    assert!(accounts[0].authority_level.is_some());
 
     // The keys really are absent rather than null, which is what makes the
     // `#[serde(default)]` load-bearing.
@@ -182,12 +184,33 @@ fn the_market_session_decodes_and_keeps_its_offset() {
     let session: CurrentMarketSession =
         serde_json::from_str(capture!("market-session-current")).expect("the session must decode");
 
+    // Every timestamp the venue sent came through the date path rather than
+    // being carried as text, and kept the offset it arrived with. Comparing
+    // against the raw JSON is what makes this a real assertion: a regression to
+    // `String` would decode fine and this would catch it.
     let raw: Value = serde_json::from_str(capture!("market-session-current")).expect("valid JSON");
-    assert!(
-        raw.get("instrument-collection").is_some() || raw.get("close-at").is_some(),
-        "the capture is not a session record: {raw}"
-    );
-    // Whatever boundaries arrived, they were parsed rather than carried as
-    // text — the property the crate's date handling exists for.
-    let _ = session;
+
+    let mut checked = 0;
+    for (key, parsed) in [
+        ("close-at", session.close_at),
+        ("open-at", session.open_at),
+        ("start-at", session.start_at),
+    ] {
+        let Some(text) = raw.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let parsed =
+            parsed.unwrap_or_else(|| panic!("{key} is in the capture but decoded to None"));
+        let expected = chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap_or_else(|_| panic!("{key} is not a timestamp: {text}"));
+        assert_eq!(parsed, expected, "{key} did not survive decoding");
+        assert_eq!(
+            parsed.offset(),
+            expected.offset(),
+            "{key} lost the offset the venue sent"
+        );
+        checked += 1;
+    }
+
+    assert!(checked > 0, "the capture carried no timestamp to check");
 }

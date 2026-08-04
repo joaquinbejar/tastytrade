@@ -179,17 +179,22 @@ Complete against `instruments-api-swagger_20250715`.
 
 The crate also implements `GET /instruments/equity-options` and
 `GET /instruments/future-options` (the plural list forms) via
-`list_equity_options()` and `list_future_options()`. Both work against the
-venue but no longer appear in the published spec; keep them.
+`list_equity_options()` and `list_future_options()`. Neither appears in the
+published spec; keep them.
+
+**`list_equity_options()` is implemented but unverified.** The probe on
+2026-08-04 got `403` from `/instruments/equity-options` under a grant reporting
+`read,trade,openid`, so nothing has observed this method work. The earlier claim
+here that both "work against the venue" was inherited, not measured, and it is
+withdrawn. The cause of the refusal is not established —
+[#129](https://github.com/joaquinbejar/tastytrade/issues/129).
 
 **They keep returning `Vec<T>`**, unlike every other listing. The `20250715`
 release note says they paginate, and the spec published the same day does not
 describe them at all — so there is nothing to check the return type against,
 and switching them to `Paginated<T>` on the release note alone would make every
-existing call fail if the note is wrong. The probe in
-[#90](https://github.com/joaquinbejar/tastytrade/issues/90) covers
-`/instruments/equity-options` as one of its controls; running it settles this
-at the same time.
+existing call fail if the note is wrong. The probe covers `/instruments/equity-options` as one of its controls; it
+answered `403`, so this is not settled either.
 
 ### The cryptocurrency suspension — [#91](https://github.com/joaquinbejar/tastytrade/issues/91)
 
@@ -228,8 +233,8 @@ claim they do not.
 
 | Endpoint | State | Determined |
 |----------|-------|------------|
-| `GET /instruments/equity-deliverables` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
-| `GET /instruments/future-spreads` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
+| `GET /instruments/equity-deliverables` | ❔ routed by the venue, undocumented, access-restricted for a reason not established | 2026-08-04 |
+| `GET /instruments/future-spreads` | ❔ routed by the venue, undocumented, access-restricted for a reason not established | 2026-08-04 |
 
 **Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ routed
 by the venue but described in no current public API document, so there is no
@@ -316,11 +321,16 @@ before on that question, reached from evidence rather than from a document's
 silence. Nothing here can be implemented yet, and implementing it from the
 release note would still be inventing it.
 
-The `equity-options` row is why the refusal is read as entitlement rather than
-as a statement about these two routes in particular. That route is called by
-this crate, and it is refused under the same grant, so the OAuth application
-used here is simply not scoped for these listings. A grant with wider scopes
-would answer the contract question in one run.
+The `equity-options` row is why the refusal is not read as a statement about
+these two routes in particular: that route is called by this crate and is
+refused under the same grant.
+
+**What the refusal is not.** It is not a missing read scope. The grant reports
+`read,trade,openid` and `/instruments/equities` answers `200` with that same
+token, so an ordinary read succeeds beside the refusals. The cause is not
+established — [#129](https://github.com/joaquinbejar/tastytrade/issues/129)
+investigates it — and describing it as an entitlement or scope problem would be
+asserting something the evidence does not support.
 
 **Production is unprobed.** The refresh token in this checkout is a
 certification grant: `POST /oauth/token` against production answers `400`, so
@@ -362,13 +372,13 @@ with `examples/instruments/src/bin/probe_entitlements.rs`, read-only:
 | Answer | Routes |
 |--------|--------|
 | **200** — capturable today | `/customers/me`, `/customers/me/accounts`, `/instruments/equities`, `/instruments/cryptocurrencies`, `/instruments/warrants`, `/instruments/futures`, `/instruments/future-products`, `/instruments/quantity-decimal-precisions`, `/option-chains/{symbol}/nested`, `/instruments/search`, `/market-time/equities/sessions/current` |
-| **403** — routed, this grant is not entitled | `/instruments/equity-options` |
+| **403** — routed, access-restricted, cause unknown | `/instruments/equity-options` |
 | **502** — **not served by certification** | `/symbols/search/{symbol}`, `/market-metrics`, `/market-data/by-type`, `/quote-alerts`, `/watchlists`, `/pairs-watchlists` |
 
-Eleven of eighteen. The `502` group is the one that matters for planning: those
-are not entitlement problems and no scope change fixes them — certification does
-not serve those services at all, which the venue's own sandbox page already says
-about Market Metrics. Their fixtures cannot come from certification.
+Eleven of eighteen. The `502` group is the one that matters for planning:
+certification does not serve those services at all, which the venue's own
+sandbox page already says about Market Metrics. Their fixtures cannot come from
+certification, and no change to the grant alters that.
 
 #### Captured, 2026-08-04
 

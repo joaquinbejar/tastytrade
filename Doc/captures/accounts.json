@@ -3,21 +3,21 @@
     {
       "account": {
         "account-number": "REDACTED",
-        "account-type-name": "Individual",
-        "created-at": "2026-08-01T16:05:36.479+00:00",
+        "account-type-name": "REDACTED",
+        "created-at": "2020-01-01T00:00:00.000+00:00",
         "day-trader-status": false,
-        "investment-objective": "SPECULATION",
+        "investment-objective": "REDACTED",
         "is-closed": false,
         "is-firm-error": false,
         "is-firm-proprietary": false,
         "is-foreign": false,
         "is-futures-approved": false,
-        "margin-or-cash": "Margin",
+        "margin-or-cash": "REDACTED",
         "nickname": "REDACTED",
-        "opened-at": "2026-08-01T16:05:36.479+00:00",
-        "suitable-options-level": "No Restrictions"
+        "opened-at": "2020-01-01T00:00:00.000+00:00",
+        "suitable-options-level": "REDACTED"
       },
-      "authority-level": "owner"
+      "authority-level": "REDACTED"
     }
   ]
 }

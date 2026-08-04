@@ -1430,18 +1430,16 @@ mod tests {
         assert_eq!(account.is_firm_error, Some(false));
         // Present in certification, previously discarded.
         assert_eq!(account.is_closed, Some(false));
-        // What the venue actually says about this account. The literal this
-        // replaced asserted `Some(true)` and a different options level, both
-        // invented — the kind of thing a fixture can be wrong about
-        // indefinitely while agreeing with the type that reads it.
+        // Present rather than absent, which is the distinction the type makes.
         assert_eq!(account.is_futures_approved, Some(false));
-        assert_eq!(
-            account.suitable_options_level.as_deref(),
-            Some("No Restrictions")
-        );
+        // Present, and parsed. The values are placeholders — an account's
+        // options level and open date are its owner's financial profile, and
+        // this fixture is packaged and published — so what is asserted is that
+        // the field arrived and went through the date path, not what it said.
+        assert!(account.suitable_options_level.is_some());
         assert_eq!(
             account.created_at.map(|t| t.to_rfc3339()),
-            Some("2026-08-01T16:05:36.479+00:00".to_string()),
+            Some("2020-01-01T00:00:00+00:00".to_string()),
             "the timestamp must be parsed, not carried as text"
         );
     }
@@ -1496,7 +1494,9 @@ mod tests {
 
         assert_eq!(items.items.len(), 1, "the sandbox account must survive");
         assert_eq!(items.items[0].account.account_number.0, "REDACTED");
-        assert_eq!(items.items[0].authority_level.as_deref(), Some("owner"));
+        // Present, which is the distinction that matters; the value is a
+        // placeholder because this fixture is packaged and published.
+        assert!(items.items[0].authority_level.is_some());
     }
 
     /// The listing sends the decorator and the single fetch does not, and the

@@ -22,19 +22,23 @@
 //! - [`Redaction::None`] — instruments, option chains, market sessions. Public
 //!   reference data about tradeable products. Nothing in these records belongs
 //!   to anybody, so they are stored exactly as they arrived.
-//! - [`Redaction::Account`] — the account listing. The number and the nickname
-//!   identify a person; the rest is structural flags that decide how the type
-//!   must be written, so only those two are replaced.
-//! - [`Redaction::Structural`] — the customer resource. **The whole record is
-//!   personal**: legal name, address, tax and foreign tax numbers, birth date,
-//!   phone numbers, net worth, income, employer, gender, dependants, family
-//!   member names, political affiliation. There is no safe subset to keep, and
-//!   a field-by-field rule over 171 fields is a field-by-field opportunity to
-//!   forget one. So the shape is kept and every leaf value is replaced with a
-//!   placeholder of the same JSON type — a real date where a date was, a real
-//!   decimal where a number was — which preserves what a serde test actually
-//!   checks (field names, nesting, null versus present, the date and decimal
-//!   parse paths) and preserves nothing about the person.
+//! - [`Redaction::Structural`] — the customer resource **and the account
+//!   listing**. The customer record is obviously personal: legal name, address,
+//!   tax numbers, birth date, net worth, employer, political affiliation. The
+//!   account listing is less obviously so and is the same problem — when it was
+//!   created and opened, its investment objective, margin or cash, options
+//!   level, futures approval. Those are the owner's financial profile, this
+//!   file is packaged and published, and publication does not come back.
+//!
+//!   Replacing only the direct identifiers is a judgement call per field, and
+//!   a field-by-field rule is a field-by-field chance to miss one. So the shape
+//!   is kept and **every leaf value** is replaced with a placeholder of the
+//!   same JSON type — a real date where a date was — which preserves what a
+//!   serde test actually checks (field names, nesting, null versus present, the
+//!   date and decimal parse paths) and preserves nothing about anybody.
+//!
+//! Nothing is written until [`assert_blanked`] confirms no original leaf
+//! survived, so the tier cannot quietly fail open.
 
 use std::fs;
 use std::path::Path;
@@ -58,8 +62,6 @@ const MAX_NESTED: usize = 3;
 enum Redaction {
     /// Public reference data. Stored as it arrived.
     None,
-    /// Replaces the account number and nickname, keeps the structural flags.
-    Account,
     /// Keeps the shape, replaces every leaf value.
     Structural,
     /// Public data, but bounded: nested arrays are truncated.
@@ -79,7 +81,7 @@ const TIMESTAMP: &str = "2020-01-01T00:00:00.000+00:00";
 /// a fixture is meant to be read by a person.
 const CAPTURES: [(&str, &str, Redaction); 10] = [
     ("customer", "/customers/me", Redaction::Structural),
-    ("accounts", "/customers/me/accounts", Redaction::Account),
+    ("accounts", "/customers/me/accounts", Redaction::Structural),
     (
         "equities",
         "/instruments/equities?per-page=3",
@@ -143,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(OUT_DIR)?;
     let mut written = Vec::new();
     let mut empty = Vec::new();
+    let mut failed = Vec::new();
 
     for (stem, path, redaction) in CAPTURES {
         match capture(&tasty, stem, path, redaction).await {
@@ -154,7 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 empty.push(stem);
                 println!("  {stem:<28} EMPTY, not written  <- {path}");
             }
-            Err(error) => println!("  {stem:<28} failed: {error}"),
+            Err(error) => {
+                failed.push(stem);
+                println!("  {stem:<28} failed: {error}");
+            }
         }
     }
 
@@ -171,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(None) => continue,
             Err(error) => {
+                failed.push("instrument-search");
                 println!("  {:<28} failed: {error}", "instrument-search");
                 break;
             }
@@ -194,6 +201,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("An empty listing pins down no field, so no file is written for one.");
     }
 
+    // A run that printed a failure and exited zero is a run that looks like it
+    // refreshed everything. The stale file left behind is worse than no file,
+    // because the tests keep passing against it.
+    if !failed.is_empty() {
+        return Err(format!(
+            "{} route(s) failed: {}. Earlier captures for them were removed rather \
+             than left stale.",
+            failed.len(),
+            failed.join(", ")
+        )
+        .into());
+    }
+
     Ok(())
 }
 
@@ -204,6 +224,13 @@ async fn capture(
     path: &str,
     redaction: Redaction,
 ) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    // Removed first, so a failure below cannot leave the previous run's file
+    // sitting there looking current.
+    let file = Path::new(OUT_DIR).join(format!("{stem}.json"));
+    if file.exists() {
+        fs::remove_file(&file)?;
+    }
+
     let body: Value = tasty.get(path).await?;
 
     // An empty listing decodes but pins down nothing, so it is not written:
@@ -217,18 +244,51 @@ async fn capture(
     let mut redacted = body;
     apply(&mut redacted, redaction);
 
+    // Fail closed. A blanking that silently missed a leaf would publish it, and
+    // publication does not come back, so the file is not written unless this
+    // holds.
+    if redaction == Redaction::Structural {
+        assert_blanked(&redacted, stem)?;
+    }
+
     let rendered = serde_json::to_string_pretty(&redacted)?;
-    let file = Path::new(OUT_DIR).join(format!("{stem}.json"));
     fs::write(&file, format!("{rendered}\n"))?;
 
     Ok(Some(count))
+}
+
+/// Fails unless every leaf is a placeholder.
+///
+/// The check the redaction cannot perform on itself: it walks the finished
+/// value and refuses anything that is not one of the constants above, `null`,
+/// `false`, or the numeric placeholder. `null` survives on purpose — the
+/// difference between absent, null and present is the property most of these
+/// fixtures exist to pin down.
+fn assert_blanked(value: &Value, stem: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn survivor(node: &Value) -> Option<String> {
+        match node {
+            Value::Object(map) => map.values().find_map(survivor),
+            Value::Array(items) => items.iter().find_map(survivor),
+            Value::String(text) => {
+                (text != SENTINEL && text != DATE && text != TIMESTAMP).then(|| text.clone())
+            }
+            Value::Number(number) => (number.as_i64() != Some(1)).then(|| number.to_string()),
+            Value::Bool(flag) => (*flag).then(|| "true".to_string()),
+            Value::Null => None,
+        }
+    }
+
+    match survivor(value) {
+        // The value itself is not printed: it is the thing being kept out.
+        Some(_) => Err(format!("{stem}: a leaf survived the blanking, refusing to write").into()),
+        None => Ok(()),
+    }
 }
 
 /// Rewrites a captured value in place according to its tier.
 fn apply(value: &mut Value, redaction: Redaction) {
     match redaction {
         Redaction::None => {}
-        Redaction::Account => redact_account_fields(value),
         Redaction::Structural => blank_every_leaf(value),
         Redaction::Capped => cap_nested_arrays(value),
     }
@@ -240,36 +300,23 @@ fn apply(value: &mut Value, redaction: Redaction) {
 /// request's `per-page`. What this cuts is the second level and deeper — the
 /// expirations of a chain and the strikes within them.
 fn cap_nested_arrays(value: &mut Value) {
-    match value {
-        Value::Object(map) => map.values_mut().for_each(cap_nested_arrays),
-        Value::Array(items) => {
-            items.truncate(MAX_NESTED);
-            items.iter_mut().for_each(cap_nested_arrays);
-        }
-        _ => {}
+    // The envelope's own `items` is already bounded by the request's
+    // `per-page`, and truncating it here would silently drop records the
+    // caller asked for. Only what is nested inside a record is capped.
+    match value.get_mut("items").and_then(Value::as_array_mut) {
+        Some(records) => records.iter_mut().for_each(cap_below_root),
+        None => cap_below_root(value),
     }
 }
 
-/// Replaces the two fields on an account record that identify a person.
-///
-/// The rest of the record is flags — margin or cash, futures approved, closed —
-/// which is what a serde test for this type exists to pin down.
-fn redact_account_fields(value: &mut Value) {
+/// Truncates every array from here down.
+fn cap_below_root(value: &mut Value) {
     match value {
-        Value::Object(map) => {
-            for (key, entry) in map.iter_mut() {
-                let identifying = key.ends_with("account-number")
-                    || key == "account-number"
-                    || key == "nickname"
-                    || key == "external-id";
-                if identifying && entry.is_string() {
-                    *entry = Value::String(SENTINEL.to_string());
-                } else {
-                    redact_account_fields(entry);
-                }
-            }
+        Value::Object(map) => map.values_mut().for_each(cap_below_root),
+        Value::Array(items) => {
+            items.truncate(MAX_NESTED);
+            items.iter_mut().for_each(cap_below_root);
         }
-        Value::Array(items) => items.iter_mut().for_each(redact_account_fields),
         _ => {}
     }
 }

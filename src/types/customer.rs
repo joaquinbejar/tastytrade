@@ -74,10 +74,11 @@ fn populated(value: &impl Serialize) -> usize {
 /// One account type this customer is permitted to open.
 ///
 /// **Snake case, alone in this module.** Every other object the customer
-/// resource carries is kebab-case; this one and its margin types are not, which
-/// is why they carry explicit renames instead of a container rule. Observed in
-/// the 2026-08-04 capture — the field was typed `String` before that, which
-/// made the whole customer resource fail to decode against the real venue.
+/// resource carries is kebab-case; this one and its margin types are not, so
+/// they carry no `rename_all` and decode through serde's default field-name
+/// mapping — which is exactly the snake_case the venue sends. Observed in the
+/// 2026-08-04 capture; the field was typed `String` before that, which made the
+/// whole customer resource fail to decode against the real venue.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct PermittedAccountType {
     /// The venue's name for the account type.
@@ -329,9 +330,14 @@ pub struct EntityOfficer {
     /// Home phone number.
     #[serde(default)]
     pub home_phone_number: Option<String>,
+    /// Unobserved. The 2026-08-04 capture is an individual account and
+    /// carries no entity section, so nothing here has been seen on the
+    /// wire. The booleans found elsewhere in this module were found; this
+    /// was not, and changing it on that basis would be the guess this
+    /// exercise exists to remove.
     /// Is foreign.
     #[serde(default)]
-    pub is_foreign: Option<bool>,
+    pub is_foreign: Option<String>,
     /// Job title.
     #[serde(default)]
     pub job_title: Option<String>,
@@ -473,9 +479,14 @@ pub struct CustomerEntity {
     /// Has foreign institution affiliation.
     #[serde(default)]
     pub has_foreign_institution_affiliation: Option<String>,
+    /// Unobserved. The 2026-08-04 capture is an individual account and
+    /// carries no entity section, so nothing here has been seen on the
+    /// wire. The booleans found elsewhere in this module were found; this
+    /// was not, and changing it on that basis would be the guess this
+    /// exercise exists to remove.
     /// Is domestic.
     #[serde(default)]
-    pub is_domestic: Option<bool>,
+    pub is_domestic: Option<String>,
     /// Is hedge fund.
     #[serde(default)]
     pub is_hedge_fund: Option<String>,
