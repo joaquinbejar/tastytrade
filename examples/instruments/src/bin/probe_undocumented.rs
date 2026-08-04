@@ -33,19 +33,34 @@ use tracing::info;
 
 /// The routes in question, plus the ones that make the answer interpretable.
 ///
-/// The controls matter more than they look. `/instruments/equities` is in the
-/// current spec *and* in the release note, so it shows what a supported
-/// paginated listing answers. `/instruments/equity-options` is in the release
-/// note and **absent from the current spec**, yet this crate calls it — so if
-/// it answers, absence from the spec means nothing on its own, and the two
-/// routes under investigation cannot be declared retired on that basis.
-const ROUTES: [(&str, &str); 4] = [
+/// The controls matter more than they look, and the negative one matters most.
+///
+/// `/instruments/equities` is in the current spec *and* in the release note, so
+/// it shows what a supported paginated listing answers.
+/// `/instruments/equity-options` is in the release note and **absent from the
+/// current spec**, yet this crate calls it — so if it answers, absence from the
+/// spec means nothing on its own.
+///
+/// The last one cannot exist. It is what makes a refusal readable: if a path
+/// nobody ever routed comes back with the same status as the two under
+/// investigation, then that status is what this deployment says to *any*
+/// unrecognised path and carries no information about these two. Without it a
+/// `403` reads as "exists but forbidden", which is a conclusion the evidence
+/// does not support.
+const ROUTES: [(&str, &str); 5] = [
     ("/instruments/equity-deliverables", "under investigation"),
     ("/instruments/future-spreads", "under investigation"),
-    ("/instruments/equities", "control: in the current spec"),
+    (
+        "/instruments/equities",
+        "positive control: in the current spec",
+    ),
     (
         "/instruments/equity-options",
         "control: absent from the current spec, implemented here",
+    ),
+    (
+        "/instruments/there-is-no-such-route",
+        "negative control: certainly does not exist",
     ),
 ];
 
@@ -116,14 +131,24 @@ async fn probe(tasty: &TastyTrade, path: &str) -> String {
         // The status is the answer. 404 means the route is gone, 401/403 means
         // it exists and this application is not entitled to it, and those are
         // very different conclusions to write into a coverage table.
-        Err(TastyTradeError::Request { context, .. }) => match context.status {
-            Some(404) => "404 — the venue does not route this path".to_string(),
-            Some(status) => format!(
-                "{status} — the route exists; this is an authorisation or \
-                 parameter answer, not an absence"
-            ),
-            None => "no response reached the venue".to_string(),
-        },
+        // The status is the answer, read against the negative control below.
+        // The broker's own error code survives sanitisation and is the most
+        // specific thing available; its prose does not and is not printed.
+        Err(TastyTradeError::Request { context, api }) => {
+            let code = api
+                .as_ref()
+                .and_then(|error| error.code.as_deref())
+                .map(|code| format!(" [{code}]"))
+                .unwrap_or_default();
+            match context.status {
+                Some(404) => format!("404{code} — the venue does not route this path"),
+                Some(status) => format!(
+                    "{status}{code} — compare with the negative control before \
+                     reading this as the route existing"
+                ),
+                None => "no response reached the venue".to_string(),
+            }
+        }
         // A local refusal never reached the venue, so it says nothing about
         // the route — reporting it as an answer would be the probe lying.
         Err(TastyTradeError::Precondition(why)) => {
