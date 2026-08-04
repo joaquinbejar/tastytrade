@@ -228,12 +228,14 @@ claim they do not.
 
 | Endpoint | State | Determined |
 |----------|-------|------------|
-| `GET /instruments/equity-deliverables` | ❔ not in the current public API document | 2026-08-03 |
-| `GET /instruments/future-spreads` | ❔ not in the current public API document | 2026-08-03 |
+| `GET /instruments/equity-deliverables` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
+| `GET /instruments/future-spreads` | ❔ routed by the venue, undocumented, not entitled under this grant | 2026-08-04 |
 
-**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ not in
-the current public API document, so there is no contract to implement against.
-The third state is the point of this section: it is not a backlog item.
+**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ routed
+by the venue but described in no current public API document, so there is no
+contract to implement against. The third state is the point of this section: it
+is not a backlog item, and it is not an absence either — see the probe result
+below for what distinguishes the two.
 
 #### The evidence
 
@@ -247,23 +249,87 @@ The Instruments OpenAPI document currently served from
 `instruments-api-swagger_20250715.json` — the **same date** — and contains 24
 paths, neither of them among them.
 
+**Nor is any other area.** On 2026-08-04 the sweep was widened from Instruments
+to every OpenAPI document the developer site publishes — sixteen areas, **85
+paths** — on the chance that the routes had moved rather than gone. They are in
+none of them:
+
+| Area | Paths | Area | Paths |
+|------|------:|------|------:|
+| `account-status` | 1 | `market-sessions` | 11 |
+| `accounts-and-customers` | 4 | `net-liquidating-value-history` | 1 |
+| `backtesting` | 6 | `orders` | 12 |
+| `balances-and-positions` | 4 | `quote-alerts` | 2 |
+| `instruments` | 24 | `risk-parameters` | 4 |
+| `margin-requirements` | 2 | `symbol-search` | 1 |
+| `market-data` | 1 | `transactions` | 3 |
+| `market-metrics` | 3 | `watchlists` | 6 |
+
+Reproducible without credentials: each page embeds its document in a
+`__NEXT_DATA__` script tag under `props.pageProps.specData[0].spec`, so fetching
+the sixteen slugs above from `https://developer.tastytrade.com/open-api-spec/`
+and grepping the `paths` keys re-runs this in about a minute.
+
+**And no later release note touches them.** The notes document carries five
+dated entries — `20240501`, `20250715`, `20250813`, `20260211`, `20260629`.
+Three were published *after* the one that names these routes, and none of the
+three mentions instruments, deliverables or spreads at all. So the venue has
+neither retired them in writing nor mentioned them again: the 20250715 note
+remains the only place either route appears in any published material.
+
 #### Why that is not enough to declare them retired
 
 The same release note names two more endpoints that the same-day spec also
 omits: `GET /instruments/equity-options` and `GET /instruments/future-options`,
 the plural list forms. Both are present in the earlier spec capture kept at
-`Doc/Instruments.json`, both are implemented here as `list_equity_options()`
-and `list_future_options()`, and both answer.
+`Doc/Instruments.json` and both are implemented here, as `list_equity_options()`
+and `list_future_options()`.
 
 Four of the eight endpoints in that release note are missing from the spec
-published beside it, and at least two of those four demonstrably still work.
-Absence from the document is therefore evidence about the **document**, not
-about the API. Deriving a client contract for `equity-deliverables` or
+published beside it. Absence from the document is therefore evidence about the
+**document**, not about the API. Deriving a client contract for `equity-deliverables` or
 `future-spreads` from the release note alone would be inventing one — an
 `items` envelope and a pagination block is the entire published description,
 with no field list, no filters and no response schema.
 
-#### What would settle it
+#### What the venue answered — 2026-08-04, certification
+
+The probe ran. Read-only `GET`s against `api.cert.tastyworks.com`:
+
+| Path | Status | Reading |
+|------|--------|---------|
+| `/instruments/there-is-no-such-route` | **404** | negative control — the venue 404s a path it does not route |
+| `/instruments/equity-deliverables` | **403** | under investigation |
+| `/instruments/future-spreads` | **403** | under investigation |
+| `/instruments/equity-options` | **403** | control — absent from the spec, called by this crate |
+| `/instruments/equities` | **200** | positive control — 24,692 items; offset 1 returns a different record from offset 0 |
+
+**Both routes exist.** The negative control is what makes that readable: this
+deployment answers `404` for a path it does not route, and neither route under
+investigation answered `404`. `403` is a different answer — the request reached
+something and was refused. Absence was the hypothesis this probe was built to
+test, and it is now ruled out.
+
+What is *not* established is the contract. A `403` carries no payload, so there
+is still no field list, no filters and no response schema — the same position as
+before on that question, reached from evidence rather than from a document's
+silence. Nothing here can be implemented yet, and implementing it from the
+release note would still be inventing it.
+
+The `equity-options` row is why the refusal is read as entitlement rather than
+as a statement about these two routes in particular. That route is called by
+this crate, and it is refused under the same grant, so the OAuth application
+used here is simply not scoped for these listings. A grant with wider scopes
+would answer the contract question in one run.
+
+**Production is unprobed.** The refresh token in this checkout is a
+certification grant: `POST /oauth/token` against production answers `400`, so
+the exchange fails before any instrument route is reached. The determination
+above is therefore certification-only. It is the weaker of the two — a route
+certification serves is served, but a route it refuses might still be entitled
+in production.
+
+#### How it was settled
 
 One read-only GET per route against a live host. That is
 `examples/instruments/src/bin/probe_undocumented.rs`, which probes both routes
@@ -273,10 +339,19 @@ plus the two controls above and reports the status and envelope shape:
 TASTYTRADE_USE_DEMO=true cargo run -p instruments --bin probe_undocumented
 ```
 
-It has **not been run**: this checkout has no OAuth application or grant, the
-same blocker as [#96](https://github.com/joaquinbejar/tastytrade/issues/96). A
-`404` retires the routes; anything else means they exist and the reply itself
-is the contract to model. Record the outcome here with its date either way.
+Run it **twice**, once per host, because the two answers are not
+interchangeable — a route certification does not serve is not a route
+production has retired:
+
+```shell
+TASTYTRADE_USE_DEMO=true  cargo run -p instruments --bin probe_undocumented
+TASTYTRADE_USE_DEMO=false cargo run -p instruments --bin probe_undocumented
+```
+
+The second line reads production. It is read-only — the probe issues `GET` and
+nothing else — but it is still production, so it is a deliberate act and the
+crate makes it one: anything other than the literal `false` resolves to
+certification.
 
 ## Margin Requirements
 
