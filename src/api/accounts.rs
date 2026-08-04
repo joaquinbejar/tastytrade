@@ -108,6 +108,11 @@ pub struct AccountDetails {
     #[serde(default)]
     pub is_test_drive: bool,
     /// Whether the account is margin or cash.
+    ///
+    /// Still `String`, now for a measured reason rather than an assumed one.
+    /// The census on 2026-08-04 (certification) could read exactly **one**
+    /// account, and one record is not a value set. See
+    /// [#125](https://github.com/joaquinbejar/tastytrade/issues/125).
     pub margin_or_cash: String,
     /// Whether the account is foreign. `None` when the venue omits the flag,
     /// which is not the same as `false`.

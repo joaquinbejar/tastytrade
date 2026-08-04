@@ -767,6 +767,30 @@ macro_rules! redacted_account_render {
 pub(crate) use redacted_account_render;
 
 wire_enum! {
+    /// The venue's `product-type` classification of a futures product.
+    ///
+    /// **Not a settlement flag.** `cash_settled` is its own field and carries
+    /// that meaning; the captured `FutureOptionProduct` fixture pairs
+    /// `"cash-settled": false` with `"product-type": "Financial"`, so reading
+    /// this as cash-versus-physical settlement would contradict the record it
+    /// came from. What the two values distinguish is not documented anywhere
+    /// published, so this says what the venue calls them and nothing more.
+    ///
+    /// Observed on 2026-08-04 against certification: 83 future products carried
+    /// 305 occurrences of the field between them and every one was `Financial`
+    /// or `Physical`. That is a measured set rather than a guessed one, which
+    /// is what kept this a `String` until now — see
+    /// [#125](https://github.com/joaquinbejar/tastytrade/issues/125).
+    ///
+    /// It keeps the `Unknown` arm regardless: 83 products is a good sample and
+    /// not a guarantee, and `Items<T>` drops a row it cannot decode.
+    ProductType {
+        Financial => "Financial",
+        Physical => "Physical",
+    }
+}
+
+wire_enum! {
     /// How an option series expires.
     ///
     /// Observed values come from a captured futures option chain.

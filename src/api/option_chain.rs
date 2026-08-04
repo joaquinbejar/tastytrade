@@ -87,6 +87,9 @@ pub struct NestedOptionChain {
     pub root_symbol: Symbol,
     /// Standard or non-standard. Still text: no captured payload in this
     /// repository shows its value set, so it is not modelled as an enum.
+    ///
+    /// Still `String`: the census on 2026-08-04 read one chain and saw one
+    /// value, `Standard`. One observation is not a set — see #125.
     pub option_chain_type: String,
     /// Shares delivered per contract. Not always 100 after a split.
     pub shares_per_contract: u64,
