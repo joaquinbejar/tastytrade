@@ -43,6 +43,11 @@ pub struct Response<T: Serialize + std::fmt::Debug> {
     /// Venue-supplied and usually the request path, so on an account-scoped
     /// endpoint it contains the account number. Redact it before it reaches a
     /// log or an error.
+    ///
+    /// The field defaults only so endpoint-specific decoding can accept the
+    /// production Market Metrics envelope, which omits it. Generic request
+    /// paths still reject an empty context in the client decoder.
+    #[serde(default)]
     pub context: String,
     /// Present only on paginated endpoints.
     pub pagination: Option<Pagination>,

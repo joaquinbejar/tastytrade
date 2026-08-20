@@ -37,7 +37,15 @@ pub struct MarketMetric {
     )]
     pub implied_volatility_index_5_day_change: Option<Decimal>,
     /// Where the current IV sits in its own yearly range, as a ratio.
-    #[serde(default, with = "crate::types::wire::decimal_option")]
+    ///
+    /// Production names this `implied-volatility-index-rank`. The shorter
+    /// historical spelling remains the serialized form and is still accepted,
+    /// preserving the public wire contract while decoding both venue shapes.
+    #[serde(
+        alias = "implied-volatility-index-rank",
+        default,
+        with = "crate::types::wire::decimal_option"
+    )]
     pub implied_volatility_rank: Option<Decimal>,
     /// What fraction of the year IV was below where it is now.
     #[serde(default, with = "crate::types::wire::decimal_option")]
@@ -315,6 +323,11 @@ mod tests {
             "-0.0123"
         );
         assert_eq!(metric.liquidity_rating, Some(4));
+        assert_eq!(
+            metric.implied_volatility_rank,
+            Some(Decimal::new(5117, 4)),
+            "the historical field spelling remains accepted"
+        );
         assert_eq!(metric.option_expiration_implied_volatilities.len(), 1);
         // …and what the venue did not send stays absent. A rank of zero would
         // read as "cheapest volatility all year".

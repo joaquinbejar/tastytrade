@@ -161,7 +161,13 @@ impl TastyTrade {
         resp.into_items()
     }
 
-    /// Equity options by symbol.
+    /// Equity options by symbol through the legacy plural collection.
+    ///
+    /// The current `20250715` Swagger documents only the singular
+    /// `/instruments/equity-options/{symbol}` lookup. The release note names
+    /// this plural route, and an older captured contract describes it, so this
+    /// compatibility method remains available. Production and certification
+    /// probes returned `403`; its current collection contract is unverified.
     ///
     /// # Errors
     ///
