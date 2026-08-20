@@ -1,6 +1,6 @@
 [package]
 name = "tastytrade"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 # Verified rather than inferred: 1.88 builds, 1.87 fails with "let expressions
 # in this position are unstable" — in this crate and inside dxlink, which

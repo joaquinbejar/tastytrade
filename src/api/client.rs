@@ -382,6 +382,7 @@ impl RequestReport {
 async fn decode_response<T, R>(
     report: &RequestReport,
     response: reqwest::Response,
+    context_policy: ContextPolicy,
 ) -> TastyResult<R>
 where
     T: DeserializeOwned + Serialize + std::fmt::Debug,
@@ -449,7 +450,19 @@ where
     );
 
     match serde_json::from_str::<TastyApiResponse<T>>(&body) {
-        Ok(TastyApiResponse::Success(s)) => R::from_tasty(s),
+        Ok(TastyApiResponse::Success(s)) => {
+            if context_policy == ContextPolicy::Required && s.context.is_empty() {
+                debug!(
+                    "{} {}: success envelope omitted its required context",
+                    report.method, report.operation
+                );
+                return Err(crate::TastyTradeError::Request {
+                    context: report.context(Some(status.as_u16())),
+                    api: None,
+                });
+            }
+            R::from_tasty(s)
+        }
         // A 2xx carrying an error document. The venue disagrees with itself,
         // and the document is the more specific answer.
         Ok(TastyApiResponse::Error { error }) => Err(crate::TastyTradeError::Request {
@@ -482,6 +495,17 @@ where
             })
         }
     }
+}
+
+/// Whether a success envelope must identify the endpoint it represents.
+///
+/// Required is the default for every generic request path. Production Market
+/// Metrics is the one observed exception: its public, non-account-scoped
+/// response omits `context` while still carrying a valid `data.items` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextPolicy {
+    Required,
+    Optional,
 }
 
 /// Wraps a transport failure in the same sanitised shape as a venue failure.
@@ -800,6 +824,26 @@ impl TastyTrade {
         self.get_with_query_at(&base, url, query).await
     }
 
+    /// A GET whose success envelope may omit `context`.
+    ///
+    /// Scoped to Market Metrics, the one production endpoint observed with
+    /// that contract. Keeping this private prevents another endpoint from
+    /// silently opting out of the generic response invariant.
+    async fn get_with_optional_context<T, R, U>(
+        &self,
+        url: U,
+        query: &[(&str, &str)],
+    ) -> TastyResult<R>
+    where
+        T: DeserializeOwned + Serialize + std::fmt::Debug,
+        R: FromTastyResponse<T>,
+        U: AsRef<str>,
+    {
+        let base = self.config.base_url.clone();
+        self.get_with_query_at_policy(&base, url, query, ContextPolicy::Optional)
+            .await
+    }
+
     /// A GET against a base other than the configured one.
     ///
     /// Everything else is identical — the deployment check, the pre-request
@@ -811,6 +855,23 @@ impl TastyTrade {
         base: &str,
         url: U,
         query: &[(&str, &str)],
+    ) -> TastyResult<R>
+    where
+        T: DeserializeOwned + Serialize + std::fmt::Debug,
+        R: FromTastyResponse<T>,
+        U: AsRef<str>,
+    {
+        self.get_with_query_at_policy(base, url, query, ContextPolicy::Required)
+            .await
+    }
+
+    /// The shared GET path after the endpoint has selected its context policy.
+    async fn get_with_query_at_policy<T, R, U>(
+        &self,
+        base: &str,
+        url: U,
+        query: &[(&str, &str)],
+        context_policy: ContextPolicy,
     ) -> TastyResult<R>
     where
         T: DeserializeOwned + Serialize + std::fmt::Debug,
@@ -869,7 +930,7 @@ impl TastyTrade {
                 .map_err(|e| transport_failure(&report, e))?
         };
 
-        decode_response::<T, R>(&report, response).await
+        decode_response::<T, R>(&report, response, context_policy).await
     }
 
     /// A GET against a second host that answers with a raw body.
@@ -1010,7 +1071,7 @@ impl TastyTrade {
             .await
             .map_err(|e| transport_failure(&report, e))?;
 
-        decode_response::<R, R>(&report, response).await
+        decode_response::<R, R>(&report, response, ContextPolicy::Required).await
     }
 
     /// Performs a PUT with a JSON payload.
@@ -1087,7 +1148,7 @@ impl TastyTrade {
             .await
             .map_err(|e| transport_failure(&report, e))?;
 
-        decode_response::<R, R>(&report, response).await
+        decode_response::<R, R>(&report, response, ContextPolicy::Required).await
     }
 
     /// Performs a DELETE.
@@ -1120,7 +1181,7 @@ impl TastyTrade {
             .await
             .map_err(|e| transport_failure(&report, e))?;
 
-        decode_response::<R, R>(&report, response).await
+        decode_response::<R, R>(&report, response, ContextPolicy::Required).await
     }
 
     /// `DELETE` an endpoint that answers `204 No Content`.
@@ -1168,9 +1229,13 @@ impl TastyTrade {
 
         // Reuses the failure half of the shared decoder, which sanitises the
         // broker's error document and never logs the body.
-        decode_response::<serde_json::Value, serde_json::Value>(&report, response)
-            .await
-            .map(|_| ())
+        decode_response::<serde_json::Value, serde_json::Value>(
+            &report,
+            response,
+            ContextPolicy::Required,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Every account on this session.
@@ -1302,7 +1367,7 @@ impl TastyTrade {
     ) -> TastyResult<Vec<MarketMetric>> {
         let query = symbols_query(symbols)?;
         let resp: Items<MarketMetric> = self
-            .get_with_query("/market-metrics", &query.pairs())
+            .get_with_optional_context("/market-metrics", &query.pairs())
             .await?;
         resp.into_items()
     }

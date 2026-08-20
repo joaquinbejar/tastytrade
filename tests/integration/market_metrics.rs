@@ -13,6 +13,9 @@ use tastytrade::utils::config::TastyTradeConfig;
 
 use crate::support::{MockVenue, Route, sentinel, token_response_body};
 
+const PRODUCTION_XND_METRICS: &str =
+    include_str!("../../Doc/captures/market-metrics-xnd-production.json");
+
 fn config_for(venue: &MockVenue) -> TastyTradeConfig {
     TastyTradeConfig {
         client_secret: sentinel::CLIENT_SECRET.into(),
@@ -101,12 +104,127 @@ async fn a_metric_decodes_with_its_expirations() {
             .to_string(),
         "0.3421"
     );
+    assert_eq!(
+        metrics[0].implied_volatility_rank,
+        Some(rust_decimal::Decimal::new(5117, 4)),
+        "the historical IV-rank key remains an accepted alias"
+    );
     let expiration = &metrics[0].option_expiration_implied_volatilities[0];
     assert_eq!(
         expiration.expiration_date,
         NaiveDate::from_ymd_opt(2026, 5, 15),
         "an expiration is a calendar day whichever shape the venue sends"
     );
+}
+
+/// Production omits `context` and names the field with its `index` segment.
+/// This fixture is a minimized read-only capture, not a second hand-written
+/// copy of the implementation's assumptions.
+#[tokio::test]
+async fn the_production_xnd_envelope_decodes_without_context() {
+    let venue = venue_with(vec![(
+        "GET /market-metrics",
+        Route::ok(PRODUCTION_XND_METRICS),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let metrics = client
+        .market_metrics(&["XND"])
+        .await
+        .expect("the production envelope must decode");
+
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].symbol, "XND");
+    assert_eq!(
+        metrics[0].implied_volatility_rank,
+        Some(rust_decimal::Decimal::new(608_685_367, 9))
+    );
+}
+
+/// Context tolerance belongs to Market Metrics, not the generic response
+/// decoder. An account-scoped endpoint without it must continue to fail.
+#[tokio::test]
+async fn a_generic_success_envelope_without_context_remains_invalid() {
+    let venue = venue_with(vec![(
+        "GET /accounts/REDACTED/balances",
+        Route::ok(r#"{"data":{"items":[]}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let result = client
+        .get::<serde_json::Value, _>("/accounts/REDACTED/balances")
+        .await;
+    let error = result.expect_err("generic endpoints still require context");
+
+    assert!(matches!(
+        error,
+        TastyTradeError::Request {
+            context: RequestContext {
+                status: Some(200),
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(
+        !format!("{error:?} {error}").contains("REDACTED"),
+        "the account path must remain redacted on the schema-error path"
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_contextless_market_metrics_payload_is_an_error() {
+    let venue = venue_with(vec![(
+        "GET /market-metrics",
+        Route::ok(r#"{"data":{"items":"not-a-list"}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let error = client
+        .market_metrics(&["XND"])
+        .await
+        .expect_err("a malformed items block must not read as an empty listing");
+
+    assert!(matches!(
+        error,
+        TastyTradeError::Request {
+            context: RequestContext {
+                status: Some(200),
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(!error.is_retryable(), "the same body will fail again");
+}
+
+#[tokio::test]
+async fn a_production_row_without_rank_stays_absent() {
+    let venue = venue_with(vec![(
+        "GET /market-metrics",
+        Route::ok(r#"{"data":{"items":[{"symbol":"XND"}]}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let metrics = client
+        .market_metrics(&["XND"])
+        .await
+        .expect("an absent optional rank is a valid venue answer");
+
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].implied_volatility_rank, None);
 }
 
 /// The symbol is a path segment, so a class separator has to be encoded.
