@@ -7,7 +7,8 @@ crate implements.
 Source of truth: the swagger documents embedded in each `/open-api-spec/<area>/`
 page (`__NEXT_DATA__` → `props.pageProps.specData`), newest version per area.
 Snapshot taken 2026-08-03; the Orders spec was `order-api-swagger_20260427` and
-the Instruments spec `instruments-api-swagger_20250715`.
+the Instruments spec `instruments-api-swagger_20250715`. Instruments was
+rechecked against the current default `20250715` download on 2026-08-20.
 
 Three states, not two. ✅ implemented · ❌ published and not yet implemented ·
 ❔ **named somewhere official but not in the current public API document**, so
@@ -24,7 +25,7 @@ difference is exactly what
 | Accounts and Customers | 4 | 4 | 0 | 100% | [#75](https://github.com/joaquinbejar/tastytrade/issues/75) |
 | Backtesting | 7 | 7 | 0 | 100% | [#84](https://github.com/joaquinbejar/tastytrade/issues/84) |
 | Balances and Positions | 4 | 4 | 0 | 100% | [#74](https://github.com/joaquinbejar/tastytrade/issues/74) |
-| Instruments | 24 | 24 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
+| Instruments | 23 | 23 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Margin Requirements | 2 | 2 | 0 | 100% | [#78](https://github.com/joaquinbejar/tastytrade/issues/78) |
 | Market Data | 1 | 1 | 0 | 100% | [#76](https://github.com/joaquinbejar/tastytrade/issues/76) |
 | Market Metrics | 3 | 3 | 0 | 100% | [#77](https://github.com/joaquinbejar/tastytrade/issues/77) |
@@ -36,7 +37,7 @@ difference is exactly what
 | Symbol Search | 1 | 1 | 0 | 100% | [#82](https://github.com/joaquinbejar/tastytrade/issues/82) |
 | Transactions | 3 | 3 | 0 | 100% | [#72](https://github.com/joaquinbejar/tastytrade/issues/72) |
 | Watchlists | 9 | 9 | 0 | 100% | [#80](https://github.com/joaquinbejar/tastytrade/issues/80) |
-| **TOTAL** | **97** | **97** | **0** | **100%** | |
+| **TOTAL** | **96** | **96** | **0** | **100%** | |
 
 Not counted above because it is documented in prose rather than in a swagger
 document: OAuth2 (`POST /oauth/token` — implemented, both grants), tracked in
@@ -148,13 +149,12 @@ value used to go out as `Eod` rather than `EOD`: `SnapshotTimeOfDay`'s
 
 ## Instruments
 
-Complete against `instruments-api-swagger_20250715`.
+Complete against the current default `20250715` Instruments contract.
 
 | Endpoint | Method | Status |
 |----------|--------|--------|
 | `GET /futures-option-chains/{symbol}` | `list_futures_option_chains()` | ✅ |
 | `GET /futures-option-chains/{symbol}/nested` | `list_nested_futures_option_chains()` | ✅ |
-| `POST /instruments/ai-search-token` | `ai_search_token()` | ✅ |
 | `GET /instruments/cryptocurrencies` | `list_cryptocurrencies()` | ✅ |
 | `GET /instruments/cryptocurrencies/{symbol}` | `get_cryptocurrency()` | ✅ |
 | `GET /instruments/equities` | `list_equities(&EquityFilter)` → `Paginated<T>` | ✅ |
@@ -180,13 +180,24 @@ Complete against `instruments-api-swagger_20250715`.
 The crate also implements `GET /instruments/equity-options` and
 `GET /instruments/future-options` (the plural list forms) via
 `list_equity_options()` and `list_future_options()`. Neither appears in the
-published spec; keep them.
+current published spec; keep them for compatibility with the older captured
+contract and the `20250715` release note. The current spec documents only the
+singular lookups, including `GET /instruments/equity-options/{symbol}`.
+
+`POST /instruments/ai-search-token` also disappeared from the current download.
+The compatible `ai_search_token()` method stays available, with its opaque
+credential redacted on every rendering and error surface.
 
 **`list_equity_options()` is implemented but unverified.** The probe on
 2026-08-04 got `403` from `/instruments/equity-options` under a grant reporting
 `read,trade,openid`, so nothing has observed this method work. The earlier claim
 here that both "work against the venue" was inherited, not measured, and it is
-withdrawn. The cause of the refusal is not established —
+withdrawn. A separately authorised production grant reporting `read,trade`
+repeated the `403` on 2026-08-20 while the documented equities listing answered
+`200`, so this is not certification-only or a missing generic read permission.
+The cause of the refusal and even the collection route's current availability
+are still not established: an authentication or policy layer can return `403`
+before the final route match —
 [#129](https://github.com/joaquinbejar/tastytrade/issues/129).
 
 **They keep returning `Vec<T>`**, unlike every other listing. The `20250715`
@@ -233,14 +244,13 @@ claim they do not.
 
 | Endpoint | State | Determined |
 |----------|-------|------------|
-| `GET /instruments/equity-deliverables` | ❔ routed by the venue, undocumented, access-restricted for a reason not established | 2026-08-04 |
-| `GET /instruments/future-spreads` | ❔ routed by the venue, undocumented, access-restricted for a reason not established | 2026-08-04 |
+| `GET /instruments/equity-deliverables` | ❔ announced in a release note, absent from the current spec, refused before a contract was established | 2026-08-20 |
+| `GET /instruments/future-spreads` | ❔ announced in a release note, absent from the current spec, refused before a contract was established | 2026-08-20 |
 
-**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ routed
-by the venue but described in no current public API document, so there is no
-contract to implement against. The third state is the point of this section: it
-is not a backlog item, and it is not an absence either — see the probe result
-below for what distinguishes the two.
+**Legend.** ✅ implemented · ❌ published and not yet implemented · ❔ named by
+the venue but described in no current public API document, so route availability
+and the response contract remain unresolved. The third state is the point of
+this section: it is not implementable without inventing a contract.
 
 #### The evidence
 
@@ -251,8 +261,11 @@ among them. So both existed on 2025-07-15.
 
 The Instruments OpenAPI document currently served from
 <https://developer.tastytrade.com/open-api-spec/instruments/> is
-`instruments-api-swagger_20250715.json` — the **same date** — and contains 24
-paths, neither of them among them.
+the default `20250715` contract — the **same date** — and contains 23 paths as
+of 2026-08-20, neither of them among them. It documents
+`GET /instruments/equity-options/{symbol}`, not the plural collection. Omitting
+`Accept-Version` selects this default contract; sending
+`Accept-Version: 20250715` selects it explicitly.
 
 **Nor is any other area.** On 2026-08-04 the sweep was widened from Instruments
 to every OpenAPI document the developer site publishes — sixteen areas, **85
@@ -309,11 +322,12 @@ The probe ran. Read-only `GET`s against `api.cert.tastyworks.com`:
 | `/instruments/equity-options` | **403** | control — absent from the spec, called by this crate |
 | `/instruments/equities` | **200** | positive control — 24,692 items; offset 1 returns a different record from offset 0 |
 
-**Both routes exist.** The negative control is what makes that readable: this
-deployment answers `404` for a path it does not route, and neither route under
-investigation answered `404`. `403` is a different answer — the request reached
-something and was refused. Absence was the hypothesis this probe was built to
-test, and it is now ruled out.
+**The `403`s do not prove that the final routes exist.** They prove only that the
+request reached a layer which refused it. Authentication, authorisation or
+prefix policy can run before final route matching, so the negative control's
+`404` does not guarantee that every unknown `/instruments/*` path follows the
+same branch. Route absence therefore remains possible alongside restricted
+access.
 
 What is *not* established is the contract. A `403` carries no payload, so there
 is still no field list, no filters and no response schema — the same position as
@@ -332,14 +346,32 @@ established — [#129](https://github.com/joaquinbejar/tastytrade/issues/129)
 investigates it — and describing it as an entitlement or scope problem would be
 asserting something the evidence does not support.
 
-**Production is unprobed.** The refresh token in this checkout is a
-certification grant: `POST /oauth/token` against production answers `400`, so
-the exchange fails before any instrument route is reached. The determination
-above is therefore certification-only. It is the weaker of the two — a route
-certification serves is served, but a route it refuses might still be entitled
-in production.
+#### What production answered — 2026-08-20
 
-#### How it was settled
+A separately authorised production OAuth grant reporting `read,trade` ran the
+same read-only probe. The probe printed status, envelope shape and field names,
+never values, headers or credentials. Its minimised redacted record is
+[`captures/instrument-access-probe-production.json`](captures/instrument-access-probe-production.json).
+
+| Path | Status | Reading |
+|------|--------|---------|
+| `/instruments/equity-deliverables` | **403** | access-restricted; cause and contract remain unknown |
+| `/instruments/future-spreads` | **403** | access-restricted; cause and contract remain unknown |
+| `/instruments/equity-options` | **403** | same implemented-but-undocumented control as certification |
+| `/instruments/equities` | **200** | paginated positive control; offset 1 returned a different record from offset 0 |
+| `/instruments/there-is-no-such-route` | **404** | negative control |
+
+The repeated refusal rules out a certification-only outage, and the successful
+equities request rules out a missing generic read permission. It still does
+**not** establish whether any final route matched or whether a policy is
+application-, customer-, account-, product-, prefix- or venue-level. Neither
+`403` contains a successful payload, so there is still no field list, filter set
+or response envelope to implement for `equity-deliverables` or
+`future-spreads`. They remain deliberately untyped; `list_equity_options()`
+remains an undocumented compatibility method whose collection contract is
+unverified; and `option-type` remains a tolerant `String`.
+
+#### How to reproduce the unresolved result
 
 One read-only GET per route against a live host. That is
 `examples/instruments/src/bin/probe_undocumented.rs`, which probes both routes
@@ -372,7 +404,7 @@ with `examples/instruments/src/bin/probe_entitlements.rs`, read-only:
 | Answer | Routes |
 |--------|--------|
 | **200** — capturable today | `/customers/me`, `/customers/me/accounts`, `/instruments/equities`, `/instruments/cryptocurrencies`, `/instruments/warrants`, `/instruments/futures`, `/instruments/future-products`, `/instruments/quantity-decimal-precisions`, `/option-chains/{symbol}/nested`, `/instruments/search`, `/market-time/equities/sessions/current` |
-| **403** — routed, access-restricted, cause unknown | `/instruments/equity-options` |
+| **403** — refused before the collection contract was established | `/instruments/equity-options` |
 | **502** — **not served by certification** | `/symbols/search/{symbol}`, `/market-metrics`, `/market-data/by-type`, `/quote-alerts`, `/watchlists`, `/pairs-watchlists` |
 
 Eleven of eighteen. The `502` group is the one that matters for planning:

@@ -214,3 +214,59 @@ fn the_market_session_decodes_and_keeps_its_offset() {
 
     assert!(checked > 0, "the capture carried no timestamp to check");
 }
+
+/// The production access probe records evidence, never an invented contract.
+///
+/// The two release-note-only routes and the implemented undocumented control
+/// are all refused beside a working read and a negative control. Keeping the
+/// official OpenAPI distinction with those answers prevents a later document
+/// edit from treating the refusal as proof that the final routes exist.
+#[test]
+fn the_production_instrument_access_probe_keeps_both_controls() {
+    let capture = capture!("instrument-access-probe-production");
+    let probe: Value = serde_json::from_str(capture).expect("the probe summary must be valid JSON");
+    assert_eq!(probe["environment"], "production");
+    assert_eq!(
+        probe["api-version"],
+        "20250715 (default when Accept-Version is omitted)"
+    );
+    assert_eq!(probe["oauth-scopes"], serde_json::json!(["read", "trade"]));
+    assert_eq!(
+        probe["official-openapi"]["documented-equity-option-path"],
+        "/instruments/equity-options/{symbol}"
+    );
+    assert_eq!(probe["official-openapi"]["path-count"], 23);
+    assert_eq!(probe["official-release-note"]["version"], "20250715");
+    assert_eq!(
+        probe["official-openapi"]["omitted-collection-paths"],
+        serde_json::json!([
+            "/instruments/equity-deliverables",
+            "/instruments/future-spreads",
+            "/instruments/equity-options"
+        ])
+    );
+
+    let rows = probe["probes"]
+        .as_array()
+        .expect("the probe summary must carry its rows");
+    let status = |path: &str| {
+        rows.iter()
+            .find(|row| row["path"] == path)
+            .and_then(|row| row["status"].as_u64())
+    };
+
+    assert_eq!(status("/instruments/equity-deliverables"), Some(403));
+    assert_eq!(status("/instruments/future-spreads"), Some(403));
+    assert_eq!(status("/instruments/equity-options"), Some(403));
+    assert_eq!(status("/instruments/equities"), Some(200));
+    assert_eq!(status("/instruments/there-is-no-such-route"), Some(404));
+    assert_eq!(probe["probes"][3]["envelope"], "paginated");
+    assert_eq!(probe["probes"][3]["page-offset-honoured"], true);
+
+    for forbidden in ["access_token", "refresh_token", "client_secret", "bearer"] {
+        assert!(
+            !capture.to_ascii_lowercase().contains(forbidden),
+            "the redacted probe retained {forbidden}"
+        );
+    }
+}

@@ -1,0 +1,85 @@
+{
+  "captured-at": "2026-08-20",
+  "environment": "production",
+  "method": "GET",
+  "api-version": "20250715 (default when Accept-Version is omitted)",
+  "oauth-scopes": [
+    "read",
+    "trade"
+  ],
+  "redaction": "No credentials, headers, identifiers, or field values retained",
+  "official-release-note": {
+    "version": "20250715",
+    "named-collection-paths": [
+      "/instruments/equity-deliverables",
+      "/instruments/future-spreads",
+      "/instruments/equity-options"
+    ]
+  },
+  "official-openapi": {
+    "path-count": 23,
+    "documented-equity-option-path": "/instruments/equity-options/{symbol}",
+    "omitted-collection-paths": [
+      "/instruments/equity-deliverables",
+      "/instruments/future-spreads",
+      "/instruments/equity-options"
+    ]
+  },
+  "probes": [
+    {
+      "path": "/instruments/equity-deliverables",
+      "role": "under-investigation",
+      "status": 403
+    },
+    {
+      "path": "/instruments/future-spreads",
+      "role": "under-investigation",
+      "status": 403
+    },
+    {
+      "path": "/instruments/equity-options",
+      "role": "undocumented-implemented-control",
+      "status": 403
+    },
+    {
+      "path": "/instruments/equities",
+      "role": "documented-positive-control",
+      "status": 200,
+      "envelope": "paginated",
+      "page-offset-honoured": true,
+      "first-item-fields": [
+        "active",
+        "borrow-rate",
+        "bypass-manual-review",
+        "country-of-incorporation",
+        "country-of-taxation",
+        "cusip",
+        "description",
+        "id",
+        "instrument-type",
+        "is-closing-only",
+        "is-etf",
+        "is-fractional-quantity-eligible",
+        "is-fraud-risk",
+        "is-illiquid",
+        "is-index",
+        "is-options-closing-only",
+        "lendability",
+        "listed-market",
+        "market-time-instrument-collection",
+        "overnight-trading-permitted",
+        "pre-ipo",
+        "short-description",
+        "streamer-symbol",
+        "symbol",
+        "tick-sizes"
+      ]
+    },
+    {
+      "path": "/instruments/there-is-no-such-route",
+      "role": "negative-control",
+      "status": 404
+    }
+  ],
+  "conclusion": "The three 403 responses are inconclusive about final route existence; the current OpenAPI omits the collections and no response contract can be implemented"
+}
