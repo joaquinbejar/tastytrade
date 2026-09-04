@@ -91,7 +91,7 @@ impl TastyTradeConfig {
     /// be what points an order at a funded account.
     pub fn from_env() -> Self {
         #[cfg(not(test))]
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
         let client_secret =
             ClientSecret::new(env::var("TASTYTRADE_CLIENT_SECRET").unwrap_or_default());
         let refresh_token =
