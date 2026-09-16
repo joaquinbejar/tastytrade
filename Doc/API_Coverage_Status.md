@@ -771,6 +771,13 @@ reconstruct what an account actually did.
 The only user-owned mutable resource besides orders, and the only area where a
 client can **destroy** user data.
 
+Production answers the four reads (`/watchlists`, `/watchlists/{name}`,
+`/public-watchlists`, `/public-watchlists/{name}`) with a success envelope that
+has **no `context`** (#136), the same contract Market Metrics has. Those four
+methods decode it through the optional-context path; a malformed body is still
+a schema error. The pairs-watchlist reads keep the generic path until the same
+is observed for them.
+
 `replace_watchlist` replaces **every property**. It is not an append and not a
 merge: the entries sent are the entries that survive. `delete_watchlist` is
 irreversible and takes the name explicitly, so it cannot be reached from a

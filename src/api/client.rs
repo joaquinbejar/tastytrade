@@ -826,9 +826,10 @@ impl TastyTrade {
 
     /// A GET whose success envelope may omit `context`.
     ///
-    /// Scoped to Market Metrics, the one production endpoint observed with
-    /// that contract. Keeping this private prevents another endpoint from
-    /// silently opting out of the generic response invariant.
+    /// Scoped to the production endpoints observed with that contract: Market
+    /// Metrics (#132) and the four Watchlists reads (#136). Keeping this
+    /// private prevents another endpoint from silently opting out of the
+    /// generic response invariant; an endpoint joins this list on evidence.
     async fn get_with_optional_context<T, R, U>(
         &self,
         url: U,
@@ -1428,8 +1429,10 @@ impl TastyTrade {
             query.push_flag("counts-only", Some(true));
         }
 
+        // Production answers without `context` (#136); the generic path
+        // would report the valid payload as a schema error.
         let resp: Items<Watchlist> = self
-            .get_with_query("/public-watchlists", &query.pairs())
+            .get_with_optional_context("/public-watchlists", &query.pairs())
             .await?;
         resp.into_items()
     }
@@ -1453,8 +1456,11 @@ impl TastyTrade {
     ///
     /// Propagates the venue's error, including a `404`.
     pub async fn public_watchlist(&self, name: &str) -> TastyResult<Watchlist> {
-        self.get(format!("/public-watchlists/{}", encode_path_segment(name)))
-            .await
+        self.get_with_optional_context(
+            format!("/public-watchlists/{}", encode_path_segment(name)),
+            &[],
+        )
+        .await
     }
 
     /// This user's own watchlists.
@@ -1463,7 +1469,7 @@ impl TastyTrade {
     ///
     /// Fails when lists arrive but none can be decoded.
     pub async fn watchlists(&self) -> TastyResult<Vec<Watchlist>> {
-        let resp: Items<Watchlist> = self.get("/watchlists").await?;
+        let resp: Items<Watchlist> = self.get_with_optional_context("/watchlists", &[]).await?;
         resp.into_items()
     }
 
@@ -1473,7 +1479,7 @@ impl TastyTrade {
     ///
     /// Propagates the venue's error, including a `404`.
     pub async fn watchlist(&self, name: &str) -> TastyResult<Watchlist> {
-        self.get(format!("/watchlists/{}", encode_path_segment(name)))
+        self.get_with_optional_context(format!("/watchlists/{}", encode_path_segment(name)), &[])
             .await
     }
 
