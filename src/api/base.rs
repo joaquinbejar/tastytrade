@@ -45,8 +45,9 @@ pub struct Response<T: Serialize + std::fmt::Debug> {
     /// log or an error.
     ///
     /// The field defaults only so endpoint-specific decoding can accept the
-    /// production Market Metrics envelope, which omits it. Generic request
-    /// paths still reject an empty context in the client decoder.
+    /// production envelopes that omit it: Market Metrics (#132) and the four
+    /// Watchlists reads (#136). Generic request paths still reject an empty
+    /// context in the client decoder.
     #[serde(default)]
     pub context: String,
     /// Present only on paginated endpoints.
