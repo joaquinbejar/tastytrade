@@ -5,18 +5,27 @@ use crate::types::dxfeed;
 use crate::types::dxfeed::{CandlePeriod, EventKind};
 use crate::{AsSymbol, TastyResult, TastyTradeError};
 use chrono::{DateTime, Utc};
-use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent};
+use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent, OverflowPolicy};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{RwLock, mpsc, oneshot};
+use std::time::Duration;
+use tokio::sync::{Notify, RwLock, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 #[derive(DebugPretty, DisplaySimple, Serialize, PartialEq, Eq, Hash, Clone, Copy)]
 /// Identifies one subscription within a streamer.
 pub struct SubscriptionId(usize);
+
+/// How often the feed client's own loss counter is sampled while a connection
+/// is idle.
+///
+/// The counter only matters at the boundaries of a historical replay, so a
+/// coarse sample is enough: it bounds how stale the figure behind a snapshot
+/// marker's `lossless` can be, and costs one atomic store per interval.
+const DROP_MIRROR_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A cheap, clonable handle to the streamer's command loop and its channel.
 ///
@@ -45,7 +54,7 @@ pub struct QuoteSubscription {
     /// bit that means nothing.
     kinds: BTreeSet<EventKind>,
     event_receiver: flume::Receiver<dxfeed::Event>, // Keep for compatibility
-    dxlink_receiver: mpsc::Receiver<MarketEvent>,   // New DXLink event receiver
+    dxlink_receiver: mpsc::Receiver<Delivery>,      // New DXLink event receiver
     /// What this subscription is actually subscribed to.
     ///
     /// Shared with the copy the streamer keeps in its `subscription_map`, and
@@ -63,6 +72,16 @@ pub struct QuoteSubscription {
     /// Shared with the sink the forwarder delivers into, so it counts what
     /// actually happened to *this* consumer.
     lagged: Arc<AtomicU64>,
+    /// Where each of this subscription's candle series stands.
+    ///
+    /// The same map the forwarder writes, so a question about history is
+    /// answered from what was actually delivered rather than from a copy that
+    /// can be stale.
+    progress: CandleProgress,
+    /// Told when this consumer reads, so the forwarder can send what it parked.
+    drained: Arc<Notify>,
+    /// Told when any series changes phase, so a waiter re-checks.
+    history: Arc<Notify>,
 }
 
 impl QuoteSubscription {
@@ -276,7 +295,7 @@ impl QuoteSubscription {
         // has no `EventData` for, and one of those arriving must not look to
         // the caller like the stream ended.
         loop {
-            let Some(market_event) = self.dxlink_receiver.recv().await else {
+            let Some(delivery) = self.dxlink_receiver.recv().await else {
                 // Every sender is gone, which is what happens when the
                 // streamer is dropped. The flume receiver behind this is
                 // already disconnected, so this reports the end rather than
@@ -284,12 +303,218 @@ impl QuoteSubscription {
                 return self.event_receiver.recv_async().await;
             };
 
-            let converted = convert_event(market_event);
+            // Room has been made. A marker that did not fit is waiting for
+            // exactly this, and nothing else would wake the forwarder to send
+            // it: after a snapshot ends, the next event on that series may be
+            // a long way off.
+            self.drained.notify_one();
 
-            if let Some(event) = converted {
-                return Ok(event);
+            match delivery {
+                // Synthesised by this crate, so there is nothing to convert.
+                Delivery::Marker(event) => return Ok(event),
+                Delivery::Market(market_event) => {
+                    if let Some(event) = convert_event(market_event) {
+                        return Ok(event);
+                    }
+                }
             }
         }
+    }
+
+    /// Whether this symbol's historical replay has finished.
+    ///
+    /// `symbol` is the streamer symbol, period suffix included — the string
+    /// [`subscribed`](Self::subscribed) reports, not the bare underlying,
+    /// because each period replays as its own snapshot.
+    ///
+    /// `false` for a series that has no replay in progress yet, one still
+    /// replaying, and one whose connection dropped: a reconnect starts a new
+    /// replay, so history stops being loaded the moment the socket does rather
+    /// than when the venue gets around to saying so.
+    ///
+    /// This answers the same question as waiting for
+    /// [`EventData::SnapshotEnd`](crate::dxfeed::EventData::SnapshotEnd) on
+    /// [`get_event`](Self::get_event), for a caller that would rather ask than
+    /// watch. It says nothing about whether the history is **complete**; that
+    /// is [`DxfSnapshotEndT::lossless`](crate::dxfeed::DxfSnapshotEndT::lossless).
+    pub fn history_loaded(&self, symbol: &str) -> bool {
+        self.finished_history(symbol).is_some()
+    }
+
+    /// The finished replay for `symbol`, if there is one.
+    fn finished_history(&self, symbol: &str) -> Option<dxfeed::DxfSnapshotEndT> {
+        let seen = self
+            .progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let resume = seen.get(&(self.id.0 as u32, symbol.to_string()))?;
+
+        if resume.phase != SnapshotPhase::Ended {
+            return None;
+        }
+
+        Some(dxfeed::DxfSnapshotEndT {
+            generation: resume.generation,
+            kind: resume.ended_as?,
+            lossless: resume.lossless,
+        })
+    }
+
+    /// Waits until this symbol's historical replay has finished.
+    ///
+    /// Resolves with the same payload the
+    /// [`EventData::SnapshotEnd`](crate::dxfeed::EventData::SnapshotEnd) event
+    /// carries, and resolves immediately if the replay already finished. A
+    /// reconnect does **not** resolve it: the generation it was waiting on is
+    /// superseded, so it keeps waiting for the new one to finish, which is
+    /// what a caller asking "is the history in yet" means.
+    ///
+    /// There is no timeout here, because the right one belongs to the caller:
+    /// a venue that never terminates a snapshot leaves this pending forever.
+    /// Wrap it in [`tokio::time::timeout`].
+    ///
+    /// # Errors
+    ///
+    /// [`TastyTradeError::Precondition`] when this subscription holds no
+    /// candle target for `symbol`, so the wait could never end — a mistyped
+    /// symbol is a bug worth reporting rather than a hang.
+    pub async fn await_history(&self, symbol: &str) -> TastyResult<dxfeed::DxfSnapshotEndT> {
+        let subscribed = targets_of(&self.targets)
+            .iter()
+            .any(|target| target.kind == EventKind::Candle && target.symbol == symbol);
+        if !subscribed {
+            return Err(TastyTradeError::Precondition(format!(
+                "this subscription has no candle series for {symbol}, so its history can never \
+                 finish; subscribe with add_candles first, and pass the streamer symbol with its \
+                 period suffix"
+            )));
+        }
+
+        loop {
+            // Armed before the check, never after. A phase change landing
+            // between the two would otherwise be missed and the caller would
+            // wait for a notification that had already been sent.
+            let notified = self.history.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
+            if let Some(end) = self.finished_history(symbol) {
+                return Ok(end);
+            }
+
+            notified.await;
+        }
+    }
+
+    /// Unsubscribes `symbols` at `period` from this subscription.
+    ///
+    /// A partial teardown, not a close: every other series on the subscription
+    /// keeps running, including the same symbol at another period. The venue
+    /// stops sending the removed ones, they leave
+    /// [`subscribed`](Self::subscribed), and a reconnect does not bring them
+    /// back — the replay is built from the same set this removes them from.
+    ///
+    /// Written for the shape a candle consumer actually has: load history at
+    /// several periods, and as each one finishes, stop paying for a live feed
+    /// nobody is reading. Another subscription watching the same series is
+    /// unaffected; routes are held per subscription.
+    ///
+    /// A series this subscription does not hold is not an error and is not
+    /// sent to the venue, so removing twice is safe.
+    ///
+    /// # Errors
+    ///
+    /// [`TastyTradeError::Streaming`] when the streamer has no command
+    /// channel, when it is closed, or when the venue refuses the unsubscribe.
+    /// On a refusal the targets stay recorded, because that record is what a
+    /// retry needs.
+    pub async fn remove_candles<S: AsSymbol>(
+        &self,
+        symbols: &[S],
+        period: CandlePeriod,
+    ) -> TastyResult<()> {
+        let wanted: Vec<String> = symbols
+            .iter()
+            .map(|symbol| period.streamer_symbol(&symbol.as_symbol().0))
+            .collect();
+
+        self.unsubscribe_targets(&wanted).await
+    }
+
+    /// Unsubscribes this subscription's candle targets for `symbols`.
+    async fn unsubscribe_targets(&self, symbols: &[String]) -> TastyResult<()> {
+        // Matched on kind and symbol, never on the whole target: a stored
+        // candle target carries the history start it was subscribed with, and
+        // a caller removing a series has no reason to know that number.
+        let targets: Vec<FeedTarget> = {
+            let known = targets_of(&self.targets);
+            known
+                .iter()
+                .filter(|target| {
+                    target.kind == EventKind::Candle && symbols.contains(&target.symbol)
+                })
+                .cloned()
+                .collect()
+        };
+
+        if targets.is_empty() {
+            // Nothing this subscription holds, so nothing to ask the venue.
+            return Ok(());
+        }
+
+        let sub_id = self.id.0 as u32;
+        let Some(tx) = &self.streamer.commands else {
+            return Err(TastyTradeError::Streaming(
+                "the quote streamer has no command channel; reconnect before unsubscribing"
+                    .to_string(),
+            ));
+        };
+
+        let (ack, answered) = oneshot::channel();
+        tx.send(DXLinkCommand::Unsubscribe(
+            feed_subscriptions(&targets),
+            sub_id,
+            Some(ack),
+        ))
+        .await
+        .map_err(|_| {
+            TastyTradeError::Streaming(
+                "the quote streamer is closed; reconnect before unsubscribing".to_string(),
+            )
+        })?;
+
+        answered.await.unwrap_or_else(|_| {
+            Err(TastyTradeError::Streaming(
+                "the quote streamer closed before the unsubscribe was confirmed".to_string(),
+            ))
+        })?;
+
+        // Only once the venue has confirmed. The shared set is what a
+        // reconnect replays from, so forgetting a target the venue still
+        // serves would leave the series arriving with nowhere to go. The
+        // command loop takes the routes back on the same success.
+        {
+            let mut known = targets_of(&self.targets);
+            for target in &targets {
+                known.remove(target);
+            }
+        }
+
+        // The history bookkeeping goes with them. Keeping it would let a later
+        // resubscribe inherit an ended generation and report the history as
+        // loaded before any of it had arrived.
+        {
+            let mut seen = self
+                .progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            seen.retain(|(id, symbol), _| {
+                *id != sub_id || !targets.iter().any(|target| target.symbol == *symbol)
+            });
+        }
+        self.history.notify_waiters();
+
+        Ok(())
     }
 }
 
@@ -558,8 +783,175 @@ pub const DEFAULT_EVENT_CHANNEL_CAPACITY: usize = 4096;
 /// subscription that has several.
 #[derive(Clone)]
 struct Subscriber {
-    events: mpsc::Sender<MarketEvent>,
+    events: mpsc::Sender<Delivery>,
     lagged: Arc<AtomicU64>,
+    /// Markers that did not fit, waiting for the consumer to make room.
+    ///
+    /// Only markers are ever parked here. A dropped bar is a countable loss a
+    /// consumer can react to; a dropped snapshot terminator is a consumer
+    /// waiting forever for a phase change that already happened, which is the
+    /// failure this whole mechanism exists to prevent.
+    pending: Arc<Mutex<VecDeque<Delivery>>>,
+}
+
+/// One thing handed to a consumer's queue.
+///
+/// Markers travel the same queue as market data on purpose. A queue is the
+/// only thing that keeps "after those bars, before anything newer" true; a
+/// separate channel for markers would race with the bars it is meant to
+/// follow, and the position in the stream is the marker's entire meaning.
+#[derive(Debug, Clone)]
+enum Delivery {
+    /// An event the feed sent.
+    Market(MarketEvent),
+    /// A snapshot marker this crate synthesised.
+    Marker(dxfeed::Event),
+}
+
+/// dxFeed `IndexedEvent` flag bits, as the feed sets them in `eventFlags`.
+///
+/// The crate owns these so no consumer has to. They are the reason a
+/// historical replay is tellable from live updates at all, and reading them
+/// wrongly is silent: a missed terminator is a consumer that never starts.
+mod snapshot_flags {
+    /// The event belongs to a transaction that is not complete. Nothing may be
+    /// concluded from it until an event arrives with this clear.
+    pub const TX_PENDING: i64 = 0x01;
+    /// The event removes what it identifies instead of adding it.
+    pub const REMOVE_EVENT: i64 = 0x02;
+    /// The first event of a historical snapshot.
+    pub const SNAPSHOT_BEGIN: i64 = 0x04;
+    /// The last event of a snapshot the venue served in full.
+    pub const SNAPSHOT_END: i64 = 0x08;
+    /// The last event of a snapshot the venue cut short.
+    pub const SNAPSHOT_SNIP: i64 = 0x10;
+}
+
+/// What one event's flags say about its series' historical replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SnapshotSignals {
+    /// A replay starts at this event.
+    begin: bool,
+    /// The terminator this event carries, if any.
+    end: Option<dxfeed::SnapshotEndKind>,
+    /// Whether the event sits inside an incomplete transaction.
+    tx_pending: bool,
+    /// Whether the event carries no bar.
+    ///
+    /// `REMOVE_EVENT` on its own is an ordinary removal and carries a real
+    /// event. `REMOVE_EVENT` **together with** a terminator is how the venue
+    /// ends a snapshot when there is nothing left to send: the row exists to
+    /// carry the flags, and its index and time are placeholders. Delivering it
+    /// as a bar would put a fabricated price in a series, and letting it reach
+    /// the resume bookkeeping would move a resume point to a time no bar ever
+    /// had.
+    data_less: bool,
+}
+
+impl SnapshotSignals {
+    fn of(flags: i64) -> Self {
+        let end = if flags & snapshot_flags::SNAPSHOT_SNIP != 0 {
+            Some(dxfeed::SnapshotEndKind::Snip)
+        } else if flags & snapshot_flags::SNAPSHOT_END != 0 {
+            Some(dxfeed::SnapshotEndKind::End)
+        } else {
+            None
+        };
+
+        Self {
+            begin: flags & snapshot_flags::SNAPSHOT_BEGIN != 0,
+            end,
+            tx_pending: flags & snapshot_flags::TX_PENDING != 0,
+            data_less: end.is_some() && flags & snapshot_flags::REMOVE_EVENT != 0,
+        }
+    }
+}
+
+/// A snapshot marker for `symbol`.
+fn marker_event(symbol: &str, data: dxfeed::EventData) -> dxfeed::Event {
+    dxfeed::Event {
+        sym: symbol.to_string(),
+        data,
+    }
+}
+
+/// Hands `delivery` to one consumer, behind whatever is already parked for it.
+///
+/// Returns whether the delivery reached the consumer or is guaranteed to.
+/// Data events are dropped when there is no room, exactly as before — and also
+/// while a marker is parked, because letting one through then would put it
+/// ahead of the marker.
+fn offer(subscriber: &Subscriber, delivery: Delivery) -> bool {
+    let mut pending = subscriber
+        .pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let room = flush_into(subscriber, &mut pending);
+    let marker = matches!(delivery, Delivery::Marker(_));
+
+    if !room {
+        if marker {
+            pending.push_back(delivery);
+            return true;
+        }
+        return false;
+    }
+
+    match subscriber.events.try_send(delivery) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(delivery)) => {
+            if marker {
+                pending.push_back(delivery);
+                true
+            } else {
+                false
+            }
+        }
+        // The consumer is gone. Parking anything for it would be a slow leak
+        // of events nobody will ever read.
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+/// Sends what is parked, oldest first. Returns whether nothing is left.
+fn flush_into(subscriber: &Subscriber, pending: &mut VecDeque<Delivery>) -> bool {
+    while let Some(front) = pending.pop_front() {
+        match subscriber.events.try_send(front) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(returned)) => {
+                pending.push_front(returned);
+                return false;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                pending.clear();
+                return true;
+            }
+        }
+    }
+    true
+}
+
+/// Flushes every consumer's parked markers.
+///
+/// Called when a consumer reports having read something, and once when a
+/// connection's forwarder starts — a marker parked across a reconnect is
+/// waiting for room, not for an event, and the next event may be a long way
+/// off or never come.
+async fn flush_pending(routing: &Arc<RwLock<EventRouting>>) {
+    let routing = routing.read().await;
+    for subscribers in routing.senders.values() {
+        for subscriber in subscribers {
+            let mut pending = subscriber
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if pending.is_empty() {
+                continue;
+            }
+            flush_into(subscriber, &mut pending);
+        }
+    }
 }
 
 /// Where a candle subscription should resume, per subscription and symbol.
@@ -581,6 +973,240 @@ struct CandleResume {
     /// stops advancing, so the reconnect asks for everything from the last
     /// known-good bar and the gap is refilled.
     gap: bool,
+    /// Which historical replay of this series is current, counting from one.
+    ///
+    /// A generation is what makes a terminator attributable. Without one, an
+    /// end that arrives late — queued behind bars a slow consumer had not read
+    /// when the connection dropped — is indistinguishable from the end of the
+    /// replay that followed it.
+    generation: u64,
+    /// Where the current generation is in its life.
+    phase: SnapshotPhase,
+    /// Whether every bar of the current generation reached this consumer.
+    ///
+    /// Tracked per generation and reset when one opens, so a loss during an
+    /// old replay does not condemn the one that replaced it.
+    lossless: bool,
+    /// The feed client's own loss counter when this generation opened.
+    ///
+    /// Loss inside dxlink happens before the forwarder ever sees an event, so
+    /// it is invisible to the per-consumer accounting. Comparing the counter
+    /// across a generation is the only way to notice it.
+    dxlink_drops_at_start: u64,
+    /// A terminator seen inside an open transaction, not yet acted on.
+    pending_end: Option<dxfeed::SnapshotEndKind>,
+    /// How the current generation ended, once it has.
+    ended_as: Option<dxfeed::SnapshotEndKind>,
+}
+
+/// Where a series' current historical replay is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotPhase {
+    /// No replay seen for this series yet.
+    Idle,
+    /// A replay is in progress and has been announced to consumers.
+    Open,
+    /// The current generation's replay has finished.
+    Ended,
+}
+
+impl CandleResume {
+    /// A series nothing is known about yet.
+    ///
+    /// `dxlink_drops` is sampled now rather than when a generation opens, so a
+    /// snapshot whose `SNAPSHOT_BEGIN` never arrived is still measured against
+    /// a real baseline instead of against zero.
+    fn new(dxlink_drops: u64) -> Self {
+        Self {
+            through: None,
+            gap: false,
+            generation: 0,
+            phase: SnapshotPhase::Idle,
+            lossless: true,
+            dxlink_drops_at_start: dxlink_drops,
+            pending_end: None,
+            ended_as: None,
+        }
+    }
+}
+
+/// The bookkeeping for one subscription's series, created on first sight.
+fn series_entry<'a>(
+    seen: &'a mut HashMap<(u32, String), CandleResume>,
+    sub_id: u32,
+    symbol: &str,
+    dxlink_drops: &Arc<AtomicU64>,
+) -> &'a mut CandleResume {
+    seen.entry((sub_id, symbol.to_string()))
+        .or_insert_with(|| CandleResume::new(dxlink_drops.load(Ordering::Relaxed)))
+}
+
+/// Opens a new generation, unless one is already open.
+///
+/// `None` for a `SNAPSHOT_BEGIN` that repeats one already announced — a
+/// re-emission, or the venue's own begin for the replay a reconnect announced
+/// ahead of it. One generation, one marker.
+fn open_generation(
+    progress: &CandleProgress,
+    sub_id: u32,
+    symbol: &str,
+    dxlink_drops: &Arc<AtomicU64>,
+) -> Option<dxfeed::DxfSnapshotBeginT> {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    let resume = series_entry(&mut seen, sub_id, symbol, dxlink_drops);
+
+    if resume.phase == SnapshotPhase::Open {
+        return None;
+    }
+
+    resume.generation += 1;
+    resume.phase = SnapshotPhase::Open;
+    resume.lossless = true;
+    resume.pending_end = None;
+    resume.ended_as = None;
+    resume.dxlink_drops_at_start = dxlink_drops.load(Ordering::Relaxed);
+
+    Some(dxfeed::DxfSnapshotBeginT {
+        generation: resume.generation,
+    })
+}
+
+/// Records that this generation's history is no longer complete.
+fn mark_lossy(progress: &CandleProgress, sub_id: u32, symbol: &str, dxlink_drops: &Arc<AtomicU64>) {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    series_entry(&mut seen, sub_id, symbol, dxlink_drops).lossless = false;
+}
+
+/// Remembers a terminator that arrived inside an open transaction.
+fn arm_end(
+    progress: &CandleProgress,
+    sub_id: u32,
+    symbol: &str,
+    kind: dxfeed::SnapshotEndKind,
+    dxlink_drops: &Arc<AtomicU64>,
+) {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    let resume = series_entry(&mut seen, sub_id, symbol, dxlink_drops);
+    if resume.phase == SnapshotPhase::Ended {
+        return;
+    }
+    resume.pending_end = Some(kind);
+}
+
+/// The terminator waiting for a transaction to close, if there is one.
+fn armed_end(
+    progress: &CandleProgress,
+    sub_id: u32,
+    symbol: &str,
+    dxlink_drops: &Arc<AtomicU64>,
+) -> Option<dxfeed::SnapshotEndKind> {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    series_entry(&mut seen, sub_id, symbol, dxlink_drops).pending_end
+}
+
+/// Closes the current generation, returning the marker to send.
+///
+/// `None` when there is no open replay to close, which is what makes a
+/// re-emitted terminator idempotent: the venue may send the end again, and the
+/// consumer still sees exactly one.
+fn finish_generation(
+    progress: &CandleProgress,
+    sub_id: u32,
+    symbol: &str,
+    kind: dxfeed::SnapshotEndKind,
+    dxlink_drops: &Arc<AtomicU64>,
+) -> Option<dxfeed::DxfSnapshotEndT> {
+    let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+    let resume = series_entry(&mut seen, sub_id, symbol, dxlink_drops);
+
+    if resume.phase == SnapshotPhase::Ended {
+        return None;
+    }
+
+    // A snapshot whose begin never arrived still ends. It is numbered like any
+    // other generation so the consumer can tell it from the next one.
+    if resume.phase == SnapshotPhase::Idle {
+        resume.generation += 1;
+    }
+
+    // Loss inside the feed client counts too: those bars never reached this
+    // crate, so no consumer below could have noticed them missing.
+    let shed = dxlink_drops.load(Ordering::Relaxed) > resume.dxlink_drops_at_start;
+    let lossless = resume.lossless && !shed;
+
+    resume.phase = SnapshotPhase::Ended;
+    resume.pending_end = None;
+    resume.ended_as = Some(kind);
+    resume.lossless = lossless;
+
+    Some(dxfeed::DxfSnapshotEndT {
+        generation: resume.generation,
+        kind,
+        lossless,
+    })
+}
+
+/// Ends every series' current generation without waiting for the venue.
+///
+/// A reconnect makes the previous replay stop being current the moment the
+/// socket drops, not when the next `SNAPSHOT_BEGIN` arrives: a consumer that
+/// waited for the venue would believe stale history was still loading for as
+/// long as the backoff lasted. Each affected series gets a new generation and
+/// a `SnapshotBegin` queued behind whatever it had already been sent, so the
+/// consumer sees the phase change in the right place in its own stream, an end
+/// still queued from the old generation is recognisable by its number rather
+/// than lost, and the venue's own begin for the same replay adds nothing.
+async fn invalidate_history(
+    progress: &CandleProgress,
+    routing: &Arc<RwLock<EventRouting>>,
+    history: &Arc<Notify>,
+    dxlink_drops: &Arc<AtomicU64>,
+) {
+    // Computed under the std lock and sent outside it: that guard must never
+    // be held across an await.
+    let opened: Vec<(u32, String, u64)> = {
+        let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
+        let drops = dxlink_drops.load(Ordering::Relaxed);
+        seen.iter_mut()
+            .filter_map(|((sub_id, symbol), resume)| {
+                // A series that never saw a replay has nothing to invalidate.
+                if resume.phase == SnapshotPhase::Idle && resume.pending_end.is_none() {
+                    return None;
+                }
+                resume.generation += 1;
+                resume.phase = SnapshotPhase::Open;
+                resume.lossless = true;
+                resume.pending_end = None;
+                resume.ended_as = None;
+                resume.dxlink_drops_at_start = drops;
+                Some((*sub_id, symbol.clone(), resume.generation))
+            })
+            .collect()
+    };
+
+    if opened.is_empty() {
+        return;
+    }
+
+    {
+        let routing = routing.read().await;
+        for (sub_id, symbol, generation) in &opened {
+            let Some(subscribers) = routing.senders.get(sub_id) else {
+                continue;
+            };
+            let marker = marker_event(
+                symbol,
+                dxfeed::EventData::SnapshotBegin(dxfeed::DxfSnapshotBeginT {
+                    generation: *generation,
+                }),
+            );
+            for subscriber in subscribers {
+                offer(subscriber, Delivery::Marker(marker.clone()));
+            }
+        }
+    }
+
+    history.notify_waiters();
 }
 
 /// One thing a subscription is subscribed to.
@@ -701,6 +1327,14 @@ pub struct QuoteStreamer {
     /// What a reconnect has to restore, shared with the supervisor.
     registry: Registry,
     state: Arc<RwLock<ConnectionState>>,
+    /// Where each subscription's candle series stands, shared with the
+    /// forwarder. Answers `history_loaded` without asking the venue anything.
+    progress: CandleProgress,
+    /// Consumers announcing they have made room, so a parked marker can go out
+    /// without waiting for the next event.
+    drained: Arc<Notify>,
+    /// A series changed phase, so anybody awaiting one should look again.
+    history: Arc<Notify>,
 }
 
 /// What each subscription is subscribed to, as the supervisor needs it.
@@ -772,6 +1406,11 @@ impl QuoteStreamer {
         // reconnect must resume a candle series where the consumer was left,
         // and a per-connection map would forget that every time.
         let progress: CandleProgress = Arc::new(Mutex::new(HashMap::new()));
+        // Both outlive a connection for the same reason `progress` does: a
+        // marker parked by one connection is flushed by the next, and a
+        // consumer awaiting history keeps waiting across a reconnect.
+        let drained = Arc::new(Notify::new());
+        let history = Arc::new(Notify::new());
 
         tokio::spawn(supervise(
             tasty.clone(),
@@ -782,7 +1421,9 @@ impl QuoteStreamer {
             routing,
             registry.clone(),
             state.clone(),
-            progress,
+            progress.clone(),
+            drained.clone(),
+            history.clone(),
         ));
 
         Ok(Self {
@@ -792,6 +1433,9 @@ impl QuoteStreamer {
             dxlink_command_tx: Some(command_tx),
             registry,
             state,
+            progress,
+            drained,
+            history,
         })
     }
 
@@ -901,6 +1545,7 @@ impl QuoteStreamer {
                 Subscriber {
                     events: caller_tx,
                     lagged: lagged.clone(),
+                    pending: Arc::new(Mutex::new(VecDeque::new())),
                 },
             ))
             .await
@@ -949,6 +1594,9 @@ impl QuoteStreamer {
                 dxlink_receiver: closed_rx,
                 targets: targets.clone(),
                 lagged: lagged.clone(),
+                progress: self.progress.clone(),
+                drained: self.drained.clone(),
+                history: self.history.clone(),
             },
         );
 
@@ -960,6 +1608,9 @@ impl QuoteStreamer {
             dxlink_receiver: caller_rx,
             targets,
             lagged,
+            progress: self.progress.clone(),
+            drained: self.drained.clone(),
+            history: self.history.clone(),
         }))
     }
 
@@ -1077,7 +1728,16 @@ async fn connect_dxlink(tasty: &TastyTrade) -> TastyResult<LiveConnection> {
     // `state()`. What is used from dxlink instead is the fact it reports the
     // session ending — the event stream closes — which is the part this crate
     // cannot observe for itself.
-    let mut client = DXLinkClient::new(&tokens.streamer_url, &tokens.token);
+    // Block rather than drop. dxlink's default sheds events when its consumer
+    // falls behind, and this crate's consumer is the forwarder, which never
+    // waits on anybody: it hands events over with `try_send` and drops them
+    // itself when a subscriber is full, where the loss is counted and, for a
+    // snapshot, reflected in the marker. Letting dxlink drop as well would add
+    // a second, invisible loss above the one place that can explain it. The
+    // documented hazard of blocking does not apply here, because this crate
+    // registers no dxlink callbacks and always reads the stream.
+    let mut client = DXLinkClient::new(&tokens.streamer_url, &tokens.token)
+        .with_overflow_policy(OverflowPolicy::Block);
 
     info!("Connecting to DXLink server: {}", tokens.streamer_url);
     let events = client.connect().await.map_err(|e| {
@@ -1174,8 +1834,30 @@ async fn forward_events(
     routing: Arc<RwLock<EventRouting>>,
     progress: CandleProgress,
     saw_event: Arc<AtomicBool>,
+    drained: Arc<Notify>,
+    dxlink_drops: Arc<AtomicU64>,
+    history: Arc<Notify>,
 ) {
-    while let Some(event) = events.recv().await {
+    // A marker parked before a reconnect is waiting for room, not for an
+    // event, so it goes out even if this connection never delivers anything.
+    flush_pending(&routing).await;
+
+    loop {
+        let event = tokio::select! {
+            biased;
+            // A consumer read something, so there may be room for what is
+            // parked. Without this a marker would wait for the next event on
+            // its own series, which after a snapshot ends may never come.
+            () = drained.notified() => {
+                flush_pending(&routing).await;
+                continue;
+            }
+            event = events.recv() => match event {
+                Some(event) => event,
+                None => return,
+            },
+        };
+
         // Anything arriving is evidence the feed works, whether or not this
         // crate models it. That is what the milestone is for.
         saw_event.store(true, Ordering::Relaxed);
@@ -1186,52 +1868,124 @@ async fn forward_events(
         let symbol = symbol.to_string();
         let kind = event_kind(&event);
 
-        let routing = routing.read().await;
-        let Some(sub_ids) = routing.routes.get(&(symbol.clone(), kind)) else {
+        // Read once, ahead of delivery: a terminator has to be recognised
+        // before the event it rides on is handed over, or the marker cannot be
+        // placed immediately after it.
+        let snapshot = match &event {
+            MarketEvent::Candle(candle) => SnapshotSignals::of(candle.event_flags),
+            _ => SnapshotSignals::of(0),
+        };
+
+        let routes = routing.read().await;
+        let Some(sub_ids) = routes.routes.get(&(symbol.clone(), kind)) else {
             debug!("No subscription registered for {kind} on {symbol}");
             continue;
         };
 
+        let mut phase_changed = false;
+
         // Delivery is charged per subscription: one consumer falling behind
-        // must not decide where another one resumes from.
+        // must not decide where another one resumes from, and a replay is per
+        // subscription so its phase is too.
         for sub_id in sub_ids {
-            let Some(subscribers) = routing.senders.get(sub_id) else {
+            let Some(subscribers) = routes.senders.get(sub_id) else {
                 continue;
             };
 
-            let mut delivered = false;
-            let mut dropped = 0usize;
-            for subscriber in subscribers {
-                // A consumer that is not keeping up loses events rather than
-                // stalling everyone else's. What changed is that losing them
-                // is now countable and, for candles, recoverable.
-                match subscriber.events.try_send(event.clone()) {
-                    Ok(()) => delivered = true,
-                    Err(_) => {
+            // 1. Announce the replay before any of its bars.
+            if snapshot.begin
+                && let Some(begin) = open_generation(&progress, *sub_id, &symbol, &dxlink_drops)
+            {
+                phase_changed = true;
+                let marker = marker_event(&symbol, dxfeed::EventData::SnapshotBegin(begin));
+                for subscriber in subscribers {
+                    offer(subscriber, Delivery::Marker(marker.clone()));
+                }
+            }
+
+            // 2. The event itself, unless it is a bare terminator: that row
+            //    carries flags and placeholders, never a bar.
+            if !snapshot.data_less {
+                let mut delivered = false;
+                let mut dropped = 0usize;
+                for subscriber in subscribers {
+                    // A consumer that is not keeping up loses events rather
+                    // than stalling everyone else's. What changed is that
+                    // losing them is now countable and, for candles,
+                    // recoverable.
+                    if offer(subscriber, Delivery::Market(event.clone())) {
+                        delivered = true;
+                    } else {
                         subscriber.lagged.fetch_add(1, Ordering::Relaxed);
                         dropped += 1;
                     }
                 }
+
+                if dropped > 0 {
+                    // The symbol and the type only — market data never travels
+                    // with the warning.
+                    warn!(
+                        "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
+                         channel(s) of subscription {sub_id}"
+                    );
+                }
+
+                if let MarketEvent::Candle(candle) = &event {
+                    record_bar(
+                        &progress,
+                        *sub_id,
+                        &symbol,
+                        candle.time,
+                        delivered && dropped == 0,
+                        &dxlink_drops,
+                    );
+                    if dropped > 0 {
+                        // "The replay finished" and "you have all of it" are
+                        // different answers. This is what makes them differ.
+                        mark_lossy(&progress, *sub_id, &symbol, &dxlink_drops);
+                    }
+                }
             }
 
-            if dropped > 0 {
-                // The symbol and the type only — market data never travels
-                // with the warning.
-                warn!(
-                    "A consumer fell behind: dropped {kind} for {symbol} on {dropped} \
-                     channel(s) of subscription {sub_id}"
-                );
-            }
+            // 3. The terminator, after the bar it may have arrived with, so a
+            //    consumer reading in order sees the last bar and then the end.
+            if kind == EventKind::Candle {
+                let finished = match snapshot.end {
+                    // A terminator inside an open transaction is armed, not
+                    // fired: the transaction is not a fact until an event
+                    // closes it, and acting early would announce a history
+                    // that is still being amended.
+                    Some(end) if snapshot.tx_pending => {
+                        arm_end(&progress, *sub_id, &symbol, end, &dxlink_drops);
+                        None
+                    }
+                    Some(end) => finish_generation(&progress, *sub_id, &symbol, end, &dxlink_drops),
+                    // Not a terminator itself, but one may have been waiting
+                    // for an event to close its transaction.
+                    None if !snapshot.tx_pending => {
+                        match armed_end(&progress, *sub_id, &symbol, &dxlink_drops) {
+                            Some(end) => {
+                                finish_generation(&progress, *sub_id, &symbol, end, &dxlink_drops)
+                            }
+                            None => None,
+                        }
+                    }
+                    None => None,
+                };
 
-            if let MarketEvent::Candle(candle) = &event {
-                record_bar(
-                    &progress,
-                    *sub_id,
-                    &symbol,
-                    candle.time,
-                    delivered && dropped == 0,
-                );
+                if let Some(end) = finished {
+                    phase_changed = true;
+                    let marker = marker_event(&symbol, dxfeed::EventData::SnapshotEnd(end));
+                    for subscriber in subscribers {
+                        offer(subscriber, Delivery::Marker(marker.clone()));
+                    }
+                }
             }
+        }
+
+        drop(routes);
+        if phase_changed {
+            history.notify_waiters();
         }
     }
 }
@@ -1247,17 +2001,19 @@ async fn forward_events(
 /// and is wrong: bar *n* dropped and bar *n+1* delivered moves the resume point
 /// past *n*, so the reconnect never asks for it again and the series has a hole
 /// nothing downstream can see.
-fn record_bar(progress: &CandleProgress, sub_id: u32, symbol: &str, time: i64, complete: bool) {
+fn record_bar(
+    progress: &CandleProgress,
+    sub_id: u32,
+    symbol: &str,
+    time: i64,
+    complete: bool,
+    dxlink_drops: &Arc<AtomicU64>,
+) {
     let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
     // Nothing delivered yet, so nothing to resume past. A new entry starts
     // empty rather than at this bar's time: if this bar was dropped, seeding
     // it here would skip it forever.
-    let resume = seen
-        .entry((sub_id, symbol.to_string()))
-        .or_insert(CandleResume {
-            through: None,
-            gap: false,
-        });
+    let resume = series_entry(&mut seen, sub_id, symbol, dxlink_drops);
 
     if !complete {
         resume.gap = true;
@@ -1527,10 +2283,22 @@ async fn run_connection(
     forwarder: &mut tokio::task::JoinHandle<()>,
     routing: &Arc<RwLock<EventRouting>>,
     configured: &mut BTreeSet<EventKind>,
+    dxlink_drops: &Arc<AtomicU64>,
 ) -> Ended {
     loop {
+        // Sampled, not pushed: dxlink counts its own losses and this is the
+        // only way to read them without reaching into its hot path. Sampling
+        // here covers a busy loop; the tick below covers a quiet one, so the
+        // figure a snapshot marker reads is never more than one interval
+        // stale.
+        dxlink_drops.store(client.dropped_event_count(), Ordering::Relaxed);
+
         let cmd = tokio::select! {
             biased;
+            () = tokio::time::sleep(DROP_MIRROR_INTERVAL) => {
+                dxlink_drops.store(client.dropped_event_count(), Ordering::Relaxed);
+                continue;
+            }
             _ = &mut *shutdown => {
                 debug!("Quote streamer owner dropped, disconnecting");
                 return Ended::Owner;
@@ -1733,9 +2501,17 @@ async fn supervise(
     registry: Registry,
     state: Arc<RwLock<ConnectionState>>,
     progress: CandleProgress,
+    drained: Arc<Notify>,
+    history: Arc<Notify>,
 ) {
     let mut attempt = 0u32;
     let mut next = Some(first);
+    // One counter for the whole streamer, not per connection: a reconnect
+    // creates a new client whose count starts at zero, and a generation that
+    // spans the two would read that as the counter going backwards. Resetting
+    // the baseline on reconnect, which `invalidate_history` does, is what keeps
+    // the comparison honest.
+    let dxlink_drops = Arc::new(AtomicU64::new(0));
 
     loop {
         let LiveConnection {
@@ -1765,11 +2541,18 @@ async fn supervise(
         // the one that survived the reconnect, so an event that arrives the
         // instant the replay lands already has somewhere to go.
         let saw_event = Arc::new(AtomicBool::new(false));
+        // A new client counts its own losses from zero, so the mirror has to
+        // start there too or the first generation of every reconnect would be
+        // measured against the previous connection's total.
+        dxlink_drops.store(0, Ordering::Relaxed);
         let mut forwarder = tokio::spawn(forward_events(
             events,
             routing.clone(),
             progress.clone(),
             saw_event.clone(),
+            drained.clone(),
+            dxlink_drops.clone(),
+            history.clone(),
         ));
 
         // A fresh channel is configured for nothing. What it ends up carrying
@@ -1800,6 +2583,7 @@ async fn supervise(
                 &mut forwarder,
                 &routing,
                 &mut configured,
+                &dxlink_drops,
             )
             .await
         } else {
@@ -1808,6 +2592,14 @@ async fn supervise(
         };
 
         forwarder.abort();
+
+        // Before any backoff, and before the state even says so: the replay
+        // that was in progress stops being current the moment the socket does,
+        // and a consumer asking `history_loaded` during a thirty-second
+        // backoff must not be told the old answer.
+        if matches!(ended, Ended::ConnectionLost) {
+            invalidate_history(&progress, &routing, &history, &dxlink_drops).await;
+        }
 
         // Why the session ended, when dxlink observed it rather than this
         // client. Logged, not carried into `ConnectionState`: the text comes
@@ -2058,6 +2850,9 @@ mod lifecycle_tests {
             dxlink_command_tx: Some(commands),
             registry: Arc::new(Mutex::new(HashMap::new())),
             state: Arc::new(RwLock::new(ConnectionState::Connected)),
+            progress: Arc::new(Mutex::new(HashMap::new())),
+            drained: Arc::new(Notify::new()),
+            history: Arc::new(Notify::new()),
         }
     }
 
@@ -2134,11 +2929,43 @@ mod reconnect_tests {
     }
 
     /// A consumer sink with its own loss counter.
-    fn sink(events: mpsc::Sender<MarketEvent>) -> Subscriber {
+    fn sink(events: mpsc::Sender<Delivery>) -> Subscriber {
         Subscriber {
             events,
             lagged: Arc::new(AtomicU64::new(0)),
+            pending: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    /// The market event inside a delivery.
+    fn market_of(delivery: Delivery) -> MarketEvent {
+        match delivery {
+            Delivery::Market(event) => event,
+            Delivery::Marker(marker) => {
+                panic!("expected market data, got the marker {:?}", marker.data)
+            }
+        }
+    }
+
+    /// The snapshot marker inside a delivery.
+    fn marker_of(delivery: Delivery) -> dxfeed::Event {
+        match delivery {
+            Delivery::Marker(event) => event,
+            Delivery::Market(event) => panic!(
+                "expected a snapshot marker, got {} data for {:?}",
+                event_kind(&event),
+                event_symbol(&event)
+            ),
+        }
+    }
+
+    /// One candle for `symbol` at `time`, carrying `flags` in `eventFlags`.
+    fn flagged_candle(symbol: &str, time: i64, flags: i64) -> MarketEvent {
+        let MarketEvent::Candle(mut bar) = candle(symbol, time) else {
+            unreachable!("candle builds a candle")
+        };
+        bar.event_flags = flags;
+        MarketEvent::Candle(bar)
     }
 
     /// One candle for `symbol` at `time`.
@@ -2413,7 +3240,7 @@ mod reconnect_tests {
     #[tokio::test]
     async fn a_forwarded_event_reaches_the_subscription_registered_for_it() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let (sub_tx, mut sub_rx) = mpsc::channel::<MarketEvent>(4);
+        let (sub_tx, mut sub_rx) = mpsc::channel::<Delivery>(4);
         {
             let mut routing = routing.write().await;
             routing.senders.insert(1, vec![sink(sub_tx)]);
@@ -2429,6 +3256,9 @@ mod reconnect_tests {
             routing.clone(),
             no_progress(),
             saw_event.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         events_tx
@@ -2439,7 +3269,7 @@ mod reconnect_tests {
             .recv()
             .await
             .expect("the subscription is delivered to");
-        assert!(matches!(received, MarketEvent::Quote(q) if q.event_symbol == "AAPL"));
+        assert!(matches!(market_of(received), MarketEvent::Quote(q) if q.event_symbol == "AAPL"));
 
         // A symbol nobody is subscribed to is dropped rather than panicking or
         // being broadcast to everyone.
@@ -2517,6 +3347,9 @@ mod reconnect_tests {
             routing.clone(),
             no_progress(),
             saw_event.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         // Never connected: the point is that nothing is written to it.
@@ -2537,6 +3370,7 @@ mod reconnect_tests {
                 &mut forwarder,
                 &routing,
                 &mut BTreeSet::new(),
+                &Arc::new(AtomicU64::new(0)),
             ),
         )
         .await
@@ -2572,6 +3406,7 @@ mod reconnect_tests {
                 &mut forwarder,
                 &routing,
                 &mut BTreeSet::new(),
+                &Arc::new(AtomicU64::new(0)),
             ),
         )
         .await
@@ -2591,6 +3426,9 @@ mod reconnect_tests {
             routing.clone(),
             no_progress(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         let mut client = DXLinkClient::new("wss://127.0.0.1:1", "unused");
@@ -2609,6 +3447,7 @@ mod reconnect_tests {
                 &mut forwarder,
                 &routing,
                 &mut BTreeSet::new(),
+                &Arc::new(AtomicU64::new(0)),
             ),
         )
         .await
@@ -2626,7 +3465,7 @@ mod reconnect_tests {
         let events = every_event_type("AAPL");
         assert_eq!(events.len(), EventKind::ALL.len());
 
-        let (tx, rx) = mpsc::channel::<MarketEvent>(32);
+        let (tx, rx) = mpsc::channel::<Delivery>(32);
         let (_unused_tx, event_receiver) = flume::unbounded();
         let mut subscription = QuoteSubscription {
             id: SubscriptionId(0),
@@ -2636,12 +3475,17 @@ mod reconnect_tests {
             dxlink_receiver: rx,
             targets: Arc::new(Mutex::new(BTreeSet::new())),
             lagged: Arc::new(AtomicU64::new(0)),
+            progress: Arc::new(Mutex::new(HashMap::new())),
+            drained: Arc::new(Notify::new()),
+            history: Arc::new(Notify::new()),
         };
 
         for event in &events {
             // Every variant knows its own symbol and its own kind.
             assert_eq!(event_symbol(event), Some("AAPL"), "{:?}", event_kind(event));
-            tx.send(event.clone()).await.expect("the feed accepts");
+            tx.send(Delivery::Market(event.clone()))
+                .await
+                .expect("the feed accepts");
         }
 
         let mut seen = BTreeSet::new();
@@ -2683,8 +3527,8 @@ mod reconnect_tests {
         let hour = CandlePeriod::hours(1).expect("a period");
 
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let (five_tx, mut five_rx) = mpsc::channel::<MarketEvent>(4);
-        let (hour_tx, mut hour_rx) = mpsc::channel::<MarketEvent>(4);
+        let (five_tx, mut five_rx) = mpsc::channel::<Delivery>(4);
+        let (hour_tx, mut hour_rx) = mpsc::channel::<Delivery>(4);
         {
             let mut routing = routing.write().await;
             routing.senders.insert(1, vec![sink(five_tx)]);
@@ -2719,6 +3563,9 @@ mod reconnect_tests {
             routing.clone(),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         // The venue's spelling, not ours: `{=h}` for one hour.
@@ -2727,7 +3574,7 @@ mod reconnect_tests {
             .await
             .expect("the feed accepts");
         let delivered = hour_rx.recv().await.expect("the hourly subscription");
-        assert_eq!(event_symbol(&delivered), Some("AAPL{=h}"));
+        assert_eq!(event_symbol(&market_of(delivered)), Some("AAPL{=h}"));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), five_rx.recv())
                 .await
@@ -2740,7 +3587,7 @@ mod reconnect_tests {
             .await
             .expect("the feed accepts");
         let delivered = five_rx.recv().await.expect("the five-minute subscription");
-        assert_eq!(event_symbol(&delivered), Some("AAPL{=5m}"));
+        assert_eq!(event_symbol(&market_of(delivered)), Some("AAPL{=5m}"));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), hour_rx.recv())
                 .await
@@ -2782,7 +3629,7 @@ mod reconnect_tests {
     #[tokio::test]
     async fn a_subscription_only_receives_the_event_types_it_asked_for() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let (quotes_tx, mut quotes_rx) = mpsc::channel::<MarketEvent>(4);
+        let (quotes_tx, mut quotes_rx) = mpsc::channel::<Delivery>(4);
         routing
             .write()
             .await
@@ -2802,6 +3649,9 @@ mod reconnect_tests {
             routing.clone(),
             no_progress(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         let trade = every_event_type("AAPL")
@@ -2838,7 +3688,7 @@ mod reconnect_tests {
             (1u32, "AAPL{=5m}".to_string()),
             CandleResume {
                 through: Some(5_000),
-                gap: false,
+                ..CandleResume::new(0)
             },
         )]);
 
@@ -3027,13 +3877,14 @@ mod reconnect_tests {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
         // Capacity one and nothing ever reads it: the first bar fits, the rest
         // are dropped.
-        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        let (full_tx, _never_read) = mpsc::channel::<Delivery>(1);
         let lagged = Arc::new(AtomicU64::new(0));
         routing.write().await.senders.insert(
             1,
             vec![Subscriber {
                 events: full_tx,
                 lagged: lagged.clone(),
+                pending: Arc::new(Mutex::new(VecDeque::new())),
             }],
         );
         record_routes(
@@ -3054,6 +3905,9 @@ mod reconnect_tests {
             routing.clone(),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         for time in [1_000i64, 2_000, 3_000] {
@@ -3094,7 +3948,7 @@ mod reconnect_tests {
     #[tokio::test]
     async fn a_one_minute_candle_is_routed_under_the_symbol_the_venue_echoes() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
-        let (sink_tx, mut sink_rx) = mpsc::channel::<MarketEvent>(8);
+        let (sink_tx, mut sink_rx) = mpsc::channel::<Delivery>(8);
         routing.write().await.senders.insert(1, vec![sink(sink_tx)]);
 
         // Registered exactly as add_candles would: through the period type.
@@ -3117,6 +3971,9 @@ mod reconnect_tests {
             routing.clone(),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         // What the venue actually sends back.
@@ -3129,7 +3986,7 @@ mod reconnect_tests {
             .await
             .expect("the bar must be routed, not dropped as unregistered")
             .expect("the sink is open");
-        assert_eq!(event_symbol(&delivered), Some("AAPL{=m}"));
+        assert_eq!(event_symbol(&market_of(delivered)), Some("AAPL{=m}"));
 
         // The resume bookkeeping is keyed on the same string, so a reconnect
         // continues the right series instead of replaying from the start.
@@ -3201,7 +4058,7 @@ mod reconnect_tests {
     async fn a_dropped_one_minute_bar_freezes_the_canonical_resume_point() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
         // Capacity one and never read: the first bar fits, the second drops.
-        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        let (full_tx, _never_read) = mpsc::channel::<Delivery>(1);
         routing.write().await.senders.insert(1, vec![sink(full_tx)]);
         let period = CandlePeriod::minutes(1).expect("one minute is a period");
         let target = FeedTarget {
@@ -3223,6 +4080,9 @@ mod reconnect_tests {
             routing.clone(),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
         for time in [1_000i64, 2_000] {
             events_tx
@@ -3256,15 +4116,16 @@ mod reconnect_tests {
     async fn a_series_whose_first_bar_was_dropped_resumes_from_the_beginning() {
         let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
         // Capacity one, already full: every bar is dropped, including the first.
-        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        let (full_tx, _never_read) = mpsc::channel::<Delivery>(1);
         full_tx
-            .try_send(quote("filler"))
+            .try_send(Delivery::Market(quote("filler")))
             .expect("the one slot is taken");
         routing.write().await.senders.insert(
             1,
             vec![Subscriber {
                 events: full_tx,
                 lagged: Arc::new(AtomicU64::new(0)),
+                pending: Arc::new(Mutex::new(VecDeque::new())),
             }],
         );
         record_routes(
@@ -3285,6 +4146,9 @@ mod reconnect_tests {
             routing.clone(),
             progress.clone(),
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Notify::new()),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(Notify::new()),
         ));
 
         events_tx
@@ -3357,6 +4221,7 @@ mod reconnect_tests {
             CandleResume {
                 through: Some(1_000),
                 gap: true,
+                ..CandleResume::new(0)
             },
         )]);
 
@@ -3469,5 +4334,839 @@ mod reconnect_tests {
 
         assert!(!policy.should_retry(&refused), "{refused:?}");
         assert!(policy.should_retry(&TastyTradeError::Connection("dropped".into())));
+    }
+
+    // ---------------------------------------------------------------------
+    // Historical replay markers (#142) and partial unsubscribe (#143).
+    // ---------------------------------------------------------------------
+
+    use snapshot_flags::{REMOVE_EVENT, SNAPSHOT_BEGIN, SNAPSHOT_END, SNAPSHOT_SNIP, TX_PENDING};
+
+    /// A running forwarder plus the handles a test needs to drive it.
+    ///
+    /// Everything a snapshot marker depends on is shared state between the
+    /// forwarder, the supervisor and a subscription, so a test that builds the
+    /// pieces separately proves nothing about how they meet.
+    struct Harness {
+        routing: Arc<RwLock<EventRouting>>,
+        progress: CandleProgress,
+        drained: Arc<Notify>,
+        dxlink_drops: Arc<AtomicU64>,
+        history: Arc<Notify>,
+        events: mpsc::Sender<MarketEvent>,
+        forwarder: tokio::task::JoinHandle<()>,
+    }
+
+    impl Harness {
+        fn start() -> Self {
+            let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+            let progress = no_progress();
+            let drained = Arc::new(Notify::new());
+            let dxlink_drops = Arc::new(AtomicU64::new(0));
+            let history = Arc::new(Notify::new());
+            let (events, events_rx) = mpsc::channel::<MarketEvent>(64);
+
+            let forwarder = tokio::spawn(forward_events(
+                events_rx,
+                routing.clone(),
+                progress.clone(),
+                Arc::new(AtomicBool::new(false)),
+                drained.clone(),
+                dxlink_drops.clone(),
+                history.clone(),
+            ));
+
+            Self {
+                routing,
+                progress,
+                drained,
+                dxlink_drops,
+                history,
+                events,
+                forwarder,
+            }
+        }
+
+        /// Registers a consumer for one candle series, as `add_candles` would.
+        async fn watch(
+            &self,
+            sub_id: u32,
+            symbol: &str,
+            capacity: usize,
+        ) -> (mpsc::Receiver<Delivery>, Arc<AtomicU64>) {
+            let (tx, rx) = mpsc::channel::<Delivery>(capacity);
+            let lagged = Arc::new(AtomicU64::new(0));
+            self.routing
+                .write()
+                .await
+                .senders
+                .entry(sub_id)
+                .or_default()
+                .push(Subscriber {
+                    events: tx,
+                    lagged: lagged.clone(),
+                    pending: Arc::new(Mutex::new(VecDeque::new())),
+                });
+            record_routes(
+                &self.routing,
+                sub_id,
+                &feed_subscriptions(&[candle_target(symbol)]),
+            )
+            .await;
+            (rx, lagged)
+        }
+
+        async fn send(&self, event: MarketEvent) {
+            self.events.send(event).await.expect("the feed accepts");
+        }
+
+        /// What `record_bar` believes about a series.
+        fn resume_of(&self, sub_id: u32, symbol: &str) -> Option<CandleResume> {
+            self.progress
+                .lock()
+                .expect("not poisoned in tests")
+                .get(&(sub_id, symbol.to_string()))
+                .copied()
+        }
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            self.forwarder.abort();
+        }
+    }
+
+    fn candle_target(symbol: &str) -> FeedTarget {
+        FeedTarget {
+            kind: EventKind::Candle,
+            symbol: symbol.to_string(),
+            from_time: Some(0),
+        }
+    }
+
+    /// The next delivery, failing rather than hanging.
+    async fn next(rx: &mut mpsc::Receiver<Delivery>) -> Delivery {
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for a delivery")
+            .expect("the consumer's channel is open")
+    }
+
+    /// Asserts nothing arrives for long enough to mean it.
+    async fn nothing_more(rx: &mut mpsc::Receiver<Delivery>) {
+        if let Ok(Some(delivery)) =
+            tokio::time::timeout(Duration::from_millis(150), rx.recv()).await
+        {
+            panic!("nothing should have arrived, got {delivery:?}");
+        }
+    }
+
+    fn begin_of(delivery: Delivery) -> dxfeed::DxfSnapshotBeginT {
+        match marker_of(delivery).data {
+            dxfeed::EventData::SnapshotBegin(begin) => begin,
+            other => panic!("expected a snapshot begin, got {other:?}"),
+        }
+    }
+
+    fn end_of(delivery: Delivery) -> dxfeed::DxfSnapshotEndT {
+        match marker_of(delivery).data {
+            dxfeed::EventData::SnapshotEnd(end) => end,
+            other => panic!("expected a snapshot end, got {other:?}"),
+        }
+    }
+
+    /// The bar's start time, for asserting order.
+    fn bar_time(delivery: Delivery) -> i64 {
+        match market_of(delivery) {
+            MarketEvent::Candle(bar) => bar.time,
+            other => panic!("expected a candle, got {other:?}"),
+        }
+    }
+
+    /// The whole shape, in the order it has to arrive: the replay is announced,
+    /// its bars follow, and the terminator lands after the last of them rather
+    /// than among them.
+    #[tokio::test]
+    async fn a_replay_ends_after_its_last_bar() {
+        let harness = Harness::start();
+        let (mut rx, lagged) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness.send(flagged_candle("AAPL{=5m}", 2_000, 0)).await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 3_000, SNAPSHOT_END))
+            .await;
+
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(bar_time(next(&mut rx).await), 2_000);
+        // The terminator carried a real bar, so both are kept.
+        assert_eq!(bar_time(next(&mut rx).await), 3_000);
+
+        let end = end_of(next(&mut rx).await);
+        assert_eq!(end.generation, 1);
+        assert_eq!(end.kind, dxfeed::SnapshotEndKind::End);
+        assert!(end.lossless, "nothing was dropped");
+        assert_eq!(lagged.load(Ordering::Relaxed), 0);
+
+        // The last bar is a bar like any other, so it moves the resume point.
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").and_then(|r| r.through),
+            Some(3_000)
+        );
+        nothing_more(&mut rx).await;
+    }
+
+    /// A history the venue cut short is a different answer from one it served
+    /// in full, and a consumer sizing a chart needs to know which it got.
+    #[tokio::test]
+    async fn a_snipped_replay_says_so() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_SNIP))
+            .await;
+
+        let _ = begin_of(next(&mut rx).await);
+        let _ = bar_time(next(&mut rx).await);
+        let _ = bar_time(next(&mut rx).await);
+        assert_eq!(
+            end_of(next(&mut rx).await).kind,
+            dxfeed::SnapshotEndKind::Snip
+        );
+    }
+
+    /// An empty history: the venue has nothing and says so with a row that
+    /// exists only to carry the flags. It must not become a bar, and its
+    /// placeholder timestamp must not become a resume point.
+    #[tokio::test]
+    async fn an_empty_replay_delivers_markers_and_no_bar() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle(
+                "AAPL{=5m}",
+                0,
+                SNAPSHOT_BEGIN | SNAPSHOT_END | REMOVE_EVENT,
+            ))
+            .await;
+
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        let end = end_of(next(&mut rx).await);
+        assert_eq!(end.generation, 1);
+        assert!(end.lossless);
+        nothing_more(&mut rx).await;
+
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").and_then(|r| r.through),
+            None,
+            "a placeholder timestamp must not become a resume point"
+        );
+    }
+
+    /// `REMOVE_EVENT` on its own is an ordinary removal carrying a real event,
+    /// not a terminator. Treating every remove as an end would finish a replay
+    /// that is still running.
+    #[tokio::test]
+    async fn a_plain_remove_is_an_event_and_not_an_ending() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, REMOVE_EVENT))
+            .await;
+
+        let _ = begin_of(next(&mut rx).await);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(
+            bar_time(next(&mut rx).await),
+            2_000,
+            "a removal is still an event the consumer has to see"
+        );
+        nothing_more(&mut rx).await;
+
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").map(|r| r.phase),
+            Some(SnapshotPhase::Open),
+            "the replay is still running"
+        );
+    }
+
+    /// dxFeed re-emits a terminator. The consumer must still see exactly one
+    /// end for the replay, or every re-emission looks like a new history.
+    #[tokio::test]
+    async fn a_re_emitted_terminator_ends_the_replay_once() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        // The re-emission: the same ending, with nothing left to carry.
+        harness
+            .send(flagged_candle("AAPL{=5m}", 0, SNAPSHOT_END | REMOVE_EVENT))
+            .await;
+
+        let _ = begin_of(next(&mut rx).await);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(bar_time(next(&mut rx).await), 2_000);
+        assert_eq!(end_of(next(&mut rx).await).generation, 1);
+        nothing_more(&mut rx).await;
+    }
+
+    /// A terminator inside an open transaction is not a fact yet. Acting on it
+    /// would announce a history the venue is still amending.
+    #[tokio::test]
+    async fn a_terminator_inside_a_transaction_waits_for_it_to_close() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle(
+                "AAPL{=5m}",
+                2_000,
+                SNAPSHOT_END | TX_PENDING,
+            ))
+            .await;
+
+        let _ = begin_of(next(&mut rx).await);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(bar_time(next(&mut rx).await), 2_000);
+        nothing_more(&mut rx).await;
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").map(|r| r.phase),
+            Some(SnapshotPhase::Open),
+            "the transaction is still open, so the replay has not ended"
+        );
+
+        // The event that closes the transaction fires the ending, after itself.
+        harness.send(flagged_candle("AAPL{=5m}", 3_000, 0)).await;
+        assert_eq!(bar_time(next(&mut rx).await), 3_000);
+        assert_eq!(end_of(next(&mut rx).await).generation, 1);
+    }
+
+    /// A consumer that cannot keep up still gets the ending, and is told the
+    /// history behind it has holes. "The replay finished" and "you have all of
+    /// it" are different answers and this is where they part.
+    #[tokio::test]
+    async fn a_slow_consumer_is_told_its_history_is_incomplete() {
+        let harness = Harness::start();
+        let (mut rx, lagged) = harness.watch(1, "AAPL{=5m}", 2).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        for time in [2_000i64, 3_000, 4_000, 5_000] {
+            harness.send(flagged_candle("AAPL{=5m}", time, 0)).await;
+        }
+        harness
+            .send(flagged_candle(
+                "AAPL{=5m}",
+                6_000,
+                SNAPSHOT_END | REMOVE_EVENT,
+            ))
+            .await;
+
+        // Two slots: the begin marker and the first bar.
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+
+        // Reading made room, which is what lets the parked ending through.
+        harness.drained.notify_one();
+        let end = end_of(next(&mut rx).await);
+        assert!(
+            !end.lossless,
+            "bars of this replay never reached the consumer"
+        );
+        assert_eq!(end.generation, 1);
+        assert!(lagged.load(Ordering::Relaxed) >= 1, "the loss is countable");
+    }
+
+    /// The ending arrives exactly when there is no room for it. It must not be
+    /// dropped, and nothing that comes after may overtake it: the marker's
+    /// position in the stream is its entire meaning.
+    #[tokio::test]
+    async fn a_full_queue_parks_the_ending_instead_of_losing_it() {
+        let harness = Harness::start();
+        let (mut rx, lagged) = harness.watch(1, "AAPL{=5m}", 2).await;
+
+        // Fills both slots: the begin marker and the bar it rode in on.
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        // No room: dropped and counted.
+        harness.send(flagged_candle("AAPL{=5m}", 2_000, 0)).await;
+        // No room either, but an ending is never dropped.
+        harness
+            .send(flagged_candle(
+                "AAPL{=5m}",
+                3_000,
+                SNAPSHOT_END | REMOVE_EVENT,
+            ))
+            .await;
+        // Live data arriving behind a parked ending must not jump the queue.
+        harness.send(flagged_candle("AAPL{=5m}", 4_000, 0)).await;
+
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        harness.drained.notify_one();
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        harness.drained.notify_one();
+
+        assert_eq!(
+            end_of(next(&mut rx).await).generation,
+            1,
+            "the ending survived a full queue"
+        );
+        assert_eq!(
+            lagged.load(Ordering::Relaxed),
+            2,
+            "both live bars were dropped rather than overtaking the ending"
+        );
+
+        // And the stream is usable again afterwards.
+        harness.send(flagged_candle("AAPL{=5m}", 5_000, 0)).await;
+        assert_eq!(bar_time(next(&mut rx).await), 5_000);
+    }
+
+    /// Loss inside the feed client happens before the forwarder sees anything,
+    /// so no per-consumer counter can notice it. The replay still has holes.
+    #[tokio::test]
+    async fn loss_inside_the_feed_client_makes_a_replay_lossy() {
+        let harness = Harness::start();
+        let (mut rx, lagged) = harness.watch(1, "AAPL{=5m}", 8).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        let _ = begin_of(next(&mut rx).await);
+        let _ = bar_time(next(&mut rx).await);
+
+        // dxlink shed events while this replay was running.
+        harness.dxlink_drops.store(3, Ordering::Relaxed);
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        let _ = bar_time(next(&mut rx).await);
+
+        let end = end_of(next(&mut rx).await);
+        assert!(
+            !end.lossless,
+            "events the feed client dropped are still missing history"
+        );
+        assert_eq!(
+            lagged.load(Ordering::Relaxed),
+            0,
+            "this consumer kept up; the loss was above it"
+        );
+    }
+
+    /// A reconnect ends the current replay's claim to be current immediately.
+    /// Waiting for the venue would leave a consumer believing stale history was
+    /// still loading for as long as the backoff lasts.
+    #[tokio::test]
+    async fn a_reconnect_starts_a_new_generation_without_waiting_for_the_venue() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        // Deliberately unread: the old events are still queued when the
+        // connection drops, which is the case a generation number exists for.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").map(|r| r.phase),
+            Some(SnapshotPhase::Ended)
+        );
+
+        invalidate_history(
+            &harness.progress,
+            &harness.routing,
+            &harness.history,
+            &harness.dxlink_drops,
+        )
+        .await;
+
+        assert_eq!(
+            harness.resume_of(1, "AAPL{=5m}").map(|r| r.phase),
+            Some(SnapshotPhase::Open),
+            "history stops being loaded the moment the socket drops"
+        );
+
+        // The consumer's own stream stays in order: the old replay, then the
+        // announcement of the new one.
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(bar_time(next(&mut rx).await), 2_000);
+        assert_eq!(
+            end_of(next(&mut rx).await).generation,
+            1,
+            "an ending from the old replay is identifiable, not lost"
+        );
+        assert_eq!(begin_of(next(&mut rx).await).generation, 2);
+
+        // The venue's own begin for the replay the reconnect already announced
+        // adds nothing: one generation, one marker.
+        harness
+            .send(flagged_candle("AAPL{=5m}", 3_000, SNAPSHOT_BEGIN))
+            .await;
+        assert_eq!(bar_time(next(&mut rx).await), 3_000);
+        harness
+            .send(flagged_candle("AAPL{=5m}", 4_000, SNAPSHOT_END))
+            .await;
+        assert_eq!(bar_time(next(&mut rx).await), 4_000);
+        assert_eq!(end_of(next(&mut rx).await).generation, 2);
+        nothing_more(&mut rx).await;
+    }
+
+    /// Adds another series to a subscription that already has a consumer.
+    ///
+    /// Separate from `watch` because a subscription has one queue and many
+    /// series: registering a second consumer instead would test something no
+    /// consumer ever does.
+    async fn also_watch(harness: &Harness, sub_id: u32, symbol: &str) {
+        record_routes(
+            &harness.routing,
+            sub_id,
+            &feed_subscriptions(&[candle_target(symbol)]),
+        )
+        .await;
+    }
+
+    /// Stands in for the command loop, including the route bookkeeping it does
+    /// once the venue confirms an unsubscribe.
+    fn spawn_routing_command_loop(
+        mut rx: mpsc::Receiver<DXLinkCommand>,
+        routing: Arc<RwLock<EventRouting>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    DXLinkCommand::Subscribe(requests, _, sub_id, ack) => {
+                        record_routes(&routing, sub_id, &requests).await;
+                        answer(ack, Ok(()));
+                    }
+                    DXLinkCommand::Unsubscribe(requests, sub_id, ack) => {
+                        forget_routes(&routing, sub_id, &requests).await;
+                        answer(ack, Ok(()));
+                    }
+                    _ => {}
+                }
+            }
+        })
+    }
+
+    /// A subscription wired to `harness`, as `create_sub` would build one.
+    fn subscription_for(
+        sub_id: u32,
+        commands: mpsc::Sender<DXLinkCommand>,
+        harness: &Harness,
+        targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
+    ) -> QuoteSubscription {
+        let (_closed, closed_rx) = mpsc::channel::<Delivery>(1);
+        let (_unused, event_receiver) = flume::unbounded();
+        QuoteSubscription {
+            id: SubscriptionId(sub_id as usize),
+            streamer: StreamerHandle {
+                commands: Some(commands),
+            },
+            kinds: BTreeSet::from([EventKind::Candle]),
+            event_receiver,
+            dxlink_receiver: closed_rx,
+            targets,
+            lagged: Arc::new(AtomicU64::new(0)),
+            progress: harness.progress.clone(),
+            drained: harness.drained.clone(),
+            history: harness.history.clone(),
+        }
+    }
+
+    fn shared_targets(symbols: &[&str]) -> Arc<Mutex<BTreeSet<FeedTarget>>> {
+        Arc::new(Mutex::new(
+            symbols.iter().map(|symbol| candle_target(symbol)).collect(),
+        ))
+    }
+
+    /// The same question `SnapshotEnd` answers, for a caller that would rather
+    /// ask than watch the stream.
+    #[tokio::test]
+    async fn await_history_resolves_when_the_replay_ends() {
+        let harness = Harness::start();
+        let (_rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+        let (commands, _command_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let subscription = subscription_for(1, commands, &harness, shared_targets(&["AAPL{=5m}"]));
+
+        assert!(
+            !subscription.history_loaded("AAPL{=5m}"),
+            "nothing has replayed yet"
+        );
+
+        let feed = async {
+            harness
+                .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+                .await;
+            harness
+                .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+                .await;
+        };
+        let waiting = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history("AAPL{=5m}"),
+        );
+
+        let (_, resolved) = tokio::join!(feed, waiting);
+        let end = resolved
+            .expect("the wait must not hang")
+            .expect("the series is subscribed");
+
+        assert_eq!(end.generation, 1);
+        assert_eq!(end.kind, dxfeed::SnapshotEndKind::End);
+        assert!(end.lossless);
+        assert!(subscription.history_loaded("AAPL{=5m}"));
+
+        // Already finished, so it resolves at once rather than waiting for a
+        // notification that has already been sent.
+        let again = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history("AAPL{=5m}"),
+        )
+        .await
+        .expect("an answer that is already known must not wait");
+        assert_eq!(again.expect("still subscribed").generation, 1);
+    }
+
+    /// A mistyped symbol would wait forever. Saying so is a bug report; hanging
+    /// is not.
+    #[tokio::test]
+    async fn await_history_refuses_a_series_this_subscription_does_not_hold() {
+        let harness = Harness::start();
+        let (commands, _command_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let subscription = subscription_for(1, commands, &harness, shared_targets(&["AAPL{=5m}"]));
+
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            // The bare underlying, without its period: a real mistake, and one
+            // that can never be delivered.
+            subscription.await_history("AAPL"),
+        )
+        .await
+        .expect("it must answer rather than wait")
+        .expect_err("an unsubscribed series can never finish");
+
+        assert!(matches!(error, TastyTradeError::Precondition(_)));
+    }
+
+    /// A reconnect supersedes the generation a waiter was told about, so a
+    /// caller asking again keeps waiting for the new one.
+    #[tokio::test]
+    async fn a_reconnect_makes_a_finished_history_unfinished_again() {
+        let harness = Harness::start();
+        let (_rx, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+        let (commands, _command_rx) = mpsc::channel::<DXLinkCommand>(4);
+        let subscription = subscription_for(1, commands, &harness, shared_targets(&["AAPL{=5m}"]));
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        let end = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history("AAPL{=5m}"),
+        )
+        .await
+        .expect("the wait must not hang")
+        .expect("the series is subscribed");
+        assert_eq!(end.generation, 1);
+
+        invalidate_history(
+            &harness.progress,
+            &harness.routing,
+            &harness.history,
+            &harness.dxlink_drops,
+        )
+        .await;
+
+        assert!(
+            !subscription.history_loaded("AAPL{=5m}"),
+            "the replay that finished is not the current one any more"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(150),
+                subscription.await_history("AAPL{=5m}")
+            )
+            .await
+            .is_err(),
+            "a waiter must not be satisfied by the superseded generation"
+        );
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 3_000, SNAPSHOT_END))
+            .await;
+        let end = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history("AAPL{=5m}"),
+        )
+        .await
+        .expect("the wait must not hang")
+        .expect("the series is subscribed");
+        assert_eq!(end.generation, 2, "the replay the reconnect started");
+    }
+
+    /// The shape a candle consumer actually has, end to end.
+    ///
+    /// Three series load their history independently on one subscription. One
+    /// finishes and is dropped, which must not disturb the other two, must not
+    /// disturb a second subscription watching the same series, and must not
+    /// come back on the next connection.
+    #[tokio::test]
+    async fn a_finished_series_is_dropped_without_disturbing_the_others() {
+        let harness = Harness::start();
+
+        // One consumer, three series — a subscription has one queue.
+        let (mut mine, _) = harness.watch(1, "AAPL{=5m}", 64).await;
+        also_watch(&harness, 1, "AAPL{=h}").await;
+        also_watch(&harness, 1, "MSFT{=5m}").await;
+
+        // A second consumer sharing exactly one of them.
+        let (mut theirs, _) = harness.watch(2, "AAPL{=5m}", 64).await;
+
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let loop_handle = spawn_routing_command_loop(command_rx, harness.routing.clone());
+
+        let mine_targets = shared_targets(&["AAPL{=5m}", "AAPL{=h}", "MSFT{=5m}"]);
+        let theirs_targets = shared_targets(&["AAPL{=5m}"]);
+        let subscription = subscription_for(1, commands, &harness, mine_targets.clone());
+
+        // Each series replays on its own, and each one ends on its own.
+        for symbol in ["AAPL{=5m}", "AAPL{=h}", "MSFT{=5m}"] {
+            harness
+                .send(flagged_candle(symbol, 1_000, SNAPSHOT_BEGIN))
+                .await;
+            harness
+                .send(flagged_candle(symbol, 2_000, SNAPSHOT_END))
+                .await;
+        }
+
+        for symbol in ["AAPL{=5m}", "AAPL{=h}", "MSFT{=5m}"] {
+            assert_eq!(begin_of(next(&mut mine).await).generation, 1, "{symbol}");
+            assert_eq!(bar_time(next(&mut mine).await), 1_000, "{symbol}");
+            assert_eq!(bar_time(next(&mut mine).await), 2_000, "{symbol}");
+            assert_eq!(end_of(next(&mut mine).await).generation, 1, "{symbol}");
+            assert!(subscription.history_loaded(symbol), "{symbol}");
+        }
+
+        // The shared series replayed for the other subscription too.
+        let _ = begin_of(next(&mut theirs).await);
+        assert_eq!(bar_time(next(&mut theirs).await), 1_000);
+        assert_eq!(bar_time(next(&mut theirs).await), 2_000);
+        assert_eq!(end_of(next(&mut theirs).await).generation, 1);
+
+        // One series is done, so stop paying for a live feed nobody reads.
+        subscription
+            .remove_candles(&["AAPL"], CandlePeriod::minutes(5).expect("a period"))
+            .await
+            .expect("the venue accepted the unsubscribe");
+
+        let left: Vec<String> = subscription
+            .subscribed()
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect();
+        assert_eq!(
+            left,
+            vec!["AAPL{=h}".to_string(), "MSFT{=5m}".to_string()],
+            "only the removed series goes"
+        );
+        assert!(
+            harness.resume_of(1, "AAPL{=5m}").is_none(),
+            "its history bookkeeping goes with it, or a resubscribe inherits a \
+             finished replay"
+        );
+
+        // Live data on the removed series reaches the subscription that still
+        // wants it, and nobody else.
+        harness.send(flagged_candle("AAPL{=5m}", 3_000, 0)).await;
+        harness.send(flagged_candle("AAPL{=h}", 3_000, 0)).await;
+
+        assert_eq!(
+            bar_time(next(&mut theirs).await),
+            3_000,
+            "the other subscription still gets the series it shares"
+        );
+        assert_eq!(
+            bar_time(next(&mut mine).await),
+            3_000,
+            "the first event to arrive here must be the series that was kept"
+        );
+        assert_eq!(
+            harness.resume_of(2, "AAPL{=5m}").map(|r| r.phase),
+            Some(SnapshotPhase::Ended),
+            "removing a series from one subscription leaves another's alone"
+        );
+        nothing_more(&mut mine).await;
+
+        // And a reconnect does not bring back what was removed.
+        let registry: Registry = Arc::new(Mutex::new(HashMap::from([
+            (
+                1u32,
+                SubscriptionRecord {
+                    kinds: BTreeSet::from([EventKind::Candle]),
+                    targets: mine_targets,
+                },
+            ),
+            (
+                2u32,
+                SubscriptionRecord {
+                    kinds: BTreeSet::from([EventKind::Candle]),
+                    targets: theirs_targets,
+                },
+            ),
+        ])));
+
+        let replay: HashMap<u32, Vec<String>> = pending_replay(&registry, &harness.progress)
+            .into_iter()
+            .map(|(sub_id, requests)| {
+                (
+                    sub_id,
+                    requests.into_iter().map(|request| request.symbol).collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            replay.get(&1).expect("the subscription is replayed"),
+            &vec!["AAPL{=h}".to_string(), "MSFT{=5m}".to_string()],
+            "the removed series must not be resubscribed"
+        );
+        assert_eq!(
+            replay.get(&2).expect("the other subscription is replayed"),
+            &vec!["AAPL{=5m}".to_string()],
+            "and the subscription that kept it still gets it back"
+        );
+
+        loop_handle.abort();
     }
 }
