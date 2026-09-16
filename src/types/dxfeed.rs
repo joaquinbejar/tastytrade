@@ -233,9 +233,22 @@ impl CandlePeriod {
         self.unit
     }
 
-    /// The `{=…}` suffix this period appends to a symbol.
+    /// The `{=…}` suffix this period appends to a symbol, in dxFeed's
+    /// canonical form.
+    ///
+    /// Canonical means a count of one is omitted: `{=m}`, never `{=1m}`. The
+    /// venue rewrites a candle symbol into that form before echoing it as the
+    /// bar's `eventSymbol`, and the streamer routes bars by that exact string,
+    /// so a subscription sent as `{=1m}` was accepted and then every bar it
+    /// produced was dropped as unrouted (#137). Rendering the canonical form
+    /// here keeps the wire subscription, the route key and the resume key on
+    /// the same string as what comes back.
     pub fn suffix(&self) -> String {
-        format!("{{={}{}}}", self.count, self.unit.as_str())
+        if self.count.get() == 1 {
+            format!("{{={}}}", self.unit.as_str())
+        } else {
+            format!("{{={}{}}}", self.count, self.unit.as_str())
+        }
     }
 
     /// The streamer symbol for `symbol` at this period.
@@ -822,16 +835,24 @@ mod tests {
     }
 
     /// A caller must never build `AAPL{=5m}` by hand, so the rendering is
-    /// pinned.
+    /// pinned. A count of one is omitted, which is the form the venue echoes
+    /// back and the only one the streamer can route (#137).
     #[test]
     fn a_period_renders_the_suffix_the_feed_expects() {
         let cases = [
             (CandlePeriod::seconds(15), "{=15s}"),
             (CandlePeriod::minutes(5), "{=5m}"),
-            (CandlePeriod::hours(1), "{=1h}"),
-            (CandlePeriod::days(1), "{=1d}"),
+            // A count that merely starts with 1 keeps it.
+            (CandlePeriod::minutes(10), "{=10m}"),
+            (CandlePeriod::minutes(15), "{=15m}"),
             (CandlePeriod::weeks(2), "{=2w}"),
             (CandlePeriod::months(3), "{=3mo}"),
+            (CandlePeriod::seconds(1), "{=s}"),
+            (CandlePeriod::minutes(1), "{=m}"),
+            (CandlePeriod::hours(1), "{=h}"),
+            (CandlePeriod::days(1), "{=d}"),
+            (CandlePeriod::weeks(1), "{=w}"),
+            (CandlePeriod::months(1), "{=mo}"),
         ];
 
         for (period, expected) in cases {

@@ -184,7 +184,7 @@ impl QuoteSubscription {
     /// event type.
     ///
     /// Candle symbols carry their period, which is how a caller tells
-    /// `AAPL{=5m}` from `AAPL{=1h}`.
+    /// `AAPL{=5m}` from `AAPL{=h}`.
     pub fn subscribed(&self) -> Vec<(String, EventKind)> {
         targets_of(&self.targets)
             .iter()
@@ -679,7 +679,7 @@ struct EventRouting {
 /// and a replay is per subscription — so a shared counter would let a
 /// subscription that kept up decide where a subscription that did not resumes
 /// from. The symbol carries its period, which keeps `AAPL{=5m}` and
-/// `AAPL{=1h}` apart within one subscription.
+/// `AAPL{=h}` apart within one subscription.
 type CandleProgress = Arc<Mutex<HashMap<(u32, String), CandleResume>>>;
 
 /// Owns the DXLink connection and the subscriptions on it.
@@ -2674,7 +2674,9 @@ mod reconnect_tests {
 
     /// The routing fix candles need. Two periods of one underlying are two
     /// streamer symbols, so a subscription watching five-minute bars must not
-    /// be handed the hourly ones.
+    /// be handed the hourly ones. The incoming symbols are spelled out as the
+    /// venue sends them rather than generated with the request's formatter,
+    /// so the hourly one exercises the count-of-one form (#137).
     #[tokio::test]
     async fn two_candle_periods_of_one_underlying_do_not_cross_deliver() {
         let five = CandlePeriod::minutes(5).expect("a period");
@@ -2719,14 +2721,26 @@ mod reconnect_tests {
             Arc::new(AtomicBool::new(false)),
         ));
 
-        let bar = every_event_type(&five.streamer_symbol("AAPL"))
-            .into_iter()
-            .find(|event| matches!(event, MarketEvent::Candle(_)))
-            .expect("a candle");
-        events_tx.send(bar).await.expect("the feed accepts");
+        // The venue's spelling, not ours: `{=h}` for one hour.
+        events_tx
+            .send(candle("AAPL{=h}", 3_600_000))
+            .await
+            .expect("the feed accepts");
+        let delivered = hour_rx.recv().await.expect("the hourly subscription");
+        assert_eq!(event_symbol(&delivered), Some("AAPL{=h}"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), five_rx.recv())
+                .await
+                .is_err(),
+            "the five-minute subscription must not see an hourly bar"
+        );
 
+        events_tx
+            .send(candle("AAPL{=5m}", 300_000))
+            .await
+            .expect("the feed accepts");
         let delivered = five_rx.recv().await.expect("the five-minute subscription");
-        assert!(matches!(delivered, MarketEvent::Candle(_)));
+        assert_eq!(event_symbol(&delivered), Some("AAPL{=5m}"));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), hour_rx.recv())
                 .await
@@ -2734,12 +2748,29 @@ mod reconnect_tests {
             "the hourly subscription must not see a five-minute bar"
         );
 
-        // And the bar was recorded, which is what a reconnect resumes from.
+        // A quote for the bare underlying belongs to neither.
+        events_tx
+            .send(quote("AAPL"))
+            .await
+            .expect("the feed accepts");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), five_rx.recv())
+                .await
+                .is_err()
+        );
+
+        // And each bar was recorded under its own series, which is what a
+        // reconnect resumes from.
         let seen = progress.lock().expect("not poisoned in tests").clone();
         assert_eq!(
-            seen.get(&(1, five.streamer_symbol("AAPL")))
+            seen.get(&(1, "AAPL{=5m}".to_string()))
                 .and_then(|r| r.through),
-            Some(1_700_000_000_000)
+            Some(300_000)
+        );
+        assert_eq!(
+            seen.get(&(2, "AAPL{=h}".to_string()))
+                .and_then(|r| r.through),
+            Some(3_600_000)
         );
 
         forwarder.abort();
@@ -2832,7 +2863,7 @@ mod reconnect_tests {
 
         // A different period is a different series.
         let other = FeedTarget {
-            symbol: "AAPL{=1h}".to_string(),
+            symbol: "AAPL{=h}".to_string(),
             ..original.clone()
         };
         assert_eq!(resume_from(1, other, &seen).from_time, Some(1_000));
@@ -3053,6 +3084,166 @@ mod reconnect_tests {
         // And the consumer can find out, which is the whole point: two of the
         // three bars never reached it.
         assert_eq!(lagged.load(Ordering::Relaxed), 2);
+
+        forwarder.abort();
+    }
+
+    /// The venue echoes a one-minute candle under `AAPL{=m}`, not the `{=1m}`
+    /// a naive rendering sends. Routes are keyed on the symbol the crate sent,
+    /// so the two have to agree or every bar is dropped as unrouted (#137).
+    #[tokio::test]
+    async fn a_one_minute_candle_is_routed_under_the_symbol_the_venue_echoes() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let (sink_tx, mut sink_rx) = mpsc::channel::<MarketEvent>(8);
+        routing.write().await.senders.insert(1, vec![sink(sink_tx)]);
+
+        // Registered exactly as add_candles would: through the period type.
+        let period = CandlePeriod::minutes(1).expect("one minute is a period");
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(&[FeedTarget {
+                kind: EventKind::Candle,
+                symbol: period.streamer_symbol("AAPL"),
+                from_time: Some(0),
+            }]),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(8);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+
+        // What the venue actually sends back.
+        events_tx
+            .send(candle("AAPL{=m}", 1_000))
+            .await
+            .expect("the feed accepts");
+
+        let delivered = tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
+            .await
+            .expect("the bar must be routed, not dropped as unregistered")
+            .expect("the sink is open");
+        assert_eq!(event_symbol(&delivered), Some("AAPL{=m}"));
+
+        // The resume bookkeeping is keyed on the same string, so a reconnect
+        // continues the right series instead of replaying from the start.
+        let seen = progress.lock().expect("not poisoned in tests").clone();
+        let resume = seen
+            .get(&(1, "AAPL{=m}".to_string()))
+            .copied()
+            .expect("the series was seen under its canonical symbol");
+        assert_eq!(resume.through, Some(1_000));
+        let replayed = resume_from(
+            1,
+            FeedTarget {
+                kind: EventKind::Candle,
+                symbol: period.streamer_symbol("AAPL"),
+                from_time: Some(0),
+            },
+            &seen,
+        );
+        assert_eq!(
+            replayed.from_time,
+            Some(1_001),
+            "the replay must continue past the delivered bar"
+        );
+
+        forwarder.abort();
+    }
+
+    /// Removal goes through the same key as registration, so taking one
+    /// subscription off a one-minute series leaves the other subscriber's
+    /// route in place and clears the key only when nobody is left.
+    #[tokio::test]
+    async fn canonical_candle_routes_are_removed_per_subscription() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let period = CandlePeriod::minutes(1).expect("one minute is a period");
+        let wanted = feed_subscriptions(&[FeedTarget {
+            kind: EventKind::Candle,
+            symbol: period.streamer_symbol("AAPL"),
+            from_time: Some(0),
+        }]);
+        record_routes(&routing, 1, &wanted).await;
+        record_routes(&routing, 2, &wanted).await;
+
+        let key = ("AAPL{=m}".to_string(), EventKind::Candle);
+        assert_eq!(
+            routing.read().await.routes.get(&key).map(|s| s.len()),
+            Some(2),
+            "both subscriptions share the canonical route"
+        );
+
+        // A refused subscribe or an unsubscribe for one of them.
+        forget_routes(&routing, 1, &wanted).await;
+        assert_eq!(
+            routing.read().await.routes.get(&key).cloned(),
+            Some(HashSet::from([2])),
+            "the other subscriber keeps the route"
+        );
+
+        forget_routes(&routing, 2, &wanted).await;
+        assert!(
+            !routing.read().await.routes.contains_key(&key),
+            "nobody left, so the key goes"
+        );
+    }
+
+    /// A dropped one-minute bar freezes the resume point under the canonical
+    /// key, same as any other period: the replay asks for it again rather
+    /// than stepping over it.
+    #[tokio::test]
+    async fn a_dropped_one_minute_bar_freezes_the_canonical_resume_point() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        // Capacity one and never read: the first bar fits, the second drops.
+        let (full_tx, _never_read) = mpsc::channel::<MarketEvent>(1);
+        routing.write().await.senders.insert(1, vec![sink(full_tx)]);
+        let period = CandlePeriod::minutes(1).expect("one minute is a period");
+        let target = FeedTarget {
+            kind: EventKind::Candle,
+            symbol: period.streamer_symbol("AAPL"),
+            from_time: Some(0),
+        };
+        record_routes(
+            &routing,
+            1,
+            &feed_subscriptions(std::slice::from_ref(&target)),
+        )
+        .await;
+
+        let (events_tx, events_rx) = mpsc::channel::<MarketEvent>(8);
+        let progress = no_progress();
+        let forwarder = tokio::spawn(forward_events(
+            events_rx,
+            routing.clone(),
+            progress.clone(),
+            Arc::new(AtomicBool::new(false)),
+        ));
+        for time in [1_000i64, 2_000] {
+            events_tx
+                .send(candle("AAPL{=m}", time))
+                .await
+                .expect("the feed accepts");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let seen = progress.lock().expect("not poisoned in tests").clone();
+        let resume = seen
+            .get(&(1, "AAPL{=m}".to_string()))
+            .copied()
+            .expect("the series was seen");
+        assert_eq!(resume.through, Some(1_000));
+        assert!(resume.gap, "the drop is remembered");
+        assert_eq!(
+            resume_from(1, target, &seen).from_time,
+            Some(1_001),
+            "the replay resumes right after the last delivered bar"
+        );
 
         forwarder.abort();
     }
