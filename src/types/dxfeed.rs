@@ -134,10 +134,12 @@ impl std::fmt::Display for CandleUnit {
 
 /// How long one candle covers.
 ///
-/// Rendered into the symbol as `{=<n><unit>}`, so `AAPL` at five minutes is the
-/// streamer symbol `AAPL{=5m}`. Typed so a caller never builds that string by
-/// hand: a malformed suffix is accepted by the venue and then delivers
-/// nothing, which is indistinguishable from a quiet market.
+/// Rendered into the symbol in dxFeed's canonical form: `{=<n><unit>}`, with
+/// the count omitted when it is one. `AAPL` at five minutes is the streamer
+/// symbol `AAPL{=5m}`, at one minute `AAPL{=m}`. That is the string the venue
+/// echoes bars under, and the streamer routes by it. Typed so a caller never
+/// builds that string by hand: a malformed suffix is accepted by the venue and
+/// then delivers nothing, which is indistinguishable from a quiet market.
 ///
 /// The count is a [`NonZeroU32`](std::num::NonZeroU32) and the field is
 /// private, so a zero-length period is **unrepresentable** rather than merely
