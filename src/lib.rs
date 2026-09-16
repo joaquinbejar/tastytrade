@@ -180,21 +180,58 @@
 //! )
 //! .await?;
 //!
-//! if let Ok(event) = bars.get_event().await
-//!     && let EventData::Candle(candle) = event.data
-//! {
-//!     println!("{}: o {} c {}", event.sym, candle.open, candle.close);
+//! // Each symbol and period replays its history as a snapshot, and the crate
+//! // says when one is over: no flag arithmetic, no snapshot constants.
+//! while let Ok(event) = bars.get_event().await {
+//!     match event.data {
+//!         EventData::Candle(candle) => {
+//!             println!("{}: o {} c {}", event.sym, candle.open, candle.close);
+//!         }
+//!         EventData::SnapshotEnd(end) => {
+//!             println!("{} history in, complete: {}", event.sym, end.lossless);
+//!             // Done with it? Stop paying for a live feed nobody reads.
+//!             bars.remove_candles(
+//!                 &[Symbol("AAPL".to_string())],
+//!                 CandlePeriod::minutes(5)?,
+//!             )
+//!             .await?;
+//!             break;
+//!         }
+//!         _ => {}
+//!     }
 //! }
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! **Historical replay is a phase, not a guess.** A candle subscription's
+//! history arrives as a snapshot per streamer symbol, and this crate turns the
+//! feed's flags into two events of its own:
+//! [`EventData::SnapshotBegin`](dxfeed::EventData::SnapshotBegin) ahead of a
+//! replay's bars and
+//! [`EventData::SnapshotEnd`](dxfeed::EventData::SnapshotEnd) after the last
+//! of them, before any live update that follows. Each carries a **generation**,
+//! which increments on every new snapshot and on every reconnect, so an ending
+//! that was still queued when a connection dropped is recognisable rather than
+//! mistaken for the next replay's. A marker is never dropped for a full queue,
+//! and nothing newer overtakes it.
+//! [`QuoteSubscription::history_loaded`](streaming::quote_streamer::QuoteSubscription::history_loaded)
+//! and
+//! [`await_history`](streaming::quote_streamer::QuoteSubscription::await_history)
+//! answer the same question for a caller who would rather ask than watch, and
+//! [`remove_candles`](streaming::quote_streamer::QuoteSubscription::remove_candles)
+//! drops one finished series without touching the rest of the subscription.
 //!
 //! A subscription's buffer is bounded, so a slow consumer loses events rather
 //! than stalling every other subscription.
 //! [`streaming::quote_streamer::QuoteSubscription::lagged`] makes that
 //! observable, and for candles it is recoverable across a reconnect: a dropped
 //! bar stops the resume point advancing, so the next connection asks for it
-//! again.
+//! again. That is also why a replay finishing and a history being complete are
+//! two answers rather than one:
+//! [`DxfSnapshotEndT::lossless`](dxfeed::DxfSnapshotEndT::lossless) is false
+//! when bars of that generation were shed, by this consumer or by the feed
+//! client above it, so a chart knows it has holes.
 //!
 //! The account websocket publishes a **full object** on every change — never a
 //! diff. The fills inside an order's legs are the only place an executed price

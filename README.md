@@ -302,9 +302,42 @@ bars.add_candles(
     Utc::now() - Duration::days(2),
 )
 .await?;
+
+// The crate says when a symbol's history is in, so no consumer decodes
+// snapshot flags. `lossless` is false when bars of that replay were shed.
+while let Ok(event) = bars.get_event().await {
+    match event.data {
+        EventData::Candle(candle) => {
+            println!("{}: o {} c {}", event.sym, candle.open, candle.close);
+        }
+        EventData::SnapshotEnd(end) => {
+            println!("{} history in, complete: {}", event.sym, end.lossless);
+            // One series is done; the rest of the subscription carries on.
+            bars.remove_candles(
+                &[Symbol("AAPL".to_string())],
+                CandlePeriod::minutes(5)?,
+            )
+            .await?;
+            break;
+        }
+        _ => {}
+    }
+}
 # Ok(())
 # }
 ```
+
+**Historical replay is a phase, not a guess.** Each streamer symbol replays its
+history as its own snapshot, and the crate turns the feed's `IndexedEvent` flags
+into `EventData::SnapshotBegin` and `EventData::SnapshotEnd` — placed after that
+replay's last bar and before the first live update, never dropped for a full
+queue, and never overtaken by anything newer. Both carry a **generation** that
+increments on each new snapshot and on each reconnect, so an ending still queued
+when a connection dropped is identifiable instead of being read as the next
+replay's. `history_loaded()` and `await_history()` ask the same question
+directly, and `remove_candles()` unsubscribes one finished series while every
+other series on the subscription, and every other subscription watching the same
+one, keeps running.
 
 **Account notifications** come over tastytrade's own streamer, authenticated with
 the access token. It publishes a full object on every change — never a diff — for
