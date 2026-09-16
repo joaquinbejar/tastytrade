@@ -696,12 +696,27 @@ pub struct DxfSnapshotEndT {
     /// Whether this consumer actually received all of it.
     ///
     /// "The replay finished" and "the history is complete" are different
-    /// statements, and this is the second one. `false` means bars of this
-    /// generation were dropped before reaching you — because this consumer did
-    /// not keep up, or because the feed client itself shed load — so the
-    /// series has holes even though the venue finished sending it. See
+    /// statements, and this is the second one. `false` means bars are missing,
+    /// so the series has holes even though the venue finished sending it.
+    ///
+    /// Two sources feed it, and they are not equally precise. Loss in this
+    /// crate's own delivery is attributed exactly: a bar of **this** series
+    /// that did not fit **this** consumer's queue. Loss inside the feed client
+    /// cannot be attributed at all, because those events were discarded before
+    /// anything here could see which series they belonged to — so an event of
+    /// any kind, on any symbol, shed while this replay was open also clears
+    /// this flag.
+    ///
+    /// The bias is deliberate. Reporting a complete history that has holes is
+    /// the failure worth avoiding; the opposite costs a consumer one redundant
+    /// refetch. The feed client runs with backpressure enabled, so that second
+    /// source is rare in practice.
+    ///
+    /// `true` is a statement about a bounded window rather than a proof: the
+    /// feed client's counter is sampled, not pushed, so a loss in the last
+    /// instant before the terminator can be missed. Use
     /// [`crate::streaming::quote_streamer::QuoteSubscription::lagged`] for the
-    /// count across every series.
+    /// exactly-attributed count across every series.
     pub lossless: bool,
 }
 

@@ -379,24 +379,26 @@ impl QuoteSubscription {
     /// candle target for `symbol`, so the wait could never end — a mistyped
     /// symbol is a bug worth reporting rather than a hang.
     pub async fn await_history(&self, symbol: &str) -> TastyResult<dxfeed::DxfSnapshotEndT> {
-        let subscribed = targets_of(&self.targets)
-            .iter()
-            .any(|target| target.kind == EventKind::Candle && target.symbol == symbol);
-        if !subscribed {
-            return Err(TastyTradeError::Precondition(format!(
-                "this subscription has no candle series for {symbol}, so its history can never \
-                 finish; subscribe with add_candles first, and pass the streamer symbol with its \
-                 period suffix"
-            )));
-        }
-
         loop {
-            // Armed before the check, never after. A phase change landing
-            // between the two would otherwise be missed and the caller would
-            // wait for a notification that had already been sent.
+            // Armed before the checks, never after. A phase change landing
+            // between them would otherwise be missed and the caller would wait
+            // for a notification that had already been sent.
             let notified = self.history.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+
+            // Checked every time round rather than once on the way in.
+            // `remove_candles` can take the series away while this waits, and
+            // it wakes this waiter when it does; without the re-check the
+            // waiter would find no finished replay, park again, and wait for a
+            // series nobody is subscribed to any more.
+            if !self.holds_candle_series(symbol) {
+                return Err(TastyTradeError::Precondition(format!(
+                    "this subscription has no candle series for {symbol}, so its history can \
+                     never finish; subscribe with add_candles first, and pass the streamer \
+                     symbol with its period suffix"
+                )));
+            }
 
             if let Some(end) = self.finished_history(symbol) {
                 return Ok(end);
@@ -404,6 +406,13 @@ impl QuoteSubscription {
 
             notified.await;
         }
+    }
+
+    /// Whether this subscription holds a candle series for `symbol`.
+    fn holds_candle_series(&self, symbol: &str) -> bool {
+        targets_of(&self.targets)
+            .iter()
+            .any(|target| target.kind == EventKind::Candle && target.symbol == symbol)
     }
 
     /// Unsubscribes `symbols` at `period` from this subscription.
@@ -470,34 +479,54 @@ impl QuoteSubscription {
             ));
         };
 
-        let (ack, answered) = oneshot::channel();
-        tx.send(DXLinkCommand::Unsubscribe(
-            feed_subscriptions(&targets),
-            sub_id,
-            Some(ack),
-        ))
-        .await
-        .map_err(|_| {
-            TastyTradeError::Streaming(
-                "the quote streamer is closed; reconnect before unsubscribing".to_string(),
-            )
-        })?;
-
-        answered.await.unwrap_or_else(|_| {
-            Err(TastyTradeError::Streaming(
-                "the quote streamer closed before the unsubscribe was confirmed".to_string(),
-            ))
-        })?;
-
-        // Only once the venue has confirmed. The shared set is what a
-        // reconnect replays from, so forgetting a target the venue still
-        // serves would leave the series arriving with nowhere to go. The
-        // command loop takes the routes back on the same success.
+        // Taken out of the shared set before the venue is asked, and put back
+        // if it refuses. Recording it afterwards instead left a window in
+        // which the command loop had already dropped the route while the set
+        // still claimed the target: a concurrent `add_candles` would see it as
+        // present and skip resubscribing, leaving a series with nowhere to
+        // deliver, and a reconnect could replay something already being taken
+        // away. `subscribe_targets` reserves in the same direction for the
+        // same reason.
         {
             let mut known = targets_of(&self.targets);
             for target in &targets {
                 known.remove(target);
             }
+        }
+
+        let (ack, answered) = oneshot::channel();
+        let queued = tx
+            .send(DXLinkCommand::Unsubscribe(
+                feed_subscriptions(&targets),
+                sub_id,
+                Some(ack),
+            ))
+            .await
+            .map_err(|_| {
+                TastyTradeError::Streaming(
+                    "the quote streamer is closed; reconnect before unsubscribing".to_string(),
+                )
+            });
+
+        let outcome = match queued {
+            Ok(()) => answered.await.unwrap_or_else(|_| {
+                Err(TastyTradeError::Streaming(
+                    "the quote streamer closed before the unsubscribe was confirmed".to_string(),
+                ))
+            }),
+            Err(e) => Err(e),
+        };
+
+        if let Err(e) = outcome {
+            // Still subscribed, so the record has to say so again: a retry
+            // needs it, and a reconnect has to replay it.
+            {
+                let mut known = targets_of(&self.targets);
+                for target in targets {
+                    known.insert(target);
+                }
+            }
+            return Err(e);
         }
 
         // The history bookkeeping goes with them. Keeping it would let a later
@@ -1074,7 +1103,15 @@ fn open_generation(
 /// Records that this generation's history is no longer complete.
 fn mark_lossy(progress: &CandleProgress, sub_id: u32, symbol: &str, dxlink_drops: &Arc<AtomicU64>) {
     let mut seen = progress.lock().unwrap_or_else(|p| p.into_inner());
-    series_entry(&mut seen, sub_id, symbol, dxlink_drops).lossless = false;
+    let resume = series_entry(&mut seen, sub_id, symbol, dxlink_drops);
+
+    // Only a replay that is still running can become incomplete. A bar dropped
+    // afterwards is a live update: rewriting the finished generation's answer
+    // would tell a consumer its history had holes that its history never had,
+    // and that answer is still readable through `history_loaded`.
+    if resume.phase == SnapshotPhase::Open {
+        resume.lossless = false;
+    }
 }
 
 /// Remembers a terminator that arrived inside an open transaction.
@@ -1689,6 +1726,16 @@ impl QuoteStreamer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(id.0 as u32));
+
+        // And its history with it. A handle kept after the close would
+        // otherwise keep answering `history_loaded` for a series nobody is
+        // subscribed to, and every closed subscription's entries would be
+        // walked again on every later reconnect.
+        self.progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(sub_id, _), _| *sub_id != id.0 as u32);
+        self.history.notify_waiters();
 
         Ok(())
     }
@@ -2567,6 +2614,11 @@ async fn supervise(
             &mut configured,
         )
         .await;
+        // The first replay's bars start arriving here, before `run_connection`
+        // reaches its own sampling loop, so without this the generation they
+        // open would be measured against the previous connection's total.
+        dxlink_drops.store(client.dropped_event_count(), Ordering::Relaxed);
+
         if restored {
             // Connected is claimed only once what was being watched is watched
             // again. Reporting it before restoration leaves a caller believing
@@ -2592,6 +2644,15 @@ async fn supervise(
         };
 
         forwarder.abort();
+        // Aborting asks; joining knows. The old forwarder can still be inside
+        // an event, and letting it run on while the generation below is bumped
+        // would let a superseded event mutate the new generation or land
+        // behind the marker that announces it. Skipped when the handle has
+        // already been awaited to completion, which polling again would panic
+        // on.
+        if !forwarder.is_finished() {
+            let _ = (&mut forwarder).await;
+        }
 
         // Before any backoff, and before the state even says so: the replay
         // that was in progress stops being current the moment the socket does,
@@ -4883,6 +4944,25 @@ mod reconnect_tests {
         harness: &Harness,
         targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
     ) -> QuoteSubscription {
+        subscription_with(
+            sub_id,
+            commands,
+            harness.progress.clone(),
+            harness.drained.clone(),
+            harness.history.clone(),
+            targets,
+        )
+    }
+
+    /// A subscription sharing the given state, whoever owns it.
+    fn subscription_with(
+        sub_id: u32,
+        commands: mpsc::Sender<DXLinkCommand>,
+        progress: CandleProgress,
+        drained: Arc<Notify>,
+        history: Arc<Notify>,
+        targets: Arc<Mutex<BTreeSet<FeedTarget>>>,
+    ) -> QuoteSubscription {
         let (_closed, closed_rx) = mpsc::channel::<Delivery>(1);
         let (_unused, event_receiver) = flume::unbounded();
         QuoteSubscription {
@@ -4895,9 +4975,9 @@ mod reconnect_tests {
             dxlink_receiver: closed_rx,
             targets,
             lagged: Arc::new(AtomicU64::new(0)),
-            progress: harness.progress.clone(),
-            drained: harness.drained.clone(),
-            history: harness.history.clone(),
+            progress,
+            drained,
+            history,
         }
     }
 
@@ -5165,6 +5245,140 @@ mod reconnect_tests {
             replay.get(&2).expect("the other subscription is replayed"),
             &vec!["AAPL{=5m}".to_string()],
             "and the subscription that kept it still gets it back"
+        );
+
+        loop_handle.abort();
+    }
+
+    /// A replay's answer is fixed once it ends. A live bar dropped afterwards
+    /// is a live bar, and rewriting the finished generation would tell a
+    /// consumer its history had holes that its history never had.
+    #[tokio::test]
+    async fn a_live_bar_dropped_after_the_replay_does_not_rewrite_its_answer() {
+        let harness = Harness::start();
+        // Exactly the begin marker, the bar and the end marker: full when the
+        // replay ends, which is what makes the next bar a drop.
+        let (_rx, lagged) = harness.watch(1, "AAPL{=5m}", 3).await;
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle(
+                "AAPL{=5m}",
+                2_000,
+                SNAPSHOT_END | REMOVE_EVENT,
+            ))
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let ended = harness
+            .resume_of(1, "AAPL{=5m}")
+            .expect("the series was seen");
+        assert_eq!(ended.phase, SnapshotPhase::Ended);
+        assert!(ended.lossless, "nothing was dropped during the replay");
+
+        // Live data the consumer cannot keep up with, after the fact.
+        harness.send(flagged_candle("AAPL{=5m}", 3_000, 0)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            lagged.load(Ordering::Relaxed),
+            1,
+            "the live bar was dropped"
+        );
+        assert!(
+            harness
+                .resume_of(1, "AAPL{=5m}")
+                .expect("the series is still known")
+                .lossless,
+            "the finished replay's answer must not change afterwards"
+        );
+    }
+
+    /// Removing a series wakes anybody waiting on its history. Without a
+    /// re-check they would park again and wait for a series nobody holds.
+    #[tokio::test]
+    async fn await_history_gives_up_when_the_series_is_removed() {
+        let harness = Harness::start();
+        let (_rx, _) = harness.watch(1, "AAPL{=5m}", 8).await;
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let loop_handle = spawn_routing_command_loop(command_rx, harness.routing.clone());
+        let subscription = subscription_for(1, commands, &harness, shared_targets(&["AAPL{=5m}"]));
+
+        // Nothing has replayed, so the wait is genuinely pending when the
+        // series is taken away underneath it.
+        let waiting = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history("AAPL{=5m}"),
+        );
+        let removing = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            subscription
+                .remove_candles(&["AAPL"], CandlePeriod::minutes(5).expect("a period"))
+                .await
+        };
+
+        let (waited, removed) = tokio::join!(waiting, removing);
+        removed.expect("the venue accepted the unsubscribe");
+
+        let error = waited
+            .expect("the wait must end rather than hang")
+            .expect_err("a series nobody holds can never finish");
+        assert!(matches!(error, TastyTradeError::Precondition(_)));
+
+        loop_handle.abort();
+    }
+
+    /// A closed subscription stops answering for its series. A handle kept
+    /// afterwards would otherwise report a history that belongs to nothing,
+    /// and the entries would be walked again on every later reconnect.
+    #[tokio::test]
+    async fn closing_a_subscription_forgets_its_history() {
+        let (tx, rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel::<()>();
+        let loop_handle = spawn_command_loop(rx, || Ok(()));
+        let mut streamer = streamer_with(tx.clone(), shutdown_tx);
+
+        // A finished replay, as the forwarder would have left it.
+        streamer
+            .progress
+            .lock()
+            .expect("not poisoned in tests")
+            .insert(
+                (0u32, "AAPL{=5m}".to_string()),
+                CandleResume {
+                    generation: 1,
+                    phase: SnapshotPhase::Ended,
+                    ended_as: Some(dxfeed::SnapshotEndKind::End),
+                    ..CandleResume::new(0)
+                },
+            );
+
+        let subscription = subscription_with(
+            0,
+            tx,
+            streamer.progress.clone(),
+            streamer.drained.clone(),
+            streamer.history.clone(),
+            shared_targets(&["AAPL{=5m}"]),
+        );
+        assert!(subscription.history_loaded("AAPL{=5m}"));
+
+        let id = SubscriptionId(0);
+        streamer.subscription_map.insert(id, subscription);
+        streamer
+            .close_sub(id)
+            .await
+            .expect("the venue accepted the close");
+
+        assert!(
+            streamer
+                .progress
+                .lock()
+                .expect("not poisoned in tests")
+                .is_empty(),
+            "a closed subscription must not keep answering for its series"
         );
 
         loop_handle.abort();
