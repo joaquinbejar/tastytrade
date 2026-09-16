@@ -390,3 +390,124 @@ async fn a_malformed_contextless_watchlist_payload_is_an_error() {
     ));
     assert!(!error.is_retryable(), "the same body will fail again");
 }
+
+/// Tolerating a missing `context` must not stop the documented shape from
+/// decoding.
+#[tokio::test]
+async fn own_watchlists_still_decode_with_a_string_context() {
+    let venue = venue_with(vec![(
+        "GET /watchlists",
+        Route::ok(format!(
+            r#"{{"data": {{"items": [{LIST}]}}, "context": "/watchlists"}}"#
+        )),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let lists = client
+        .watchlists()
+        .await
+        .expect("the documented envelope must keep decoding");
+    assert_eq!(lists.len(), 1);
+}
+
+/// A user with no lists gets an empty list, not an error.
+#[tokio::test]
+async fn an_empty_contextless_listing_is_an_empty_list() {
+    let venue = venue_with(vec![(
+        "GET /watchlists",
+        Route::ok(r#"{"data":{"items":[]}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let lists = client
+        .watchlists()
+        .await
+        .expect("an empty listing is a valid answer");
+    assert!(lists.is_empty());
+}
+
+/// Item-tolerant decoding drops what it cannot read, but a listing where
+/// nothing could be read is a model mismatch, not a user without lists.
+#[tokio::test]
+async fn a_listing_whose_items_all_fail_to_decode_is_not_an_empty_list() {
+    let venue = venue_with(vec![(
+        "GET /watchlists",
+        Route::ok(r#"{"data":{"items":[{"name": 42}]}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let error = client
+        .watchlists()
+        .await
+        .expect_err("a listing nothing decoded from must not read as empty");
+    assert!(
+        matches!(error, TastyTradeError::Unknown(_)),
+        "the model mismatch must be reported as such: {error:?}"
+    );
+}
+
+/// A 2xx carrying the venue's error document is still the venue's error, with
+/// the same status and sanitisation as on the generic path.
+#[tokio::test]
+async fn a_broker_error_document_on_a_2xx_is_still_an_error() {
+    let venue = venue_with(vec![(
+        "GET /watchlists",
+        Route::ok(r#"{"error":{"code":"oops","message":"server"}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let error = client
+        .watchlists()
+        .await
+        .expect_err("an error document is not a listing");
+    assert!(matches!(
+        error,
+        TastyTradeError::Request {
+            context: RequestContext {
+                status: Some(200),
+                ..
+            },
+            api: Some(_),
+        }
+    ));
+}
+
+/// A non-2xx keeps its status on the optional-context path.
+#[tokio::test]
+async fn a_missing_watchlist_keeps_the_venue_status() {
+    let venue = venue_with(vec![(
+        "GET /watchlists/Nope",
+        Route::status(404, r#"{"error":{"code":"not_found","message":"nope"}}"#),
+    )])
+    .await;
+    let client = TastyTrade::connect(&config_for(&venue))
+        .await
+        .expect("authentication must succeed");
+
+    let error = client
+        .watchlist("Nope")
+        .await
+        .expect_err("a 404 is not a list");
+    assert!(matches!(
+        error,
+        TastyTradeError::Request {
+            context: RequestContext {
+                status: Some(404),
+                ..
+            },
+            ..
+        }
+    ));
+}

@@ -499,9 +499,11 @@ where
 
 /// Whether a success envelope must identify the endpoint it represents.
 ///
-/// Required is the default for every generic request path. Production Market
-/// Metrics is the one observed exception: its public, non-account-scoped
-/// response omits `context` while still carrying a valid `data.items` block.
+/// Required is the default for every generic request path. The observed
+/// exceptions are production Market Metrics (#132) and the four Watchlists
+/// reads (#136): public, non-account-scoped responses that omit `context`
+/// while still carrying a valid `data` block. An endpoint joins that list on
+/// evidence, never by default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextPolicy {
     Required,
