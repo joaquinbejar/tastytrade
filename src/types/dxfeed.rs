@@ -652,12 +652,65 @@ pub struct DxfSeriesT {
     pub interest: f64,
 }
 
+/// Which terminator ended a historical replay.
+///
+/// dxFeed distinguishes the two and so does this crate: a series that was cut
+/// short is not the same answer as one the venue served in full, and a
+/// consumer sizing a chart or backfilling a store needs to tell them apart.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SnapshotEndKind {
+    /// `SNAPSHOT_END`: the venue served every bar it holds for the request.
+    End,
+    /// `SNAPSHOT_SNIP`: the venue cut the history short of what was asked for.
+    Snip,
+}
+
+/// A historical replay has begun for the series in [`Event::sym`].
+///
+/// Emitted once per generation, ahead of that generation's bars. A reconnect
+/// emits one without waiting for the venue, because the previous generation
+/// stops being current the moment the connection does.
+#[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
+pub struct DxfSnapshotBeginT {
+    /// Which replay of this series this is, counting from one.
+    ///
+    /// Increments on every new snapshot and on every reconnect, so a bar or a
+    /// terminator from an older generation is recognisable rather than
+    /// confusing.
+    pub generation: u64,
+}
+
+/// A historical replay has finished for the series in [`Event::sym`].
+///
+/// Emitted once per generation, after that generation's last deliverable bar
+/// and before any live update that follows it. Waiting for this is how a
+/// consumer tells replay bars from live ones without reading a single flag.
+#[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
+pub struct DxfSnapshotEndT {
+    /// The replay this ends. Matches the [`DxfSnapshotBeginT::generation`]
+    /// that opened it.
+    pub generation: u64,
+    /// Whether the venue served the whole history or cut it short.
+    pub kind: SnapshotEndKind,
+    /// Whether this consumer actually received all of it.
+    ///
+    /// "The replay finished" and "the history is complete" are different
+    /// statements, and this is the second one. `false` means bars of this
+    /// generation were dropped before reaching you — because this consumer did
+    /// not keep up, or because the feed client itself shed load — so the
+    /// series has holes even though the venue finished sending it. See
+    /// [`crate::streaming::quote_streamer::QuoteSubscription::lagged`] for the
+    /// count across every series.
+    pub lossless: bool,
+}
+
 /// Enum representing different types of market event data
 ///
-/// One variant per [`EventKind`]. Adding the eight that were missing is
-/// breaking for any consumer matching this exhaustively, which is the point:
-/// the events were arriving and being dropped, and a consumer that thought it
-/// had handled every case had not.
+/// One variant per [`EventKind`], plus the two snapshot markers. Adding a
+/// variant is breaking for any consumer matching this exhaustively, which is
+/// the point: an event nobody handles is an event silently dropped, and a
+/// consumer that thought it had handled every case had not.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub enum EventData {
     /// Top of book.
@@ -682,6 +735,16 @@ pub enum EventData {
     TheoPrice(Box<DxfTheoPriceT>),
     /// One option expiration's computed values.
     Series(Box<DxfSeriesT>),
+    /// A historical replay has begun for this series.
+    ///
+    /// Synthesised by this crate from the feed's `SNAPSHOT_BEGIN` flag and
+    /// from a reconnect, never by the venue. It carries no market data.
+    SnapshotBegin(DxfSnapshotBeginT),
+    /// A historical replay has finished for this series.
+    ///
+    /// Synthesised by this crate from the feed's `SNAPSHOT_END` and
+    /// `SNAPSHOT_SNIP` flags. It carries no market data.
+    SnapshotEnd(DxfSnapshotEndT),
 }
 
 impl EventData {
@@ -701,7 +764,22 @@ impl EventData {
             EventData::Underlying(_) => EventKind::Underlying,
             EventData::TheoPrice(_) => EventKind::TheoPrice,
             EventData::Series(_) => EventKind::Series,
+            // The markers belong to a candle series, so they answer with the
+            // kind that produced them rather than needing one of their own:
+            // a caller routing by kind keeps its candle branch.
+            EventData::SnapshotBegin(_) | EventData::SnapshotEnd(_) => EventKind::Candle,
         }
+    }
+
+    /// Whether this is a snapshot marker rather than market data.
+    ///
+    /// Markers carry no prices. A consumer that only wants bars can skip them
+    /// with this instead of matching both variants.
+    pub fn is_marker(&self) -> bool {
+        matches!(
+            self,
+            EventData::SnapshotBegin(_) | EventData::SnapshotEnd(_)
+        )
     }
 }
 
