@@ -255,11 +255,54 @@ impl CandlePeriod {
 
     /// The streamer symbol for `symbol` at this period.
     ///
+    /// `symbol` is a **streaming** name, not an instrument one — see
+    /// [`AsStreamerSymbol`](crate::api::quote_streaming::AsStreamerSymbol).
+    ///
     /// This is the string the venue is subscribed with **and** the
     /// `eventSymbol` the candles come back under, which is what keeps two
     /// periods of one underlying from delivering into each other.
     pub fn streamer_symbol(&self, symbol: &str) -> String {
         format!("{symbol}{}", self.suffix())
+    }
+
+    /// The base streamer symbol inside a candle's streamer symbol.
+    ///
+    /// The inverse of [`streamer_symbol`](Self::streamer_symbol), and the
+    /// other half of the round trip a consumer needs: a bar and a
+    /// [`SnapshotEnd`](EventData::SnapshotEnd) name their series **with** the
+    /// period suffix, while
+    /// [`remove_candles`](crate::streaming::quote_streamer::QuoteSubscription::remove_candles)
+    /// takes the base name and appends the suffix itself. This turns one into
+    /// the other without the caller doing string surgery on a format the
+    /// venue owns.
+    ///
+    /// `None` when the symbol does not end in *this* period's suffix, so a
+    /// five-minute series is never mistaken for an hourly one and a bare
+    /// symbol is never mistaken for either.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tastytrade::prelude::*;
+    ///
+    /// let hourly = CandlePeriod::hours(1)?;
+    /// let wire = hourly.streamer_symbol("ES");
+    /// assert_eq!(wire, "ES{=h}");
+    /// assert_eq!(hourly.base_symbol(&wire), Some(DxFeedSymbol("ES".to_string())));
+    ///
+    /// // A different period is a different series.
+    /// assert_eq!(CandlePeriod::minutes(5)?.base_symbol(&wire), None);
+    /// # Ok::<(), tastytrade::TastyTradeError>(())
+    /// ```
+    pub fn base_symbol(
+        &self,
+        streamer_symbol: &str,
+    ) -> Option<crate::api::quote_streaming::DxFeedSymbol> {
+        let base = streamer_symbol.strip_suffix(&self.suffix())?;
+        if base.is_empty() {
+            return None;
+        }
+        Some(crate::api::quote_streaming::DxFeedSymbol(base.to_string()))
     }
 }
 
@@ -668,6 +711,10 @@ pub enum SnapshotEndKind {
 
 /// A historical replay has begun for the series in [`Event::sym`].
 ///
+/// That symbol is the **wire** name of the series, period suffix included, the
+/// same string the bars arrive under. [`CandlePeriod::base_symbol`] turns it
+/// back into the base name the subscription methods take.
+///
 /// Emitted once per generation, ahead of that generation's bars. A reconnect
 /// emits one without waiting for the venue, because the previous generation
 /// stops being current the moment the connection does.
@@ -682,6 +729,11 @@ pub struct DxfSnapshotBeginT {
 }
 
 /// A historical replay has finished for the series in [`Event::sym`].
+///
+/// That symbol is the **wire** name of the series, period suffix included.
+/// [`CandlePeriod::base_symbol`] turns it back into the base name
+/// [`remove_candles`](crate::streaming::quote_streamer::QuoteSubscription::remove_candles)
+/// takes, which is the round trip for dropping a series once its history is in.
 ///
 /// Emitted once per generation, after that generation's last deliverable bar
 /// and before any live update that follows it. Waiting for this is how a
@@ -956,6 +1008,59 @@ mod tests {
             assert_eq!(period.to_string(), expected);
             assert_eq!(period.streamer_symbol("AAPL"), format!("AAPL{expected}"));
         }
+    }
+
+    /// The two halves of the round trip a candle consumer needs: a bar names
+    /// its series with the period suffix, and the subscription methods take it
+    /// without.
+    #[test]
+    fn a_streamer_symbol_round_trips_through_its_period() {
+        let cases = [
+            CandlePeriod::seconds(15),
+            CandlePeriod::minutes(5),
+            CandlePeriod::minutes(1),
+            CandlePeriod::hours(1),
+            CandlePeriod::days(1),
+            CandlePeriod::weeks(2),
+            CandlePeriod::months(1),
+        ];
+
+        for period in cases {
+            let period = period.expect("a positive count is a period");
+            let wire = period.streamer_symbol("ES");
+            assert_eq!(
+                period.base_symbol(&wire),
+                Some(crate::api::quote_streaming::DxFeedSymbol("ES".to_string())),
+                "{period} did not round trip"
+            );
+        }
+    }
+
+    /// A period only claims its own series. Reading an hourly symbol as a
+    /// five-minute one would unsubscribe a series the caller still wants.
+    #[test]
+    fn a_base_symbol_belongs_to_exactly_one_period() {
+        let hourly = CandlePeriod::hours(1).expect("a period");
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let ten = CandlePeriod::minutes(10).expect("a period");
+        let minute = CandlePeriod::minutes(1).expect("a period");
+
+        let wire = hourly.streamer_symbol("ES");
+        assert!(five.base_symbol(&wire).is_none());
+
+        // The trap a suffix comparison by prefix would fall into: `{=10m}`
+        // ends in `m}` and is not a one-minute series.
+        let ten_minute = ten.streamer_symbol("ES");
+        assert!(minute.base_symbol(&ten_minute).is_none());
+        assert_eq!(
+            ten.base_symbol(&ten_minute),
+            Some(crate::api::quote_streaming::DxFeedSymbol("ES".to_string()))
+        );
+
+        // A symbol carrying no period at all is not a candle series.
+        assert!(hourly.base_symbol("ES").is_none());
+        // And a suffix with nothing in front of it names nothing.
+        assert!(hourly.base_symbol("{=h}").is_none());
     }
 
     /// A zero-length candle renders a suffix the venue accepts and never

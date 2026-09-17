@@ -71,8 +71,19 @@ impl std::fmt::Display for QuoteStreamerTokens {
 #[serde(transparent)]
 /// A symbol as the streaming feed names it.
 ///
-/// Not always the same string as the instrument symbol, which is why
-/// [`TastyTrade::get_streamer_symbol`] exists.
+/// Not the same namespace as [`Symbol`], which is what the REST API calls an
+/// instrument. The two strings coincide for equities and differ for futures,
+/// options, cryptocurrencies and warrants — a futures contract the REST API
+/// calls `/ESU3` streams as `/ESU23:XCME` — which is why
+/// [`TastyTrade::get_streamer_symbol`] exists and why the streaming
+/// subscription methods will only take this type: see [`AsStreamerSymbol`].
+///
+/// Obtain one from [`TastyTrade::get_streamer_symbol`], or from an
+/// instrument's own `streamer_symbol` field, and pass it on unchanged. There
+/// is no textual rule that turns one namespace into the other, so there is
+/// nothing to strip or append by hand. Constructing one directly is asserting
+/// the string is already a streaming name — safe for an equity ticker, and
+/// worth checking for anything else.
 pub struct DxFeedSymbol(pub String);
 
 impl AsSymbol for DxFeedSymbol {
@@ -84,6 +95,132 @@ impl AsSymbol for DxFeedSymbol {
 impl AsSymbol for &DxFeedSymbol {
     fn as_symbol(&self) -> Symbol {
         Symbol(self.0.clone())
+    }
+}
+
+/// A symbol in the streaming namespace.
+///
+/// Implemented for [`DxFeedSymbol`] and nothing else, on purpose. [`AsSymbol`]
+/// is implemented for every `AsRef<str>`, so `&str`, [`Symbol`] and
+/// [`DxFeedSymbol`] all collapse into one type and the compiler cannot tell an
+/// instrument symbol from a streaming one. That distinction costs nothing for
+/// an equity, where the two strings match, and is silent and total for
+/// anything else: a futures contract the REST API calls `/ESU3` streams as
+/// `/ESU23:XCME`, and the venue simply never sends events for a target it does
+/// not recognise. The subscription succeeds, no error is raised, and the
+/// history never loads.
+///
+/// **What this type guarantees, and what it does not.** It guarantees the
+/// caller did not hand a [`Symbol`], a `String` or a `&str` to the feed by
+/// mistake, because those no longer compile. It does not guarantee the string
+/// inside is a symbol the feed knows: the field is public, so a wrong name can
+/// still be wrapped deliberately, and an unknown target still fails the same
+/// silent way. Get one from
+/// [`TastyTrade::get_streamer_symbol`] or from an instrument's own
+/// `streamer_symbol` field and pass it through unchanged — there is no textual
+/// rule mapping one namespace to the other, and this crate does not invent one.
+///
+/// What it does buy is that the accidental case stops compiling. Each of the
+/// three subscription methods refuses each of the three old types, and the
+/// error is the trait bound rather than anything incidental, which is what
+/// `E0277` pins:
+///
+/// `add_candles` with a `&str`:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription, period: CandlePeriod) {
+/// sub.add_candles(&["/ESU3"], period, chrono::Utc::now()).await.unwrap();
+/// # }
+/// ```
+///
+/// `add_candles` with a [`Symbol`], the instrument namespace:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription, period: CandlePeriod) {
+/// sub.add_candles(&[Symbol("/ESU3".to_string())], period, chrono::Utc::now())
+///     .await
+///     .unwrap();
+/// # }
+/// ```
+///
+/// `remove_candles` with a `String`:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription, period: CandlePeriod) {
+/// sub.remove_candles(&["/ESU3".to_string()], period).await.unwrap();
+/// # }
+/// ```
+///
+/// `remove_candles` with a [`Symbol`]:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription, period: CandlePeriod) {
+/// sub.remove_candles(&[Symbol("/ESU3".to_string())], period).await.unwrap();
+/// # }
+/// ```
+///
+/// `add_symbols` with a `&str`:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription) {
+/// sub.add_symbols(&["AAPL"]).await.unwrap();
+/// # }
+/// ```
+///
+/// `add_symbols` with a [`Symbol`]:
+///
+/// ```compile_fail,E0277
+/// # use tastytrade::prelude::*;
+/// # async fn nope(sub: &QuoteSubscription) {
+/// sub.add_symbols(&[Symbol("AAPL".to_string())]).await.unwrap();
+/// # }
+/// ```
+///
+/// All three take a [`DxFeedSymbol`], owned or borrowed, and that is the whole
+/// list:
+///
+/// ```rust,no_run
+/// # use tastytrade::prelude::*;
+/// # use tastytrade::TastyTrade;
+/// # async fn yes(tasty: &TastyTrade, sub: &QuoteSubscription, period: CandlePeriod)
+/// #     -> Result<(), Box<dyn std::error::Error>> {
+/// // Whatever the venue calls it. Passed on unchanged, never rewritten.
+/// let es = tasty
+///     .get_streamer_symbol(&InstrumentType::Future, &Symbol("/ESU3".to_string()))
+///     .await?;
+///
+/// sub.add_candles(&[es.clone()], period, chrono::Utc::now()).await?;
+/// sub.add_candles(&[&es], period, chrono::Utc::now()).await?;
+/// sub.add_symbols(&[es.clone()]).await?;
+/// sub.add_symbols(&[&es]).await?;
+/// sub.remove_candles(&[es.clone()], period).await?;
+/// sub.remove_candles(&[&es], period).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Deliberately not sealed. A caller with its own resolved-symbol type may
+/// implement this, which is an assertion written down in their code rather
+/// than an accident hidden in a blanket impl.
+pub trait AsStreamerSymbol {
+    /// The streaming name this value carries.
+    fn as_streamer_symbol(&self) -> DxFeedSymbol;
+}
+
+impl AsStreamerSymbol for DxFeedSymbol {
+    fn as_streamer_symbol(&self) -> DxFeedSymbol {
+        self.clone()
+    }
+}
+
+impl AsStreamerSymbol for &DxFeedSymbol {
+    fn as_streamer_symbol(&self) -> DxFeedSymbol {
+        (*self).clone()
     }
 }
 
