@@ -167,18 +167,23 @@
 //! # use chrono::{Duration, Utc};
 //! # use tastytrade::{Symbol, TastyTrade};
 //! # use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
+//! # use tastytrade::prelude::InstrumentType;
 //! # async fn bars(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
 //! let mut streamer = tasty.create_quote_streamer().await?;
 //! let mut bars = streamer.create_sub([EventKind::Candle]).await?;
 //!
+//! // The streaming name, which is not always the instrument name. For an
+//! // equity the two coincide; for a future they do not, and the feed simply
+//! // never answers the wrong one.
+//! let aapl = tasty
+//!     .get_streamer_symbol(&InstrumentType::Equity, &Symbol("AAPL".to_string()))
+//!     .await?;
+//!
 //! // `from_time` is required, not optional: without one a candle subscription
 //! // replays an unbounded history.
-//! bars.add_candles(
-//!     &[Symbol("AAPL".to_string())],
-//!     CandlePeriod::minutes(5)?,
-//!     Utc::now() - Duration::days(2),
-//! )
-//! .await?;
+//! let period = CandlePeriod::minutes(5)?;
+//! bars.add_candles(&[aapl], period, Utc::now() - Duration::days(2))
+//!     .await?;
 //!
 //! // Each symbol and period replays its history as a snapshot, and the crate
 //! // says when one is over: no flag arithmetic, no snapshot constants.
@@ -189,12 +194,12 @@
 //!         }
 //!         EventData::SnapshotEnd(end) => {
 //!             println!("{} history in, complete: {}", event.sym, end.lossless);
-//!             // Done with it? Stop paying for a live feed nobody reads.
-//!             bars.remove_candles(
-//!                 &[Symbol("AAPL".to_string())],
-//!                 CandlePeriod::minutes(5)?,
-//!             )
-//!             .await?;
+//!             // Done with it? Stop paying for a live feed nobody reads. The
+//!             // marker names the series with its period suffix; this takes it
+//!             // without, and the period converts between the two.
+//!             if let Some(base) = period.base_symbol(&event.sym) {
+//!                 bars.remove_candles(&[base], period).await?;
+//!             }
 //!             break;
 //!         }
 //!         _ => {}
@@ -203,6 +208,30 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! **Two symbol namespaces, and the compiler keeps them apart.** The REST API
+//! names an instrument with a [`Symbol`]; the feed names it with a
+//! [`DxFeedSymbol`](api::quote_streaming::DxFeedSymbol). They are the same
+//! string for an equity and differ for futures, options, cryptocurrencies and
+//! warrants: a futures contract the REST API calls `/ESU3` streams as
+//! `/ESU23:XCME`. There is no rule to apply here, and this crate does not
+//! invent one — ask
+//! [`TastyTrade::get_streamer_symbol`](TastyTrade::get_streamer_symbol), or
+//! read the `streamer_symbol` an instrument already carries, and pass what
+//! comes back unchanged.
+//!
+//! Subscribing with the instrument symbol instead is silent: the venue does
+//! not recognise the target, so it sends nothing, forever, with no error. The
+//! subscription methods therefore take
+//! [`AsStreamerSymbol`](api::quote_streaming::AsStreamerSymbol), which only
+//! [`DxFeedSymbol`](api::quote_streaming::DxFeedSymbol) implements. That stops
+//! a [`Symbol`], a `String` or a `&str` reaching the feed by accident; it is
+//! not validation, because the newtype's field is public and a wrong string
+//! can still be wrapped by hand. The compiler catches the mix-up, not the typo.
+//!
+//! Candle symbols carry their period on the wire, and
+//! [`dxfeed::CandlePeriod::base_symbol`] is the way back from a bar or a
+//! marker to the base name the subscription methods take.
 //!
 //! **Historical replay is a phase, not a guess.** A candle subscription's
 //! history arrives as a snapshot per streamer symbol, and this crate turns the
