@@ -1830,48 +1830,15 @@ mod credential_tests {
 #[cfg(test)]
 mod frame_privacy_tests {
     use super::*;
-    use std::io;
-    use std::sync::{Arc, Mutex};
+    use crate::utils::log_capture::capture_at;
     use tracing::Level;
 
     /// A value that must never reach a log, distinctive enough that a
     /// substring search cannot match it by accident.
     const ACCOUNT_NUMBER: &str = "SENTINEL-5WX00042";
 
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-
-    impl Captured {
-        fn text(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().expect("not poisoned in tests")).into_owned()
-        }
-    }
-
-    impl io::Write for Captured {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0
-                .lock()
-                .expect("not poisoned in tests")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     fn decode_capturing(data: &[u8], level: Level) -> (Option<AccountEvent>, String) {
-        let logs = Captured::default();
-        let writer = logs.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(level)
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-
-        let event = tracing::subscriber::with_default(subscriber, || decode_account_frame(data));
-        (event, logs.text())
+        capture_at(level, || decode_account_frame(data))
     }
 
     /// The trap this crate already closed once on the REST path: a type

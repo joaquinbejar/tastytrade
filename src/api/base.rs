@@ -299,8 +299,7 @@ mod tests {
         assert!(!paginated_at(usize::MAX, usize::MAX).has_more());
         assert!(!paginated_at(usize::MAX, 1).has_more());
     }
-    use std::io;
-    use std::sync::{Arc, Mutex};
+    use crate::utils::log_capture::capture_at;
     use tracing::Level;
 
     /// An account-shaped item that the certification environment cannot satisfy:
@@ -325,43 +324,13 @@ mod tests {
         {"account-number":"5WX12345","nickname":"Retirement","margin-or-cash":"Margin"}
     ]}"#;
 
-    #[derive(Clone, Default)]
-    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
-
-    impl CapturedLogs {
-        fn contents(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-        }
-    }
-
-    impl io::Write for CapturedLogs {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// Deserializes `payload` with the subscriber capturing everything up to
     /// `max_level`, and returns what was logged.
     fn logs_for(payload: &str, max_level: Level) -> (Items<StrictAccount>, String) {
-        let logs = CapturedLogs::default();
-        let writer = logs.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(max_level)
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-
-        let items = tracing::subscriber::with_default(subscriber, || {
+        capture_at(max_level, || {
             serde_json::from_str::<Items<StrictAccount>>(payload)
                 .expect("at least one item decodes in these fixtures")
-        });
-
-        (items, logs.contents())
+        })
     }
 
     #[test]
