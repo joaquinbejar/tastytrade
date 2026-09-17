@@ -466,3 +466,23 @@ please follow these steps:
 ## License
 
 Licensed under the MIT license. See [LICENSE](./LICENSE).
+
+<!-- related-projects:start -->
+## Related projects
+
+Repositories by the same author that this project depends on, and repositories that depend on it.
+
+### Depends on
+
+| Repository | Description |
+|------------|-------------|
+| [DXlink](https://github.com/joaquinbejar/DXlink) · [crates.io](https://crates.io/crates/dxlink) | Rust client for the DXLink WebSocket protocol used by tastytrade for real-time market data. |
+| [pretty-simple-display](https://github.com/joaquinbejar/pretty-simple-display) · [crates.io](https://crates.io/crates/pretty-simple-display) | Derive macros for pretty and simple JSON display formatting. |
+
+### Used by
+
+| Repository | Description |
+|------------|-------------|
+| [ChainView](https://github.com/joaquinbejar/ChainView) | Terminal UI for option chains, Greeks and volatility, real-time and backtest replay. |
+
+<!-- related-projects:end -->
