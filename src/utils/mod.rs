@@ -77,3 +77,7 @@ pub mod download;
 pub mod file;
 /// Parsing helpers for values the venue sends as text.
 pub mod parse;
+
+/// Test-only log capture that survives `tracing-core`'s callsite cache.
+#[cfg(test)]
+pub(crate) mod log_capture;
