@@ -28,6 +28,20 @@ pub struct SubscriptionId(usize);
 /// marker's `lossless` can be, and costs one atomic store per interval.
 const DROP_MIRROR_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How many markers may wait for a consumer that is not reading.
+///
+/// Markers are never dropped for a full queue, which is what makes an ending
+/// worth trusting — but "never" has to stop somewhere. A consumer that stops
+/// reading while the connection reconnects repeatedly would otherwise grow
+/// this without bound, one begin and one end per generation per series, while
+/// its ordinary events are being dropped on the floor beside it.
+///
+/// When the backlog is full the **oldest** markers go, which is the harmless
+/// direction: generations only move forward, so what a consumer needs on
+/// waking is the phase its series are in now, not the ones they passed
+/// through on the way. The newest phase change always survives.
+const MAX_PENDING_MARKERS: usize = 64;
+
 /// A cheap, clonable handle to the streamer's command loop and its channel.
 ///
 /// This is everything a subscription needs from the streamer: a way to send
@@ -955,7 +969,7 @@ fn offer(subscriber: &Subscriber, delivery: Delivery) -> bool {
 
     if !room {
         if marker {
-            pending.push_back(delivery);
+            park(&mut pending, delivery);
             return true;
         }
         return false;
@@ -965,7 +979,7 @@ fn offer(subscriber: &Subscriber, delivery: Delivery) -> bool {
         Ok(()) => true,
         Err(mpsc::error::TrySendError::Full(delivery)) => {
             if marker {
-                pending.push_back(delivery);
+                park(&mut pending, delivery);
                 true
             } else {
                 false
@@ -975,6 +989,16 @@ fn offer(subscriber: &Subscriber, delivery: Delivery) -> bool {
         // of events nobody will ever read.
         Err(mpsc::error::TrySendError::Closed(_)) => false,
     }
+}
+
+/// Parks a marker, discarding the oldest if the backlog is full.
+///
+/// See [`MAX_PENDING_MARKERS`] for why the oldest is the one to lose.
+fn park(pending: &mut VecDeque<Delivery>, delivery: Delivery) {
+    while pending.len() >= MAX_PENDING_MARKERS {
+        pending.pop_front();
+    }
+    pending.push_back(delivery);
 }
 
 /// Sends what is parked, oldest first. Returns whether nothing is left.
@@ -6012,5 +6036,165 @@ mod reconnect_tests {
             "a replay the venue never announced still lost bars, and saying \
              otherwise reports a history that has holes as complete"
         );
+    }
+
+    /// Never dropping a marker has to stop somewhere. A consumer that stops
+    /// reading while the connection reconnects would otherwise grow the
+    /// backlog for as long as it sulks. The newest phase change is the one
+    /// that has to survive.
+    #[tokio::test]
+    async fn a_marker_backlog_is_bounded_and_keeps_the_newest() {
+        let harness = Harness::start();
+        // One slot, filled by the first marker and never read.
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 1).await;
+
+        // A series has to exist before a reconnect can open a generation for
+        // it. This one fills the single slot and is never read.
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Far more generations than the backlog can hold.
+        let reconnects = MAX_PENDING_MARKERS + 20;
+        for _ in 0..reconnects {
+            open_generations_for_the_next_connection(
+                &harness.progress,
+                &harness.routing,
+                &harness.history,
+                &harness.dxlink_drops,
+            )
+            .await;
+        }
+
+        let parked = harness
+            .routing
+            .read()
+            .await
+            .senders
+            .get(&1)
+            .expect("the consumer is registered")
+            .first()
+            .expect("one channel")
+            .pending
+            .lock()
+            .expect("not poisoned in tests")
+            .len();
+        assert!(
+            parked <= MAX_PENDING_MARKERS,
+            "the backlog grew past its bound: {parked}"
+        );
+
+        // The first generation was announced before anything filled up, and
+        // what is left behind it is the tail, not the head.
+        let mut seen = Vec::new();
+        for _ in 0..=MAX_PENDING_MARKERS {
+            harness.drained.notify_one();
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(delivery)) => seen.push(begin_of(delivery).generation),
+                _ => break,
+            }
+        }
+        let last = *seen.last().expect("something was delivered");
+        assert_eq!(
+            last,
+            (reconnects + 1) as u64,
+            "the newest phase change must survive the bound"
+        );
+    }
+
+    /// The reservation has to survive a cancellation at the point it is most
+    /// likely: waiting for room in a full command queue, before the
+    /// unsubscribe has been queued at all.
+    #[tokio::test]
+    async fn a_removal_cancelled_before_it_is_queued_leaves_the_series_intact() {
+        let harness = Harness::start();
+        let (commands, _command_rx) = mpsc::channel::<DXLinkCommand>(1);
+        // Full, so `send` itself is what blocks.
+        commands
+            .try_send(DXLinkCommand::RemoveEventSender(99))
+            .expect("the one slot is free");
+        assert!(
+            commands
+                .try_send(DXLinkCommand::RemoveEventSender(99))
+                .is_err(),
+            "the queue must actually be full for this test to mean anything"
+        );
+
+        let subscription = subscription_for(1, commands, &harness, shared_targets(&["AAPL{=5m}"]));
+        let five = CandlePeriod::minutes(5).expect("a period");
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                subscription.remove_candles(&[DxFeedSymbol("AAPL".to_string())], five),
+            )
+            .await
+            .is_err(),
+            "the removal must still be waiting to be queued when it is dropped"
+        );
+
+        assert_eq!(
+            subscription.subscribed(),
+            vec![("AAPL{=5m}".to_string(), EventKind::Candle)],
+            "a removal that never reached the command queue must leave the \
+             series subscribed"
+        );
+    }
+
+    /// A generation number has to stay unique even when the old replay's
+    /// ending is still sitting unread in the consumer's queue.
+    #[tokio::test]
+    async fn an_unread_ending_cannot_collide_with_a_later_generation() {
+        let harness = Harness::start();
+        let (mut rx, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let loop_handle = spawn_routing_command_loop(command_rx, harness.routing.clone());
+        let targets = shared_targets(&["AAPL{=5m}"]);
+        let subscription = subscription_for(1, commands, &harness, targets.clone());
+        let five = CandlePeriod::minutes(5).expect("a period");
+
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        // Deliberately unread: the ending is still queued when the series goes.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        subscription
+            .remove_candles(&[DxFeedSymbol("AAPL".to_string())], five)
+            .await
+            .expect("the removal is accepted");
+
+        // Subscribed again, as add_candles would.
+        targets_of(&targets).insert(candle_target("AAPL{=5m}"));
+        record_routes(
+            &harness.routing,
+            1,
+            &feed_subscriptions(&[candle_target("AAPL{=5m}")]),
+        )
+        .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 5_000, SNAPSHOT_BEGIN))
+            .await;
+
+        // Now read: the old replay, then the new one, and the two generations
+        // must not be the same number.
+        assert_eq!(begin_of(next(&mut rx).await).generation, 1);
+        assert_eq!(bar_time(next(&mut rx).await), 1_000);
+        assert_eq!(bar_time(next(&mut rx).await), 2_000);
+        let old_end = end_of(next(&mut rx).await).generation;
+        let new_begin = begin_of(next(&mut rx).await).generation;
+        assert_eq!(old_end, 1);
+        assert_eq!(
+            new_begin, 2,
+            "an ending still in the queue must stay distinguishable from the \
+             replay that replaced it"
+        );
+
+        loop_handle.abort();
     }
 }
