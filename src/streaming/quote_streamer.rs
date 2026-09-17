@@ -470,7 +470,11 @@ impl QuoteSubscription {
     /// unaffected; routes are held per subscription.
     ///
     /// A series this subscription does not hold is not an error and is not
-    /// sent to the venue, so removing twice is safe.
+    /// sent to the venue, so removing twice is safe. Removing a series while
+    /// a concurrent [`add_candles`](Self::add_candles) re-subscribes it with
+    /// another history start is safe too, whichever the venue hears first: the
+    /// removal only lets go of what this subscription held when it was called,
+    /// and never of a target added since.
     ///
     /// # Errors
     ///
@@ -544,6 +548,7 @@ impl QuoteSubscription {
             .send(DXLinkCommand::Unsubscribe(
                 feed_subscriptions(&pending.removed),
                 sub_id,
+                Some(self.targets.clone()),
                 Some(ack),
             ))
             .await
@@ -1443,9 +1448,17 @@ enum DXLinkCommand {
         u32,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
+    // The third field is the subscription's live target set, when the
+    // removal is conditional on it. By the time the loop gets here a
+    // concurrent `add_candles` may have re-reserved the same series with a
+    // different history start, and a target is finer-grained than the route
+    // that delivers it: dropping the route, or telling the venue, would take
+    // away what the newer call just subscribed. `None` is a close, which
+    // lets go of everything whatever the set says.
     Unsubscribe(
         Vec<FeedSubscription>,
         u32,
+        Option<Arc<Mutex<BTreeSet<FeedTarget>>>>,
         Option<oneshot::Sender<TastyResult<()>>>,
     ),
     AddEventSender(u32, Subscriber),
@@ -1820,9 +1833,18 @@ impl QuoteStreamer {
 
                 if !unsubscribe_requests.is_empty() {
                     let (ack, answered) = oneshot::channel();
+                    // Unconditional. A close is total: a series a concurrent
+                    // `add_candles` re-reserved meanwhile goes too, because
+                    // the sender that would deliver it is about to be removed.
+                    // A subscribe the loop processes after that removal is
+                    // refused; one it processes in between still reaches the
+                    // venue, and stays on the wire unrouted until the
+                    // connection ends. Closing that window would mean
+                    // `RemoveEventSender` talking to the venue.
                     tx.send(DXLinkCommand::Unsubscribe(
                         unsubscribe_requests,
                         sub_id,
+                        None,
                         Some(ack),
                     ))
                     .await
@@ -2401,6 +2423,17 @@ fn feed_event_type(kind: EventKind) -> EventType {
 ///
 /// Called before the subscribe is written, so no event can arrive for a route
 /// that does not exist yet.
+/// Whether `sub_id` still has a consumer to deliver to.
+///
+/// `create_sub` registers the sender before it hands the subscription out,
+/// and `close_sub` removes it last, so this is the loop's own record of
+/// whether the subscription exists. It is read at the moment a command is
+/// processed, which is the only moment that matters for a command that was
+/// queued before the close and reached the loop after it.
+async fn subscription_is_open(routing: &Arc<RwLock<EventRouting>>, sub_id: u32) -> bool {
+    routing.read().await.senders.contains_key(&sub_id)
+}
+
 async fn record_routes(
     routing: &Arc<RwLock<EventRouting>>,
     sub_id: u32,
@@ -2439,6 +2472,56 @@ async fn orphaned_subscriptions(
         })
         .cloned()
         .collect()
+}
+
+/// What an unsubscribe still has to do by the time the loop processes it.
+struct UnsubscribePlan {
+    /// The requests `sub_id` is actually letting go of, and whose routes it
+    /// therefore gives up: those it holds no target for any more.
+    released: Vec<FeedSubscription>,
+    /// The subset of `released` nobody else holds, which is all the venue may
+    /// be told.
+    orphaned: Vec<FeedSubscription>,
+}
+
+/// Decides what an unsubscribe request may still do once it reaches the loop.
+///
+/// A route is keyed by `(streamer symbol, event type)`; a target also carries
+/// a candle's history start. So a subscription can hold two targets for one
+/// route, and does exactly that in the window between a `remove_candles` and
+/// a concurrent `add_candles` of the same series with a different start. The
+/// remove was queued for the older target, but if it is processed after the
+/// add it must not undo it: the route stays, and the venue is not told, or
+/// the series the add just subscribed would be cut with nothing to say so.
+///
+/// `still_held` is the subscription's live target set, the same one both
+/// calls reserve in before they queue anything, so reading it here sees the
+/// add's claim however the two commands were ordered. `None` means a close,
+/// which releases everything.
+async fn plan_unsubscribe(
+    routing: &Arc<RwLock<EventRouting>>,
+    sub_id: u32,
+    still_held: Option<&Mutex<BTreeSet<FeedTarget>>>,
+    requested: &[FeedSubscription],
+) -> UnsubscribePlan {
+    let released: Vec<FeedSubscription> = match still_held {
+        None => requested.to_vec(),
+        Some(targets) => {
+            let held = targets_of(targets);
+            requested
+                .iter()
+                .filter(|request| {
+                    !held.iter().any(|target| {
+                        target.symbol == request.symbol
+                            && target.kind.wire_name() == request.event_type
+                    })
+                })
+                .cloned()
+                .collect()
+        }
+    };
+    let orphaned = orphaned_subscriptions(routing, sub_id, &released).await;
+    UnsubscribePlan { released, orphaned }
 }
 
 /// Takes those routes back.
@@ -2547,6 +2630,21 @@ async fn run_connection(
             // with. After a reconnect that number is stale, and only this loop
             // knows the live one.
             DXLinkCommand::Subscribe(subscriptions, kinds, sub_id, ack) => {
+                // A subscription whose sender is gone was closed while this
+                // was queued. Subscribing now would record a route nothing
+                // delivers and put a series on the wire nothing takes off.
+                if !subscription_is_open(routing, sub_id).await {
+                    answer(
+                        ack,
+                        Err(TastyTradeError::Streaming(
+                            "the subscription was closed before the venue was asked; nothing \
+                             was subscribed"
+                                .to_string(),
+                        )),
+                    );
+                    continue;
+                }
+
                 // The venue refuses a subscription to an event type the
                 // channel was not configured for, and only this loop knows
                 // what the live channel is configured for. Nothing is
@@ -2585,18 +2683,22 @@ async fn run_connection(
                     }
                 }
             }
-            DXLinkCommand::Unsubscribe(subscriptions, sub_id, ack) => {
+            DXLinkCommand::Unsubscribe(subscriptions, sub_id, still_held, ack) => {
                 // Every subscription on this streamer shares one feed channel,
                 // so a `FEED_SUBSCRIPTION { remove }` stops the venue sending
                 // that series to **all** of them. Only the ones nobody else
                 // still wants may be taken off the wire; the rest are dropped
-                // locally, which is all this subscription asked for.
-                let orphaned = orphaned_subscriptions(routing, sub_id, &subscriptions).await;
+                // locally, which is all this subscription asked for. And a
+                // series this subscription re-reserved while the command was
+                // queued is not released at all: see `plan_unsubscribe`.
+                let plan =
+                    plan_unsubscribe(routing, sub_id, still_held.as_deref(), &subscriptions).await;
 
-                if orphaned.is_empty() {
-                    // Somebody else is still watching all of it. Taking the
-                    // routes back is the whole job.
-                    forget_routes(routing, sub_id, &subscriptions).await;
+                if plan.orphaned.is_empty() {
+                    // Nothing for the venue: either somebody else is still
+                    // watching all of it, or this subscription still is.
+                    // Taking back the routes it did release is the whole job.
+                    forget_routes(routing, sub_id, &plan.released).await;
                     answer(ack, Ok(()));
                     continue;
                 }
@@ -2605,10 +2707,10 @@ async fn run_connection(
                 // the unsubscribe landed leaves a subscription running with
                 // nowhere to deliver, and the local state that could have
                 // retried it already gone.
-                let outcome = client.unsubscribe(channel_id, orphaned).await;
+                let outcome = client.unsubscribe(channel_id, plan.orphaned).await;
 
                 if outcome.is_ok() {
-                    forget_routes(routing, sub_id, &subscriptions).await;
+                    forget_routes(routing, sub_id, &plan.released).await;
                 }
 
                 match outcome {
@@ -3076,7 +3178,7 @@ mod lifecycle_tests {
                         seen.extend(requests.into_iter().map(|r| r.symbol));
                         answer(ack, outcome());
                     }
-                    DXLinkCommand::Unsubscribe(_, _, ack) => answer(ack, outcome()),
+                    DXLinkCommand::Unsubscribe(_, _, _, ack) => answer(ack, outcome()),
                     _ => {}
                 }
             }
@@ -5127,14 +5229,17 @@ mod reconnect_tests {
                         record_routes(&routing, sub_id, &requests).await;
                         answer(ack, Ok(()));
                     }
-                    DXLinkCommand::Unsubscribe(requests, sub_id, ack) => {
-                        // Exactly what the real loop does, including the part
-                        // that decides what the venue is allowed to hear.
-                        let orphaned = orphaned_subscriptions(&routing, sub_id, &requests).await;
+                    DXLinkCommand::Unsubscribe(requests, sub_id, still_held, ack) => {
+                        // The real loop's own decision, with the venue call
+                        // stubbed: a copy of that logic here would drift from
+                        // it, which is how #148 stayed hidden.
+                        let plan =
+                            plan_unsubscribe(&routing, sub_id, still_held.as_deref(), &requests)
+                                .await;
                         seen.lock()
                             .expect("not poisoned in tests")
-                            .extend(orphaned.into_iter().map(|request| request.symbol));
-                        forget_routes(&routing, sub_id, &requests).await;
+                            .extend(plan.orphaned.into_iter().map(|request| request.symbol));
+                        forget_routes(&routing, sub_id, &plan.released).await;
                         answer(ack, Ok(()));
                     }
                     _ => {}
@@ -6196,5 +6301,199 @@ mod reconnect_tests {
         );
 
         loop_handle.abort();
+    }
+
+    // ---------------------------------------------------------------------
+    // #148: a target is finer-grained than the route that delivers it.
+    // ---------------------------------------------------------------------
+
+    /// The interleaving from #148. A `remove_candles` is queued for the
+    /// series at one history start, a concurrent `add_candles` re-reserves
+    /// the same series at another, and the loop processes the add first. The
+    /// remove must then not undo it: the route stays, the venue is not told,
+    /// and a bar for the series still reaches the consumer.
+    #[tokio::test]
+    async fn a_remove_processed_after_a_concurrent_add_leaves_the_new_series_routable() {
+        let harness = Harness::start();
+        let (mut mine, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+        let targets = shared_targets(&["AAPL{=5m}"]);
+
+        // Receives both commands before processing either, then processes
+        // the add first, whatever order they were queued in.
+        let (commands, mut command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let routing = harness.routing.clone();
+        let loop_handle = tokio::spawn(async move {
+            let first = command_rx.recv().await.expect("the remove is queued");
+            let second = command_rx.recv().await.expect("the add is queued");
+            assert!(
+                matches!(first, DXLinkCommand::Unsubscribe(..)),
+                "the remove reaches the queue first"
+            );
+            let mut wire = Vec::new();
+            for cmd in [second, first] {
+                match cmd {
+                    DXLinkCommand::Subscribe(requests, _, sub_id, ack) => {
+                        record_routes(&routing, sub_id, &requests).await;
+                        answer(ack, Ok(()));
+                    }
+                    DXLinkCommand::Unsubscribe(requests, sub_id, still_held, ack) => {
+                        let plan =
+                            plan_unsubscribe(&routing, sub_id, still_held.as_deref(), &requests)
+                                .await;
+                        wire.extend(plan.orphaned.into_iter().map(|request| request.symbol));
+                        forget_routes(&routing, sub_id, &plan.released).await;
+                        answer(ack, Ok(()));
+                    }
+                    _ => {}
+                }
+            }
+            wire
+        });
+
+        let subscription = subscription_for(1, commands, &harness, targets.clone());
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let later = DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp");
+
+        // `join!` polls in order: the remove takes its target out and queues
+        // first, the add then finds the series absent and re-reserves it.
+        let symbols = [DxFeedSymbol("AAPL".to_string())];
+        let (removed, added) = tokio::join!(
+            subscription.remove_candles(&symbols, five),
+            subscription.add_candles(&symbols, five, later),
+        );
+        removed.expect("the removal is accepted");
+        added.expect("the re-subscription is accepted");
+
+        let wire = loop_handle.await.expect("the stand-in loop finishes");
+        assert!(
+            wire.is_empty(),
+            "the series the add just subscribed must not be taken off the wire: {wire:?}"
+        );
+        assert_eq!(
+            targets_of(&targets).iter().cloned().collect::<Vec<_>>(),
+            vec![FeedTarget {
+                kind: EventKind::Candle,
+                symbol: "AAPL{=5m}".to_string(),
+                from_time: Some(later.timestamp_millis()),
+            }],
+            "only the newer target survives"
+        );
+        assert!(
+            harness
+                .routing
+                .read()
+                .await
+                .routes
+                .get(&("AAPL{=5m}".to_string(), EventKind::Candle))
+                .is_some_and(|holders| holders.contains(&1)),
+            "the surviving target must still be routable"
+        );
+
+        harness.send(flagged_candle("AAPL{=5m}", 5_000, 0)).await;
+        assert_eq!(
+            bar_time(next(&mut mine).await),
+            5_000,
+            "a bar for the surviving series reaches the consumer"
+        );
+    }
+
+    /// The other half of the property: when the subscription holds no other
+    /// target for the series, the route goes and so does the series on the
+    /// wire when nobody else has it. The same symbol at another period is
+    /// another series and does not count.
+    #[tokio::test]
+    async fn removing_the_only_target_of_a_series_still_releases_it() {
+        let harness = Harness::start();
+        let (mut mine, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+        also_watch(&harness, 1, "AAPL{=h}").await;
+
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (loop_handle, unsubscribed) =
+            spawn_recording_command_loop(command_rx, harness.routing.clone());
+        let targets = shared_targets(&["AAPL{=5m}", "AAPL{=h}"]);
+        let subscription = subscription_for(1, commands, &harness, targets.clone());
+        let five = CandlePeriod::minutes(5).expect("a period");
+
+        subscription
+            .remove_candles(&[DxFeedSymbol("AAPL".to_string())], five)
+            .await
+            .expect("the removal is accepted");
+
+        assert_eq!(
+            unsubscribed.lock().expect("not poisoned in tests").clone(),
+            vec!["AAPL{=5m}".to_string()],
+            "the last holder's series leaves the wire"
+        );
+        assert!(
+            !harness
+                .routing
+                .read()
+                .await
+                .routes
+                .contains_key(&("AAPL{=5m}".to_string(), EventKind::Candle)),
+            "the route goes with the only target"
+        );
+        assert_eq!(
+            subscription.subscribed(),
+            vec![("AAPL{=h}".to_string(), EventKind::Candle)],
+            "the hourly series is untouched"
+        );
+
+        harness.send(flagged_candle("AAPL{=5m}", 5_000, 0)).await;
+        nothing_more(&mut mine).await;
+
+        loop_handle.abort();
+    }
+
+    /// The decision on its own, for the shapes the loop can meet.
+    #[tokio::test]
+    async fn a_plan_releases_only_what_the_subscription_no_longer_holds() {
+        let routing: Arc<RwLock<EventRouting>> = Arc::new(RwLock::new(EventRouting::default()));
+        let requested = feed_subscriptions(&[candle_target("AAPL{=5m}")]);
+        record_routes(&routing, 1, &requested).await;
+
+        // Re-reserved at another history start: nothing is released.
+        let held = Arc::new(Mutex::new(BTreeSet::from([FeedTarget {
+            from_time: Some(99),
+            ..candle_target("AAPL{=5m}")
+        }])));
+        let plan = plan_unsubscribe(&routing, 1, Some(&held), &requested).await;
+        assert!(plan.released.is_empty(), "the series is still wanted");
+        assert!(plan.orphaned.is_empty(), "so the venue hears nothing");
+
+        // Another period of the same underlying is another series.
+        let other_period = shared_targets(&["AAPL{=h}"]);
+        let plan = plan_unsubscribe(&routing, 1, Some(&other_period), &requested).await;
+        assert_eq!(plan.released.len(), 1, "the five-minute series is released");
+        assert_eq!(plan.orphaned.len(), 1, "and nobody else holds it");
+
+        // A close releases everything the set says.
+        let plan = plan_unsubscribe(&routing, 1, None, &requested).await;
+        assert_eq!(plan.released.len(), 1);
+        assert_eq!(plan.orphaned.len(), 1);
+
+        // Shared with another subscription: released locally, kept on the wire.
+        record_routes(&routing, 2, &requested).await;
+        let plan = plan_unsubscribe(&routing, 1, None, &requested).await;
+        assert_eq!(plan.released.len(), 1);
+        assert!(plan.orphaned.is_empty(), "somebody else is still watching");
+    }
+
+    /// A subscribe queued before a close and processed after it must be
+    /// refused: `close_sub` removes the sender last, so its absence is the
+    /// loop's record that the subscription is gone.
+    #[tokio::test]
+    async fn a_subscription_without_a_sender_is_closed_to_the_loop() {
+        let harness = Harness::start();
+        let (_mine, _) = harness.watch(1, "AAPL{=5m}", 4).await;
+
+        assert!(subscription_is_open(&harness.routing, 1).await);
+        assert!(!subscription_is_open(&harness.routing, 2).await);
+
+        harness.routing.write().await.senders.remove(&1);
+        assert!(
+            !subscription_is_open(&harness.routing, 1).await,
+            "once the sender is gone, so is the subscription"
+        );
     }
 }
