@@ -593,12 +593,27 @@ impl QuoteSubscription {
         // different replay if the series is subscribed again, and leaving the
         // phase `Ended` would report a history as loaded before any of it had
         // arrived.
+        //
+        // Only for a series this subscription holds nothing for any more,
+        // decided under the targets lock, which is the lock a concurrent
+        // `add_candles` reserves under. The venue's acknowledgement can sit
+        // unread while a newer target for the same series is subscribed and
+        // its replay finishes; resetting then would erase a history the
+        // consumer has already been told is in, and `await_history` would
+        // wait for an ending that already happened.
         {
+            let known = targets_of(&self.targets);
             let mut seen = self
                 .progress
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             for target in &targets {
+                let still_held = known
+                    .iter()
+                    .any(|held| held.kind == target.kind && held.symbol == target.symbol);
+                if still_held {
+                    continue;
+                }
                 if let Some(resume) = seen.get_mut(&(sub_id, target.symbol.clone())) {
                     *resume = CandleResume {
                         generation: resume.generation,
@@ -6808,6 +6823,85 @@ mod reconnect_tests {
         assert!(
             streamer.get_sub(id).is_some(),
             "the subscription is still there"
+        );
+
+        loop_handle.abort();
+    }
+
+    /// Polls `future` exactly once, with a waker that wakes nothing.
+    ///
+    /// For a future that must be driven to a known point and then left there:
+    /// a removal that has queued its command but not read the answer.
+    fn poll_once<F: std::future::Future>(
+        future: std::pin::Pin<&mut F>,
+    ) -> std::task::Poll<F::Output> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        future.poll(&mut cx)
+    }
+
+    /// The owner's finding on #150. The loop released nothing wrong, but the
+    /// removal's own cleanup ran when its acknowledgement was finally read,
+    /// and by then a replacement replay had finished. Resetting the series'
+    /// history there erased a history the consumer had been told was in.
+    #[tokio::test]
+    async fn a_late_removal_does_not_erase_a_finished_replacement_replay() {
+        let harness = Harness::start();
+        let (mut mine, _) = harness.watch(1, "AAPL{=5m}", 16).await;
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let (loop_handle, unsubscribed) =
+            spawn_recording_command_loop(command_rx, harness.routing.clone());
+        let targets = shared_targets(&["AAPL{=5m}"]);
+        let subscription = subscription_for(1, commands, &harness, targets.clone());
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let later = DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp");
+        let symbols = [DxFeedSymbol("AAPL".to_string())];
+
+        // Driven just far enough to take its target out and queue the
+        // command. Its acknowledgement stays unread until the end.
+        let removal = subscription.remove_candles(&symbols, five);
+        tokio::pin!(removal);
+        assert!(poll_once(removal.as_mut()).is_pending());
+        let released = async {
+            while unsubscribed
+                .lock()
+                .expect("not poisoned in tests")
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), released)
+            .await
+            .expect("the loop processes the removal");
+
+        // The series comes back with another history start, and its replay
+        // finishes while the removal is still parked.
+        subscription
+            .add_candles(&symbols, five, later)
+            .await
+            .expect("re-subscribing succeeds");
+        harness
+            .send(flagged_candle("AAPL{=5m}", 1_000, SNAPSHOT_BEGIN))
+            .await;
+        harness
+            .send(flagged_candle("AAPL{=5m}", 2_000, SNAPSHOT_END))
+            .await;
+        begin_of(next(&mut mine).await);
+        assert_eq!(bar_time(next(&mut mine).await), 1_000);
+        assert_eq!(bar_time(next(&mut mine).await), 2_000);
+        end_of(next(&mut mine).await);
+        assert!(subscription.history_loaded("AAPL{=5m}"));
+
+        // Only now does the removal read its answer.
+        removal.await.expect("the removal was accepted");
+
+        assert!(
+            subscription.history_loaded("AAPL{=5m}"),
+            "a finished replacement replay must survive an older removal's cleanup"
+        );
+        assert_eq!(
+            subscription.subscribed(),
+            vec![("AAPL{=5m}".to_string(), EventKind::Candle)]
         );
 
         loop_handle.abort();
