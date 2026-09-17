@@ -290,18 +290,21 @@ theoretical prices and series.
 # use chrono::{Duration, Utc};
 # use tastytrade::{Symbol, TastyTrade};
 # use tastytrade::dxfeed::{CandlePeriod, EventData, EventKind};
+# use tastytrade::prelude::InstrumentType;
 # async fn bars(tasty: &TastyTrade) -> Result<(), Box<dyn std::error::Error>> {
 let mut streamer = tasty.create_quote_streamer().await?;
 let mut bars = streamer.create_sub([EventKind::Candle]).await?;
 
 // Candles are the only route to a price series in this crate. `from_time` is
 // required: without one, a candle subscription replays an unbounded history.
-bars.add_candles(
-    &[Symbol("AAPL".to_string())],
-    CandlePeriod::minutes(5)?,
-    Utc::now() - Duration::days(2),
-)
-.await?;
+// The streaming name, which is not always the instrument name.
+let aapl = tasty
+    .get_streamer_symbol(&InstrumentType::Equity, &Symbol("AAPL".to_string()))
+    .await?;
+
+let period = CandlePeriod::minutes(5)?;
+bars.add_candles(&[aapl], period, Utc::now() - Duration::days(2))
+    .await?;
 
 // The crate says when a symbol's history is in, so no consumer decodes
 // snapshot flags. `lossless` is false when bars of that replay were shed.
@@ -313,11 +316,11 @@ while let Ok(event) = bars.get_event().await {
         EventData::SnapshotEnd(end) => {
             println!("{} history in, complete: {}", event.sym, end.lossless);
             // One series is done; the rest of the subscription carries on.
-            bars.remove_candles(
-                &[Symbol("AAPL".to_string())],
-                CandlePeriod::minutes(5)?,
-            )
-            .await?;
+            // The marker names it with the period suffix, remove_candles takes
+            // it without, and the period converts between them.
+            if let Some(base) = period.base_symbol(&event.sym) {
+                bars.remove_candles(&[base], period).await?;
+            }
             break;
         }
         _ => {}
@@ -326,6 +329,24 @@ while let Ok(event) = bars.get_event().await {
 # Ok(())
 # }
 ```
+
+**Two symbol namespaces, and the compiler keeps them apart.** The REST API
+names an instrument with a `Symbol`; the feed names it with a `DxFeedSymbol`.
+They are the same string for an equity and differ for futures, options,
+cryptocurrencies and warrants: a futures contract the REST API calls `/ESU3`
+streams as `/ESU23:XCME`. There is no textual rule between the two, and this
+crate does not invent one — ask `get_streamer_symbol()`, or read the
+`streamer_symbol` an instrument already carries, and pass it on unchanged.
+
+Subscribing with the instrument symbol is silent: the venue does not recognise
+the target, so it sends nothing, forever, with no error. `add_symbols`,
+`add_candles` and `remove_candles` therefore take `AsStreamerSymbol`, which
+only `DxFeedSymbol` implements. That stops a `Symbol`, a `String` or a `&str`
+reaching the feed by accident; it is not validation, since the newtype's field
+is public and a wrong string can still be wrapped by hand. The compiler catches
+the mix-up, not the typo. `CandlePeriod::base_symbol()` is the way back from a
+bar or a marker, which name their series with the period suffix, to the base
+name the subscription methods take.
 
 **Historical replay is a phase, not a guess.** Each streamer symbol replays its
 history as its own snapshot, and the crate turns the feed's `IndexedEvent` flags

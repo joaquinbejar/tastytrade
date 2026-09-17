@@ -1,9 +1,10 @@
 // For quote_streamer.rs
 use crate::TastyTrade;
+use crate::api::quote_streaming::AsStreamerSymbol;
 use crate::streaming::reconnect::{BackoffPolicy, ConnectionState};
 use crate::types::dxfeed;
 use crate::types::dxfeed::{CandlePeriod, EventKind};
-use crate::{AsSymbol, TastyResult, TastyTradeError};
+use crate::{TastyResult, TastyTradeError};
 use chrono::{DateTime, Utc};
 use dxlink::{DXLinkClient, EventType, FeedSubscription, MarketEvent, OverflowPolicy};
 use pretty_simple_display::{DebugPretty, DisplaySimple};
@@ -87,6 +88,11 @@ pub struct QuoteSubscription {
 impl QuoteSubscription {
     /// Subscribes this subscription to `symbols`.
     ///
+    /// `symbols` are **streaming** names, not instrument ones. See
+    /// [`AsStreamerSymbol`] for why the distinction is a type rather than a
+    /// convention, and [`TastyTrade::get_streamer_symbol`](crate::TastyTrade::get_streamer_symbol)
+    /// for how to turn one into the other.
+    ///
     /// Returns once the venue has accepted the subscription, not merely once
     /// the command was queued. Symbols already subscribed are skipped, so
     /// calling twice with the same symbol subscribes once.
@@ -103,7 +109,7 @@ impl QuoteSubscription {
     /// it is closed, or when the venue refuses. On any of those the symbols
     /// are not recorded, so a later close does not try to unsubscribe
     /// something that was never subscribed.
-    pub async fn add_symbols<S: AsSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
+    pub async fn add_symbols<S: AsStreamerSymbol>(&self, symbols: &[S]) -> TastyResult<()> {
         let kinds: Vec<EventKind> = self
             .kinds
             .iter()
@@ -122,7 +128,7 @@ impl QuoteSubscription {
         let requested: Vec<FeedTarget> = symbols
             .iter()
             .flat_map(|symbol| {
-                let symbol = symbol.as_symbol();
+                let symbol = symbol.as_streamer_symbol();
                 kinds.iter().map(move |kind| FeedTarget {
                     kind: *kind,
                     symbol: symbol.0.clone(),
@@ -136,11 +142,18 @@ impl QuoteSubscription {
 
     /// Subscribes this subscription to candles for `symbols`.
     ///
+    /// `symbols` are **base streaming** names, without a period suffix: this
+    /// appends it. They are not instrument symbols — see
+    /// [`AsStreamerSymbol`], which is what stops `/ES` being accepted where
+    /// the feed wants `ES`.
+    ///
     /// A candle subscription is addressed by a symbol that carries its own
     /// period — `AAPL{=5m}` — so two periods of one underlying are two
     /// different streamer symbols and never deliver into each other. The
     /// events come back under that same symbol, which is what
-    /// [`dxfeed::Event::sym`] holds.
+    /// [`dxfeed::Event::sym`] holds, and
+    /// [`CandlePeriod::base_symbol`] turns that back into what this method
+    /// and [`remove_candles`](Self::remove_candles) take.
     ///
     /// `from_time` is required, not optional. A candle subscription without
     /// one replays an unbounded history: the documented sizing is about 1440
@@ -153,7 +166,7 @@ impl QuoteSubscription {
     /// [`EventKind::Candle`] — a channel is only configured for the types its
     /// subscriptions requested, so this would subscribe to something that
     /// cannot arrive. Otherwise as [`QuoteSubscription::add_symbols`].
-    pub async fn add_candles<S: AsSymbol>(
+    pub async fn add_candles<S: AsStreamerSymbol>(
         &self,
         symbols: &[S],
         period: CandlePeriod,
@@ -177,7 +190,7 @@ impl QuoteSubscription {
             .iter()
             .map(|symbol| FeedTarget {
                 kind: EventKind::Candle,
-                symbol: period.streamer_symbol(&symbol.as_symbol().0),
+                symbol: period.streamer_symbol(&symbol.as_streamer_symbol().0),
                 from_time: Some(from_time),
             })
             .collect();
@@ -323,9 +336,12 @@ impl QuoteSubscription {
 
     /// Whether this symbol's historical replay has finished.
     ///
-    /// `symbol` is the streamer symbol, period suffix included — the string
-    /// [`subscribed`](Self::subscribed) reports, not the bare underlying,
-    /// because each period replays as its own snapshot.
+    /// `symbol` is the full streamer symbol, period suffix included — the
+    /// string a bar or a marker arrives under and
+    /// [`subscribed`](Self::subscribed) reports, not the base name
+    /// [`add_candles`](Self::add_candles) takes, because each period replays
+    /// as its own snapshot. [`CandlePeriod::base_symbol`] converts the other
+    /// way, for [`remove_candles`](Self::remove_candles).
     ///
     /// `false` for a series that has no replay in progress yet, one still
     /// replaying, and one whose connection dropped: a reconnect starts a new
@@ -361,6 +377,12 @@ impl QuoteSubscription {
     }
 
     /// Waits until this symbol's historical replay has finished.
+    ///
+    /// `symbol` is the full streamer symbol, period suffix included — the
+    /// string a bar or a marker arrives under and
+    /// [`subscribed`](Self::subscribed) reports, not the base name
+    /// [`add_candles`](Self::add_candles) takes. A series is a symbol *and* a
+    /// period, so the bare name identifies nothing here.
     ///
     /// Resolves with the same payload the
     /// [`EventData::SnapshotEnd`](crate::dxfeed::EventData::SnapshotEnd) event
@@ -417,6 +439,11 @@ impl QuoteSubscription {
 
     /// Unsubscribes `symbols` at `period` from this subscription.
     ///
+    /// `symbols` are **base** streaming names, without the period suffix:
+    /// this appends it, exactly as `add_candles` did when it subscribed. A
+    /// marker or a bar names its series *with* the suffix, so
+    /// [`CandlePeriod::base_symbol`] is the way back from one to the other.
+    ///
     /// A partial teardown, not a close: every other series on the subscription
     /// keeps running, including the same symbol at another period. The venue
     /// stops sending the removed ones, they leave
@@ -437,14 +464,14 @@ impl QuoteSubscription {
     /// channel, when it is closed, or when the venue refuses the unsubscribe.
     /// On a refusal the targets stay recorded, because that record is what a
     /// retry needs.
-    pub async fn remove_candles<S: AsSymbol>(
+    pub async fn remove_candles<S: AsStreamerSymbol>(
         &self,
         symbols: &[S],
         period: CandlePeriod,
     ) -> TastyResult<()> {
         let wanted: Vec<String> = symbols
             .iter()
-            .map(|symbol| period.streamer_symbol(&symbol.as_symbol().0))
+            .map(|symbol| period.streamer_symbol(&symbol.as_streamer_symbol().0))
             .collect();
 
         self.unsubscribe_targets(&wanted).await
@@ -2716,7 +2743,7 @@ impl Drop for QuoteStreamer {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use crate::Symbol;
+    use crate::api::quote_streaming::DxFeedSymbol;
 
     /// The regression #19 exists for: create_sub stores one clone of the
     /// subscription and hands the caller another, so a per-copy Vec meant
@@ -2734,9 +2761,12 @@ mod lifecycle_tests {
             .create_sub([EventKind::Quote])
             .await
             .expect("the streamer is open");
-        sub.add_symbols(&[Symbol::from("AAPL"), Symbol::from("MSFT")])
-            .await
-            .expect("subscribing succeeds");
+        sub.add_symbols(&[
+            DxFeedSymbol("AAPL".to_string()),
+            DxFeedSymbol("MSFT".to_string()),
+        ])
+        .await
+        .expect("subscribing succeeds");
 
         // The streamer's own copy sees them, which is what close_sub reads.
         {
@@ -2778,7 +2808,7 @@ mod lifecycle_tests {
             .await
             .expect("the streamer is open");
         let error = sub
-            .add_symbols(&[Symbol::from("AAPL")])
+            .add_symbols(&[DxFeedSymbol("AAPL".to_string())])
             .await
             .expect_err("a refused subscription is not a success");
 
@@ -2803,8 +2833,12 @@ mod lifecycle_tests {
             .create_sub([EventKind::Quote])
             .await
             .expect("the streamer is open");
-        sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
-        sub.add_symbols(&[Symbol::from("AAPL")]).await.unwrap();
+        sub.add_symbols(&[DxFeedSymbol("AAPL".to_string())])
+            .await
+            .unwrap();
+        sub.add_symbols(&[DxFeedSymbol("AAPL".to_string())])
+            .await
+            .unwrap();
 
         drop(sub);
         drop(streamer);
@@ -2830,7 +2864,7 @@ mod lifecycle_tests {
             .expect("the streamer is open");
         drop(rx); // the command loop is gone
 
-        sub.add_symbols(&[Symbol::from("AAPL")])
+        sub.add_symbols(&[DxFeedSymbol("AAPL".to_string())])
             .await
             .expect_err("a closed streamer cannot subscribe");
 
@@ -2960,7 +2994,7 @@ mod lifecycle_tests {
 mod reconnect_tests {
     use super::lifecycle_tests::{spawn_command_loop, streamer_with};
     use super::*;
-    use crate::Symbol;
+    use crate::api::quote_streaming::DxFeedSymbol;
     use dxlink::events::QuoteEvent;
     use std::time::Duration;
 
@@ -3278,7 +3312,7 @@ mod reconnect_tests {
             .create_sub([EventKind::Quote])
             .await
             .expect("the streamer is open");
-        sub.add_symbols(&[Symbol::from("AAPL")])
+        sub.add_symbols(&[DxFeedSymbol("AAPL".to_string())])
             .await
             .expect("subscribing succeeds");
 
@@ -3818,7 +3852,7 @@ mod reconnect_tests {
             .expect("the streamer is open");
         let error = quotes
             .add_candles(
-                &[Symbol::from("AAPL")],
+                &[DxFeedSymbol("AAPL".to_string())],
                 CandlePeriod::minutes(5).expect("a period"),
                 DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp"),
             )
@@ -3834,7 +3868,7 @@ mod reconnect_tests {
             .await
             .expect("the streamer is open");
         let error = candles
-            .add_symbols(&[Symbol::from("AAPL")])
+            .add_symbols(&[DxFeedSymbol("AAPL".to_string())])
             .await
             .expect_err("a bare symbol has no period and no start time");
         assert!(
@@ -3857,7 +3891,7 @@ mod reconnect_tests {
             .await
             .expect("the streamer is open");
         sub.add_candles(
-            &[Symbol::from("AAPL")],
+            &[DxFeedSymbol("AAPL".to_string())],
             CandlePeriod::minutes(5).expect("a period"),
             DateTime::from_timestamp(1_700_000_000, 0).expect("a timestamp"),
         )
@@ -5150,12 +5184,25 @@ mod reconnect_tests {
                 .await;
         }
 
+        let mut five_minute_series = None;
         for symbol in ["AAPL{=5m}", "AAPL{=h}", "MSFT{=5m}"] {
             assert_eq!(begin_of(next(&mut mine).await).generation, 1, "{symbol}");
             assert_eq!(bar_time(next(&mut mine).await), 1_000, "{symbol}");
             assert_eq!(bar_time(next(&mut mine).await), 2_000, "{symbol}");
-            assert_eq!(end_of(next(&mut mine).await).generation, 1, "{symbol}");
+
+            let ending = marker_of(next(&mut mine).await);
+            assert_eq!(ending.sym, symbol, "a marker names its own series");
+            match ending.data {
+                dxfeed::EventData::SnapshotEnd(end) => {
+                    assert_eq!(end.generation, 1, "{symbol}")
+                }
+                other => panic!("expected a snapshot end for {symbol}, got {other:?}"),
+            }
             assert!(subscription.history_loaded(symbol), "{symbol}");
+
+            if symbol == "AAPL{=5m}" {
+                five_minute_series = Some(ending.sym);
+            }
         }
 
         // The shared series replayed for the other subscription too.
@@ -5165,8 +5212,19 @@ mod reconnect_tests {
         assert_eq!(end_of(next(&mut theirs).await).generation, 1);
 
         // One series is done, so stop paying for a live feed nobody reads.
+        // The symbol comes back out of the marker rather than being retyped: a
+        // marker names its series with the period suffix, remove_candles takes
+        // it without, and `CandlePeriod` is what converts between them. That
+        // round trip is why both exist.
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let wire = five_minute_series.expect("the five-minute replay ended");
+        let base = five
+            .base_symbol(&wire)
+            .expect("the marker names a five-minute series");
+        assert_eq!(base, DxFeedSymbol("AAPL".to_string()));
+
         subscription
-            .remove_candles(&["AAPL"], CandlePeriod::minutes(5).expect("a period"))
+            .remove_candles(&[base], five)
             .await
             .expect("the venue accepted the unsubscribe");
 
@@ -5315,7 +5373,10 @@ mod reconnect_tests {
         let removing = async {
             tokio::time::sleep(Duration::from_millis(50)).await;
             subscription
-                .remove_candles(&["AAPL"], CandlePeriod::minutes(5).expect("a period"))
+                .remove_candles(
+                    &[DxFeedSymbol("AAPL".to_string())],
+                    CandlePeriod::minutes(5).expect("a period"),
+                )
                 .await
         };
 
@@ -5380,6 +5441,125 @@ mod reconnect_tests {
                 .is_empty(),
             "a closed subscription must not keep answering for its series"
         );
+
+        loop_handle.abort();
+    }
+
+    /// The round trip on a symbol that is nothing like its instrument name.
+    ///
+    /// A futures contract the REST API calls `/ESU3` streams as
+    /// `/ESU23:XCME`: a slash it keeps, a month code that changes and an
+    /// exchange suffix the REST name never had. There is no rule to apply, so
+    /// the test does what a consumer must do — carry the string through
+    /// untouched — and checks that every stage preserves it exactly.
+    #[tokio::test]
+    async fn a_futures_series_round_trips_without_being_rewritten() {
+        const CONTRACT: &str = "/ESU23:XCME";
+        let hourly = CandlePeriod::hours(1).expect("a period");
+        let five = CandlePeriod::minutes(5).expect("a period");
+
+        // What add_candles would put on the wire for each period.
+        let hourly_wire = hourly.streamer_symbol(CONTRACT);
+        let five_wire = five.streamer_symbol(CONTRACT);
+        assert_eq!(hourly_wire, "/ESU23:XCME{=h}");
+        assert_eq!(five_wire, "/ESU23:XCME{=5m}");
+
+        let harness = Harness::start();
+        let (mut mine, _) = harness.watch(1, &hourly_wire, 32).await;
+        also_watch(&harness, 1, &five_wire).await;
+
+        let (commands, command_rx) = mpsc::channel::<DXLinkCommand>(8);
+        let loop_handle = spawn_routing_command_loop(command_rx, harness.routing.clone());
+        let subscription = subscription_for(
+            1,
+            commands,
+            &harness,
+            shared_targets(&[&hourly_wire, &five_wire]),
+        );
+
+        // Both series replay.
+        for symbol in [&hourly_wire, &five_wire] {
+            harness
+                .send(flagged_candle(symbol, 1_000, SNAPSHOT_BEGIN))
+                .await;
+            harness
+                .send(flagged_candle(symbol, 2_000, SNAPSHOT_END))
+                .await;
+        }
+
+        // The hourly one first, and its marker names it exactly as subscribed.
+        assert_eq!(begin_of(next(&mut mine).await).generation, 1);
+        assert_eq!(bar_time(next(&mut mine).await), 1_000);
+        assert_eq!(bar_time(next(&mut mine).await), 2_000);
+        let ending = marker_of(next(&mut mine).await);
+        assert_eq!(
+            ending.sym, hourly_wire,
+            "the marker must carry the venue's own string, not a rewritten one"
+        );
+
+        // Drain the five-minute replay so what is left later is unambiguous.
+        let _ = begin_of(next(&mut mine).await);
+        assert_eq!(bar_time(next(&mut mine).await), 1_000);
+        assert_eq!(bar_time(next(&mut mine).await), 2_000);
+        assert_eq!(marker_of(next(&mut mine).await).sym, five_wire);
+
+        // history_loaded and await_history take the full wire symbol, suffix
+        // included: they answer per series, and a series is a symbol *and* a
+        // period.
+        assert!(subscription.history_loaded(&hourly_wire));
+        assert!(subscription.history_loaded(&five_wire));
+        assert!(
+            !subscription.history_loaded(CONTRACT),
+            "the bare contract names no series on its own"
+        );
+        let awaited = tokio::time::timeout(
+            Duration::from_secs(2),
+            subscription.await_history(&hourly_wire),
+        )
+        .await
+        .expect("already finished, so it must not wait")
+        .expect("the series is subscribed");
+        assert_eq!(awaited.generation, 1);
+
+        // The round trip: marker symbol, back through the period, into
+        // remove_candles. The base has to come out byte for byte.
+        let base = hourly
+            .base_symbol(&ending.sym)
+            .expect("the marker names an hourly series");
+        assert_eq!(base, DxFeedSymbol(CONTRACT.to_string()));
+
+        subscription
+            .remove_candles(&[base], hourly)
+            .await
+            .expect("the venue accepted the unsubscribe");
+
+        // Only the hourly series went.
+        let left: Vec<String> = subscription
+            .subscribed()
+            .into_iter()
+            .map(|(symbol, _)| symbol)
+            .collect();
+        assert_eq!(
+            left,
+            vec![five_wire.clone()],
+            "removing one period must leave the other alone"
+        );
+        assert!(!subscription.history_loaded(&hourly_wire));
+        assert!(
+            subscription.history_loaded(&five_wire),
+            "the period that was kept keeps its history too"
+        );
+
+        // And the venue's live data proves the routing followed.
+        harness.send(flagged_candle(&hourly_wire, 3_000, 0)).await;
+        harness.send(flagged_candle(&five_wire, 3_000, 0)).await;
+        let live = market_of(next(&mut mine).await);
+        assert_eq!(
+            event_symbol(&live),
+            Some(five_wire.as_str()),
+            "the first thing to arrive must be the series that was kept"
+        );
+        nothing_more(&mut mine).await;
 
         loop_handle.abort();
     }
