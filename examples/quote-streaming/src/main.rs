@@ -1,5 +1,5 @@
-use tastytrade::Symbol;
 use tastytrade::TastyTrade;
+use tastytrade::api::quote_streaming::DxFeedSymbol;
 use tastytrade::dxfeed::{self, EventData};
 use tastytrade::utils::config::TastyTradeConfig;
 
@@ -56,7 +56,7 @@ async fn main() {
     };
 
     // Subscribe to SPX symbol
-    let symbols = [Symbol::from("SPX")];
+    let symbols = [DxFeedSymbol("SPX".to_string())];
     if let Err(e) = quote_sub.add_symbols(&symbols).await {
         eprintln!("Could not subscribe to SPX: {e}");
         std::process::exit(1);

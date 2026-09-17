@@ -255,11 +255,54 @@ impl CandlePeriod {
 
     /// The streamer symbol for `symbol` at this period.
     ///
+    /// `symbol` is a **streaming** name, not an instrument one — see
+    /// [`AsStreamerSymbol`](crate::api::quote_streaming::AsStreamerSymbol).
+    ///
     /// This is the string the venue is subscribed with **and** the
     /// `eventSymbol` the candles come back under, which is what keeps two
     /// periods of one underlying from delivering into each other.
     pub fn streamer_symbol(&self, symbol: &str) -> String {
         format!("{symbol}{}", self.suffix())
+    }
+
+    /// The base streamer symbol inside a candle's streamer symbol.
+    ///
+    /// The inverse of [`streamer_symbol`](Self::streamer_symbol), and the
+    /// other half of the round trip a consumer needs: a bar and a
+    /// [`SnapshotEnd`](EventData::SnapshotEnd) name their series **with** the
+    /// period suffix, while
+    /// [`remove_candles`](crate::streaming::quote_streamer::QuoteSubscription::remove_candles)
+    /// takes the base name and appends the suffix itself. This turns one into
+    /// the other without the caller doing string surgery on a format the
+    /// venue owns.
+    ///
+    /// `None` when the symbol does not end in *this* period's suffix, so a
+    /// five-minute series is never mistaken for an hourly one and a bare
+    /// symbol is never mistaken for either.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tastytrade::prelude::*;
+    ///
+    /// let hourly = CandlePeriod::hours(1)?;
+    /// let wire = hourly.streamer_symbol("ES");
+    /// assert_eq!(wire, "ES{=h}");
+    /// assert_eq!(hourly.base_symbol(&wire), Some(DxFeedSymbol("ES".to_string())));
+    ///
+    /// // A different period is a different series.
+    /// assert_eq!(CandlePeriod::minutes(5)?.base_symbol(&wire), None);
+    /// # Ok::<(), tastytrade::TastyTradeError>(())
+    /// ```
+    pub fn base_symbol(
+        &self,
+        streamer_symbol: &str,
+    ) -> Option<crate::api::quote_streaming::DxFeedSymbol> {
+        let base = streamer_symbol.strip_suffix(&self.suffix())?;
+        if base.is_empty() {
+            return None;
+        }
+        Some(crate::api::quote_streaming::DxFeedSymbol(base.to_string()))
     }
 }
 
@@ -652,12 +695,89 @@ pub struct DxfSeriesT {
     pub interest: f64,
 }
 
+/// Which terminator ended a historical replay.
+///
+/// dxFeed distinguishes the two and so does this crate: a series that was cut
+/// short is not the same answer as one the venue served in full, and a
+/// consumer sizing a chart or backfilling a store needs to tell them apart.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SnapshotEndKind {
+    /// `SNAPSHOT_END`: the venue served every bar it holds for the request.
+    End,
+    /// `SNAPSHOT_SNIP`: the venue cut the history short of what was asked for.
+    Snip,
+}
+
+/// A historical replay has begun for the series in [`Event::sym`].
+///
+/// That symbol is the **wire** name of the series, period suffix included, the
+/// same string the bars arrive under. [`CandlePeriod::base_symbol`] turns it
+/// back into the base name the subscription methods take.
+///
+/// Emitted once per generation, ahead of that generation's bars. A reconnect
+/// emits one without waiting for the venue, because the previous generation
+/// stops being current the moment the connection does.
+#[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
+pub struct DxfSnapshotBeginT {
+    /// Which replay of this series this is, counting from one.
+    ///
+    /// Increments on every new snapshot and on every reconnect, so a bar or a
+    /// terminator from an older generation is recognisable rather than
+    /// confusing.
+    pub generation: u64,
+}
+
+/// A historical replay has finished for the series in [`Event::sym`].
+///
+/// That symbol is the **wire** name of the series, period suffix included.
+/// [`CandlePeriod::base_symbol`] turns it back into the base name
+/// [`remove_candles`](crate::streaming::quote_streamer::QuoteSubscription::remove_candles)
+/// takes, which is the round trip for dropping a series once its history is in.
+///
+/// Emitted once per generation, after that generation's last deliverable bar
+/// and before any live update that follows it. Waiting for this is how a
+/// consumer tells replay bars from live ones without reading a single flag.
+#[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
+pub struct DxfSnapshotEndT {
+    /// The replay this ends. Matches the [`DxfSnapshotBeginT::generation`]
+    /// that opened it.
+    pub generation: u64,
+    /// Whether the venue served the whole history or cut it short.
+    pub kind: SnapshotEndKind,
+    /// Whether this consumer actually received all of it.
+    ///
+    /// "The replay finished" and "the history is complete" are different
+    /// statements, and this is the second one. `false` means bars are missing,
+    /// so the series has holes even though the venue finished sending it.
+    ///
+    /// Two sources feed it, and they are not equally precise. Loss in this
+    /// crate's own delivery is attributed exactly: a bar of **this** series
+    /// that did not fit **this** consumer's queue. Loss inside the feed client
+    /// cannot be attributed at all, because those events were discarded before
+    /// anything here could see which series they belonged to — so an event of
+    /// any kind, on any symbol, shed while this replay was open also clears
+    /// this flag.
+    ///
+    /// The bias is deliberate. Reporting a complete history that has holes is
+    /// the failure worth avoiding; the opposite costs a consumer one redundant
+    /// refetch. The feed client runs with backpressure enabled, so that second
+    /// source is rare in practice.
+    ///
+    /// `true` is a statement about a bounded window rather than a proof: the
+    /// feed client's counter is sampled, not pushed, so a loss in the last
+    /// instant before the terminator can be missed. Use
+    /// [`crate::streaming::quote_streamer::QuoteSubscription::lagged`] for the
+    /// exactly-attributed count across every series.
+    pub lossless: bool,
+}
+
 /// Enum representing different types of market event data
 ///
-/// One variant per [`EventKind`]. Adding the eight that were missing is
-/// breaking for any consumer matching this exhaustively, which is the point:
-/// the events were arriving and being dropped, and a consumer that thought it
-/// had handled every case had not.
+/// One variant per [`EventKind`], plus the two snapshot markers. Adding a
+/// variant is breaking for any consumer matching this exhaustively, which is
+/// the point: an event nobody handles is an event silently dropped, and a
+/// consumer that thought it had handled every case had not.
 #[derive(DebugPretty, DisplaySimple, Clone, Serialize, Deserialize)]
 pub enum EventData {
     /// Top of book.
@@ -682,6 +802,16 @@ pub enum EventData {
     TheoPrice(Box<DxfTheoPriceT>),
     /// One option expiration's computed values.
     Series(Box<DxfSeriesT>),
+    /// A historical replay has begun for this series.
+    ///
+    /// Synthesised by this crate from the feed's `SNAPSHOT_BEGIN` flag and
+    /// from a reconnect, never by the venue. It carries no market data.
+    SnapshotBegin(DxfSnapshotBeginT),
+    /// A historical replay has finished for this series.
+    ///
+    /// Synthesised by this crate from the feed's `SNAPSHOT_END` and
+    /// `SNAPSHOT_SNIP` flags. It carries no market data.
+    SnapshotEnd(DxfSnapshotEndT),
 }
 
 impl EventData {
@@ -701,7 +831,22 @@ impl EventData {
             EventData::Underlying(_) => EventKind::Underlying,
             EventData::TheoPrice(_) => EventKind::TheoPrice,
             EventData::Series(_) => EventKind::Series,
+            // The markers belong to a candle series, so they answer with the
+            // kind that produced them rather than needing one of their own:
+            // a caller routing by kind keeps its candle branch.
+            EventData::SnapshotBegin(_) | EventData::SnapshotEnd(_) => EventKind::Candle,
         }
+    }
+
+    /// Whether this is a snapshot marker rather than market data.
+    ///
+    /// Markers carry no prices. A consumer that only wants bars can skip them
+    /// with this instead of matching both variants.
+    pub fn is_marker(&self) -> bool {
+        matches!(
+            self,
+            EventData::SnapshotBegin(_) | EventData::SnapshotEnd(_)
+        )
     }
 }
 
@@ -863,6 +1008,59 @@ mod tests {
             assert_eq!(period.to_string(), expected);
             assert_eq!(period.streamer_symbol("AAPL"), format!("AAPL{expected}"));
         }
+    }
+
+    /// The two halves of the round trip a candle consumer needs: a bar names
+    /// its series with the period suffix, and the subscription methods take it
+    /// without.
+    #[test]
+    fn a_streamer_symbol_round_trips_through_its_period() {
+        let cases = [
+            CandlePeriod::seconds(15),
+            CandlePeriod::minutes(5),
+            CandlePeriod::minutes(1),
+            CandlePeriod::hours(1),
+            CandlePeriod::days(1),
+            CandlePeriod::weeks(2),
+            CandlePeriod::months(1),
+        ];
+
+        for period in cases {
+            let period = period.expect("a positive count is a period");
+            let wire = period.streamer_symbol("ES");
+            assert_eq!(
+                period.base_symbol(&wire),
+                Some(crate::api::quote_streaming::DxFeedSymbol("ES".to_string())),
+                "{period} did not round trip"
+            );
+        }
+    }
+
+    /// A period only claims its own series. Reading an hourly symbol as a
+    /// five-minute one would unsubscribe a series the caller still wants.
+    #[test]
+    fn a_base_symbol_belongs_to_exactly_one_period() {
+        let hourly = CandlePeriod::hours(1).expect("a period");
+        let five = CandlePeriod::minutes(5).expect("a period");
+        let ten = CandlePeriod::minutes(10).expect("a period");
+        let minute = CandlePeriod::minutes(1).expect("a period");
+
+        let wire = hourly.streamer_symbol("ES");
+        assert!(five.base_symbol(&wire).is_none());
+
+        // The trap a suffix comparison by prefix would fall into: `{=10m}`
+        // ends in `m}` and is not a one-minute series.
+        let ten_minute = ten.streamer_symbol("ES");
+        assert!(minute.base_symbol(&ten_minute).is_none());
+        assert_eq!(
+            ten.base_symbol(&ten_minute),
+            Some(crate::api::quote_streaming::DxFeedSymbol("ES".to_string()))
+        );
+
+        // A symbol carrying no period at all is not a candle series.
+        assert!(hourly.base_symbol("ES").is_none());
+        // And a suffix with nothing in front of it names nothing.
+        assert!(hourly.base_symbol("{=h}").is_none());
     }
 
     /// A zero-length candle renders a suffix the venue accepts and never

@@ -21,7 +21,7 @@
 //! history.
 
 use chrono::{Duration as ChronoDuration, Utc};
-use quote_streaming::{DEADLINE, connect, read_bounded, symbols};
+use quote_streaming::{DEADLINE, connect, read_bounded, streamer_symbols};
 use tastytrade::prelude::*;
 use tracing::info;
 
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
 
-    let watched = symbols("AAPL");
+    let watched = streamer_symbols("AAPL");
     let five_minutes = CandlePeriod::minutes(5)?;
     let hourly = CandlePeriod::hours(1)?;
 

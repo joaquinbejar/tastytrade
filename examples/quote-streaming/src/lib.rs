@@ -37,17 +37,26 @@ pub async fn connect() -> Result<Option<TastyTrade>, Box<dyn std::error::Error>>
     Ok(Some(tasty))
 }
 
-/// The symbols an example watches.
+/// The symbols an example watches, read as **streaming** names.
 ///
 /// `TASTYTRADE_EXAMPLE_SYMBOLS` overrides the default, comma separated, so an
-/// example can be pointed at an option or a future without editing it.
-pub fn symbols(default: &str) -> Vec<Symbol> {
+/// example can be pointed somewhere else without editing it.
+///
+/// What comes out of that variable is taken at its word: it is used as a
+/// streaming name, not resolved. That is right for an equity ticker, where the
+/// two namespaces coincide, and wrong for a future, an option, a crypto pair
+/// or a warrant, whose streaming name differs from the instrument one — a
+/// futures contract the REST API calls `/ESU3` streams as `/ESU23:XCME`. Point
+/// an example at one of those and put the streaming name in the variable, or
+/// resolve it with `TastyTrade::get_streamer_symbol` as the `miscellaneous`
+/// examples do.
+pub fn streamer_symbols(default: &str) -> Vec<DxFeedSymbol> {
     std::env::var("TASTYTRADE_EXAMPLE_SYMBOLS")
         .unwrap_or_else(|_| default.to_string())
         .split(',')
         .map(str::trim)
         .filter(|symbol| !symbol.is_empty())
-        .map(Symbol::from)
+        .map(|symbol| DxFeedSymbol(symbol.to_string()))
         .collect()
 }
 
@@ -63,7 +72,7 @@ pub async fn stream_one(
         return Ok(());
     };
 
-    let symbols = symbols(default_symbols);
+    let symbols = streamer_symbols(default_symbols);
     let mut streamer = tasty.create_quote_streamer().await?;
     // The channel is configured for exactly this event type, because that is
     // what the subscription asked for.
