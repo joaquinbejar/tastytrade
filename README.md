@@ -24,7 +24,7 @@ default and production is a deliberate opt-in; see
 
 ```toml
 [dependencies]
-tastytrade = "0.4"
+tastytrade = "0.5"
 ```
 
 Minimum supported Rust version: **1.88**. It is declared as `rust-version` in
