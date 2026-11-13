@@ -444,12 +444,10 @@ make coverage
 `cargo semver-checks check-release` too.
 
 ### **Contact Information**
-
 - **Author**: Joaquín Béjar García
-- **Email**: <jb@taunais.com>
+- **Email**: jb@taunais.com
 - **Telegram**: [@joaquin_bejar](https://t.me/joaquin_bejar)
 - **Repository**: <https://github.com/joaquinbejar/tastytrade>
-- **Crate**: <https://crates.io/crates/tastytrade>
 - **Documentation**: <https://docs.rs/tastytrade>
 
 ## Contribution
@@ -476,13 +474,13 @@ Repositories by the same author that this project depends on, and repositories t
 
 | Repository | Description |
 |------------|-------------|
-| [DXlink](https://github.com/joaquinbejar/DXlink) · [crates.io](https://crates.io/crates/dxlink) | Rust client for the DXLink WebSocket protocol used by tastytrade for real-time market data. |
-| [pretty-simple-display](https://github.com/joaquinbejar/pretty-simple-display) · [crates.io](https://crates.io/crates/pretty-simple-display) | Derive macros for pretty and simple JSON display formatting. |
+| [DXlink](https://github.com/joaquinbejar/DXlink) | Provides the DXLink WebSocket client used to stream real-time quotes and Greeks. |
+| [pretty-simple-display](https://github.com/joaquinbejar/pretty-simple-display) | Provides the derive macros for the pretty and simple JSON display of API models. |
 
 ### Used by
 
 | Repository | Description |
 |------------|-------------|
-| [ChainView](https://github.com/joaquinbejar/ChainView) | Terminal UI for option chains, Greeks and volatility, real-time and backtest replay. |
+| [ChainView](https://github.com/joaquinbejar/ChainView) | Terminal UI for option chains, Greeks and volatility; uses tastytrade as one of its live broker data sources. |
 
 <!-- related-projects:end -->
